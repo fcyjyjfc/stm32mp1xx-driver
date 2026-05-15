@@ -4,7 +4,7 @@ BUILD_DIR = build
 OUTPUT_DIR = out
 
 CFLAGS += -g -Wall -O0 -mabi=apcs-gnu -mfpu=neon -mfloat-abi=softfp -fno-builtin \
-			-nostdinc -I./include
+				-nostdinc -I../drivers/include
 
 CROSS_COMPILE = arm-none-eabi-
 LD	= $(CROSS_COMPILE)ld
@@ -13,35 +13,34 @@ NM  = $(CROSS_COMPILE)nm
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump
 
-# 收集所有 .c 源文件
-C_SRCS :=$(wildcard source/*.c)
+# 收集所有 .c 源文件（test 自己的 + drivers 的）
+C_SRCS := $(wildcard source/*.c) $(wildcard ../drivers/source/*.c)
 
-# 收集所有 .s 和 .S 汇编源文件（用于 build 目录下的其他汇编文件，如果有）
-S_SRCS := $(wildcard asm/*.s)
-
-# 生成 .o 文件路径（只包含 C 文件的目标文件，全部放 build 目录下）
+# 生成 .o 文件路径（去路径，全部放 build 目录下）
 C_OBJS := $(addprefix $(BUILD_DIR)/, $(notdir $(C_SRCS:.c=.o)))
 OBJS := $(C_OBJS)
 
-# 创建 build 目录
 $(BUILD_DIR):
 	@mkdir $(BUILD_DIR) 2>nul
-	
-# 创建 out 目录
+
 $(OUTPUT_DIR):
 	@mkdir $(OUTPUT_DIR) 2>nul
 
-# 编译 .c 文件
+# 编译 test 自己的 .c 文件（source/ 下）
 $(BUILD_DIR)/%.o: source/%.c | $(BUILD_DIR)
 	@echo "  CC      $@"
 	@$(CC) $(CFLAGS) -c -o $@ $<
 
-# 直接编译 asm/start.S 到根目录的 start.o（链接器只在根目录找 start.o）
+# 编译 drivers 的 .c 文件
+$(BUILD_DIR)/%.o: ../drivers/source/%.c | $(BUILD_DIR)
+	@echo "  CC      $@"
+	@$(CC) $(CFLAGS) -c -o $@ $<
+
+# 编译 asm/start.S 到根目录的 start.o
 start.o: asm/start.S
 	@echo "  AS      $@"
 	@$(CC) $(CFLAGS) -c -o $@ $<
 
-# 默认目标：依赖根目录的 start.o
 all: $(BUILD_DIR) $(OUTPUT_DIR) $(OBJS) start.o
 	@echo "  OBJS = $(OBJS)"
 	@echo "  LD      Linking $(OUTPUT_DIR)/$(NAME).elf"
@@ -53,5 +52,5 @@ all: $(BUILD_DIR) $(OUTPUT_DIR) $(OBJS) start.o
 clean:
 	@rm -rf $(BUILD_DIR)
 	@rm -rf $(OUTPUT_DIR)
-	@rm -f start.o          # 删除根目录的 start.o
+	@rm -f start.o
 	@echo "  CLEAN   complete."
