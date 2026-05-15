@@ -11,6 +11,7 @@
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_dma.h"
 #include "stm32mp1xx_i2c.h"
+#include <string.h>
 
 typedef unsigned long long uint64_t;
 typedef unsigned int uint32_t;

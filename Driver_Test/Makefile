@@ -3,7 +3,7 @@ NAME = Driver_Test
 BUILD_DIR = build
 OUTPUT_DIR = out
 
-CFLAGS += -g -Wall -O0 -mabi=apcs-gnu -mfpu=neon -mfloat-abi=softfp -fno-builtin \
+CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 				-nostdinc -I../drivers/include
 CFLAGS += -I"C:/Program Files (x86)/yagarto/arm-none-eabi/include"
 CFLAGS += -I"C:/Program Files (x86)/yagarto/lib/gcc/arm-none-eabi/4.6.2/include"
@@ -46,7 +46,7 @@ start.o: asm/start.S
 all: $(BUILD_DIR) $(OUTPUT_DIR) $(OBJS) start.o
 	@echo "  OBJS = $(OBJS)"
 	@echo "  LD      Linking $(OUTPUT_DIR)/$(NAME).elf"
-	@$(LD) $(OBJS) -T $(NAME).lds -o $(OUTPUT_DIR)/$(NAME).elf
+	@$(CC) $(OBJS) -T $(NAME).lds -o $(OUTPUT_DIR)/$(NAME).elf -lc -lgcc -nostartfiles
 	@$(OBJCOPY) -O binary $(OUTPUT_DIR)/$(NAME).elf $(OUTPUT_DIR)/$(NAME).bin
 	@$(NM) $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).map
 	@$(OBJDUMP) -DS $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).dis
