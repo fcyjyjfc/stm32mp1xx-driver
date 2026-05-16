@@ -8,11 +8,7 @@
 #ifndef STM32MP1XX_STGEN_H_
 #define STM32MP1XX_STGEN_H_
 
-typedef unsigned long long uint64_t;
-typedef unsigned int uint32_t;
-typedef unsigned short uint16_t;
-typedef unsigned char uint8_t;
-typedef int int32_t;
+#include <stdint.h>
 
 typedef struct {
     uint32_t CNTCR;
