@@ -127,21 +127,21 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
         {
             if ((spi_reg->SR & (1 << 1)) != 0)
             {
-            	if (wr_buf != (void *)0)
-            	{
-//    				write_val = (wr_buf[wr_index]) |
-//    							(wr_buf[wr_index + 1] << 8)  |
-//    							(wr_buf[wr_index + 2] << 16) |
-//    							(wr_buf[wr_index + 3] << 24);
-    				write_val = wr_buf[wr_index];
-            	}
-            	else
-            	{
-            		write_val = 0;
-            	}
+                if (wr_buf != (void *)0)
+                {
+//                    write_val = (wr_buf[wr_index]) |
+//                                (wr_buf[wr_index + 1] << 8)  |
+//                                (wr_buf[wr_index + 2] << 16) |
+//                                (wr_buf[wr_index + 3] << 24);
+                    write_val = wr_buf[wr_index];
+                }
+                else
+                {
+                    write_val = 0;
+                }
 
-				spi_reg->TXDR = write_val;
-				wr_index += 1;
+                spi_reg->TXDR = write_val;
+                wr_index += 1;
             }
         }
 

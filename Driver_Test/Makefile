@@ -4,7 +4,7 @@ BUILD_DIR = build
 OUTPUT_DIR = out
 
 CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
-				-nostdinc -I../drivers/include
+				-nostdinc -std=c99 -I../drivers/include
 CFLAGS += -I"C:/Program Files (x86)/yagarto/arm-none-eabi/include"
 CFLAGS += -I"C:/Program Files (x86)/yagarto/lib/gcc/arm-none-eabi/4.6.2/include"
 

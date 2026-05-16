@@ -19,7 +19,7 @@ volatile I2cRegs_t *const I2C1 = (void *)0x40012000;
 
 void I2cCfg(volatile I2cRegs_t *const i2c)
 {
-	i2c->CR1 &= ~1; // 禁止I2C
+    i2c->CR1 &= ~1; // 禁止I2C
 
     i2c->CR1 &= ~(1 << 12); // 开启模拟滤波
     i2c->CR1 &= ~(0xF << 8); // 关闭数字滤波
@@ -32,13 +32,13 @@ void I2cCfg(volatile I2cRegs_t *const i2c)
 
 void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const uint8_t *dat, const uint32_t len, const I2cBusStart_t start, const I2cBusStop_t stop)
 {
-	if (start == I2C_BUS_START)
-	{
-		if ((i2c_reg->ISR & (1 << 15)) == (1 << 15))
-		{
-			return; // 总线忙
-		}
-	}
+    if (start == I2C_BUS_START)
+    {
+        if ((i2c_reg->ISR & (1 << 15)) == (1 << 15))
+        {
+            return; // 总线忙
+        }
+    }
 
     // 设置要通信的从机地址
     i2c_reg->CR2 &= ~0x1FF;
@@ -78,16 +78,16 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
             // 因此len<=255使用AUTOEND，len>255自动发送STOP
             if (len > 255)
             {
-            	i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
+                i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
             }
             else
             {
-            	i2c_reg->CR2 |= 1 << 25; // AUTOEND
+                i2c_reg->CR2 |= 1 << 25; // AUTOEND
             }
         }
         else
         {
-        	i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
+            i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
         }
 
         // 仅在发送开始时发送一个START
@@ -110,11 +110,11 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
         // 若设置了RELOAD，等待TCR标志被设置
         if (reload == 1)
         {
-        	while ((i2c_reg->ISR & (1 << 7)) == 0)
-        	{
-        		;
-        	}
-        	reload = 0;
+            while ((i2c_reg->ISR & (1 << 7)) == 0)
+            {
+                ;
+            }
+            reload = 0;
         }
 
         total_wr_len += cur_wr_len; // 更新已发送长度
@@ -146,14 +146,14 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
 
 void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t *dat, const uint32_t len, const I2cBusStart_t start, const I2cBusStop_t stop)
 {
-	// 本次通信为start，则判断总线是否busy
-	if (start == I2C_BUS_START)
-	{
-	    if ((i2c_reg->ISR & (1 << 15)) == (1 << 15))
-	    {
-	        return; // 总线忙
-	    }
-	}
+    // 本次通信为start，则判断总线是否busy
+    if (start == I2C_BUS_START)
+    {
+        if ((i2c_reg->ISR & (1 << 15)) == (1 << 15))
+        {
+            return; // 总线忙
+        }
+    }
 
     // 设置要通信的从机地址
     i2c_reg->CR2 &= ~0x1FF;
@@ -188,11 +188,11 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
         {
             if (len > 255)
             {
-            	i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
+                i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
             }
             else
             {
-            	i2c_reg->CR2 |= 1 << 25; // AUTOEND
+                i2c_reg->CR2 |= 1 << 25; // AUTOEND
             }
         }
 
@@ -216,11 +216,11 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
         // 若设置了RELOAD，等待TCR标志被设置
         if (reload == 1)
         {
-        	while ((i2c_reg->ISR & (1 << 7)) == 0)
-        	{
-        		;
-        	}
-        	reload = 0;
+            while ((i2c_reg->ISR & (1 << 7)) == 0)
+            {
+                ;
+            }
+            reload = 0;
         }
 
         total_rd_len += cur_rd_len; // 更新已发送长度
@@ -288,11 +288,11 @@ void I2cWriteE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_
         // 因此len<=255使用AUTOEND，len>255自动发送STOP
         if (len > 255)
         {
-        	i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
+            i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
         }
         else
         {
-        	i2c_reg->CR2 |= 1 << 25; // AUTOEND
+            i2c_reg->CR2 |= 1 << 25; // AUTOEND
         }
 
         uint32_t index = 0;
@@ -327,11 +327,11 @@ void I2cWriteE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_
         // 若设置了RELOAD，等待TCR标志被设置
         if (reload == 1)
         {
-        	while ((i2c_reg->ISR & (1 << 7)) == 0)
-        	{
-        		;
-        	}
-        	reload = 0;
+            while ((i2c_reg->ISR & (1 << 7)) == 0)
+            {
+                ;
+            }
+            reload = 0;
         }
 
         total_wr_len += cur_wr_len; // 更新已发送长度
@@ -425,11 +425,11 @@ void I2cReadE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t
 //        i2c_reg->CR2 |= 1 << 25; // AUTOEND
         if (len > 255)
         {
-        	i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
+            i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
         }
         else
         {
-        	i2c_reg->CR2 |= 1 << 25; // AUTOEND
+            i2c_reg->CR2 |= 1 << 25; // AUTOEND
         }
 
         // 仅在发送开始时发送一个START
@@ -452,11 +452,11 @@ void I2cReadE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t
         // 若设置了RELOAD，等待TCR标志被设置
         if (reload == 1)
         {
-        	while ((i2c_reg->ISR & (1 << 7)) == 0)
-        	{
-        		;
-        	}
-        	reload = 0;
+            while ((i2c_reg->ISR & (1 << 7)) == 0)
+            {
+                ;
+            }
+            reload = 0;
         }
 
         total_rd_len += cur_rd_len; // 更新已发送长度
@@ -482,35 +482,35 @@ uint8_t I2cWrBuf[4096];
 
 void I2cWriteEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len)
 {
-	uint8_t *buf = (uint8_t *)&addr;
-	int i;
-	for (i = 0; i < 2; i++)
-	{
-		I2cWrBuf[i] = buf[1 - i];
-	}
-	for (; i < len + 2; i++)
-	{
-		I2cWrBuf[i] = dat[i - 2];
-	}
-	// START一个写传输，结束后STOP
-	I2cMstWrite(i2c, slave, I2cWrBuf, len + 2, I2C_BUS_START, I2C_BUS_STOP);
+    uint8_t *buf = (uint8_t *)&addr;
+    int i;
+    for (i = 0; i < 2; i++)
+    {
+        I2cWrBuf[i] = buf[1 - i];
+    }
+    for (; i < len + 2; i++)
+    {
+        I2cWrBuf[i] = dat[i - 2];
+    }
+    // START一个写传输，结束后STOP
+    I2cMstWrite(i2c, slave, I2cWrBuf, len + 2, I2C_BUS_START, I2C_BUS_STOP);
 }
 
 
 void I2cReadEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len)
 {
-	uint8_t *buf = (uint8_t *)&addr;
-	int i;
-	for (i = 0; i < 2; i++)
-	{
-		I2cWrBuf[i] = buf[1 - i];
-	}
-	// 1、START一个写通信（发送读取地址），不STOP
-	I2cMstWrite(i2c, slave, I2cWrBuf, 2, I2C_BUS_START, I2C_BUS_NO_STOP);
+    uint8_t *buf = (uint8_t *)&addr;
+    int i;
+    for (i = 0; i < 2; i++)
+    {
+        I2cWrBuf[i] = buf[1 - i];
+    }
+    // 1、START一个写通信（发送读取地址），不STOP
+    I2cMstWrite(i2c, slave, I2cWrBuf, 2, I2C_BUS_START, I2C_BUS_NO_STOP);
     while ((i2c->ISR & (1 << 6)) == 0) // 等待传输完成TC
     {
         ;
     }
     // 2、RESTART一个读通信，结束后STOP
-	I2cMstRead(i2c, slave, dat, len, I2C_BUS_RESTART, I2C_BUS_STOP);
+    I2cMstRead(i2c, slave, dat, len, I2C_BUS_RESTART, I2C_BUS_STOP);
 }

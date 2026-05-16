@@ -18,18 +18,18 @@ void UsartCfg(volatile UsartRegs_t *const usart_reg, const UsartCfg_t *const cfg
     // 超采样及波特率设置
     if (cfg->usart_sample_mode == 16)
     {
-    	usart_reg->CR1 &= ~(1 << 15);
+        usart_reg->CR1 &= ~(1 << 15);
     }
     else
     {
-    	usart_reg->CR1 |= 1 << 15;
+        usart_reg->CR1 |= 1 << 15;
     }
     usart_reg->BRR = 556;
 
     uint32_t word_len = cfg->usart_word_len;
     if (cfg->usart_parity != 0)
     {
-    	word_len += 1;
+        word_len += 1;
     }
     // 字长设置 7~9bit
     if (word_len == 8)
@@ -51,19 +51,19 @@ void UsartCfg(volatile UsartRegs_t *const usart_reg, const UsartCfg_t *const cfg
     // 校验设置
     if (cfg->usart_parity == 1)
     {
-    	// 奇校验
+        // 奇校验
         usart_reg->CR1 |= 1 << 10;
         usart_reg->CR1 |= 1 << 9;
     }
     else if (cfg->usart_parity == 2)
     {
-    	// 偶校验
+        // 偶校验
         usart_reg->CR1 |= 1 << 10;
         usart_reg->CR1 &= ~(1 << 9);
     }
     else
     {
-    	// 无校验
+        // 无校验
         usart_reg->CR1 &= ~(1 << 10);
     }
 
@@ -144,7 +144,7 @@ void UsartWrite(volatile UsartRegs_t *const usart_reg, const uint8_t *dat, const
     int i;
     for (i = 0; i < len; i++)
     {
-    	// 等待TXE发送寄存器为空（无FIFO）或TXFNF发送FIFO不满（FIFO模式）
+        // 等待TXE发送寄存器为空（无FIFO）或TXFNF发送FIFO不满（FIFO模式）
         while ((usart_reg->ISR & (1 << 7)) == 0)
         {
 
@@ -159,7 +159,7 @@ void UsartRead(volatile UsartRegs_t *const usart_reg, uint8_t *dat, const uint32
     int i;
     for (i = 0; i < len; i++)
     {
-    	// 等待RXNE接收寄存器不为空（无FIFO）或RXFNE接收FIFO不为空（FIFO模式）
+        // 等待RXNE接收寄存器不为空（无FIFO）或RXFNE接收FIFO不为空（FIFO模式）
         while ((usart_reg->ISR & (1 << 5)) == 0)
         {
 
@@ -174,8 +174,8 @@ uint32_t UsartReadOne(volatile UsartRegs_t *const usart_reg, uint8_t *dat)
 
     if ((usart_reg->ISR & (1 << 5)) != 0)
     {
-    	*dat = usart_reg->RDR;
-    	return 1;
+        *dat = usart_reg->RDR;
+        return 1;
     }
 
     return 0;
@@ -184,10 +184,10 @@ uint32_t UsartReadOne(volatile UsartRegs_t *const usart_reg, uint8_t *dat)
 
 uint8_t UsartReadAll(volatile UsartRegs_t *const usart_reg)
 {
-	uint8_t dat;
+    uint8_t dat;
     while ((usart_reg->ISR & (1 << 5)) != 0)
     {
-    	dat = usart_reg->RDR;
+        dat = usart_reg->RDR;
     }
 
     return dat;

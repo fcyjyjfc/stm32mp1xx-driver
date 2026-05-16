@@ -12,11 +12,14 @@
 //static volatile StgencRegs_t *const STGENC = (void *)0x5C008000;
 //static volatile StgenrRegs_t *const STGENR = (void *)0x5A005000;
 
-const StgenRegs_t STGEN = {(void *)0x5C008000, (void *)0x5A005000};
+StgenRegs_t STGEN = {(void *)0x5C008000, (void *)0x5A005000};
 
 
 void StgenCfg(StgenRegs_t *const stgen_reg)
 {
+    *(uint32_t *)(0x50000000 + 0x200) |= 1 << 20;  // STGENR 读接口时钟
+    *(uint32_t *)(0x50000000 + 0x210) |= 1 << 20;  // STGENC 控制接口时钟
+
     stgen_reg->stgenc->CNTCR |= 1 << 1; // 仿真挂起（计数保持静止）
 
     stgen_reg->stgenc->CNTFID0 = 10000000; // 计数频率，设置为实际计数频率
@@ -33,9 +36,11 @@ int32_t StgenIsHalt(StgenRegs_t *const stgen_reg)
 
 uint64_t StgenTim(StgenRegs_t *const stgen_reg)
 {
-    uint64_t tim_l, tim_hi;
-    tim_l = stgen_reg->stgenr->CNTCVL;
-    tim_hi = stgen_reg->stgenr->CNTCVU;
-
-    return (tim_hi << 32) | tim_l;
+    uint32_t lo, hi, hi2;
+    do {
+        hi  = stgen_reg->stgenr->CNTCVU;
+        lo  = stgen_reg->stgenr->CNTCVL;
+        hi2 = stgen_reg->stgenr->CNTCVU;
+    } while (hi != hi2);
+    return ((uint64_t)hi << 32) | lo;
 }

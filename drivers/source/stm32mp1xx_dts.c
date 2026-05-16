@@ -83,7 +83,7 @@ uint32_t DtsTemperature(volatile DtsRegs_t *const dts_reg)
 
    if ((dts_reg->CFGR1 & (1 << 20)) == 0)
    {
-//	   temp = t0 + ((fpclk / mfreq) * smp_tim - 100 * fmt0) / ramp_coeff;
+//       temp = t0 + ((fpclk / mfreq) * smp_tim - 100 * fmt0) / ramp_coeff;
    }
    else
    {

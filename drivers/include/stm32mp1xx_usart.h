@@ -26,29 +26,29 @@ typedef struct {
 
 
 typedef enum {
-	USART_WORD_LEN_7,
-	USART_WORD_LEN_8,
-	USART_WORD_LEN_9
+    USART_WORD_LEN_7,
+    USART_WORD_LEN_8,
+    USART_WORD_LEN_9
 } UsartWordLen_t;
 
 
 typedef enum {
-	USART_PARITY_NONE,
-	USART_PARITY_ODD,
-	USART_PARITY_EVEN
+    USART_PARITY_NONE,
+    USART_PARITY_ODD,
+    USART_PARITY_EVEN
 } UsartParity_t;
 
 typedef enum {
-	USART_STOP_BIT_1,
-	USART_STOP_BIT_2,
-	USART_STOP_BIT_0_5,
-	USART_STOP_BIT_1_5
+    USART_STOP_BIT_1,
+    USART_STOP_BIT_2,
+    USART_STOP_BIT_0_5,
+    USART_STOP_BIT_1_5
 } UsartStopBit_t;
 
 
 typedef enum {
-	USART_SAMPLE_ONE,
-	USART_SAMPLE_THREE
+    USART_SAMPLE_ONE,
+    USART_SAMPLE_THREE
 } UsartSampleOnt_t;
 
 

@@ -23,74 +23,74 @@ volatile GpioRegs_t *const GPIO_Z = (void *)0x54004000;
 
 void GpioMode(volatile GpioRegs_t *const gpio_reg, const uint32_t pin, const GpioModer_t mode)
 {
-	gpio_reg->MODER &= ~(3 << (pin * 2));
-	gpio_reg->MODER |= mode << (pin * 2);
+    gpio_reg->MODER &= ~(3 << (pin * 2));
+    gpio_reg->MODER |= mode << (pin * 2);
 }
 
 void GpioOtype(volatile GpioRegs_t *const gpio_reg, const uint32_t pin, const GpioOtype_t otype)
 {
-	gpio_reg->OTYPER &= ~(1 << pin);
-	gpio_reg->OTYPER |= otype << pin;
+    gpio_reg->OTYPER &= ~(1 << pin);
+    gpio_reg->OTYPER |= otype << pin;
 }
 
 void GpioOspeed(volatile GpioRegs_t *const gpio_reg, const uint32_t pin, const GpioOspeed_t ospeed)
 {
-	gpio_reg->OSPEEDR &= ~(3 << (pin * 2));
-	gpio_reg->OSPEEDR |= ospeed << (pin * 2);
+    gpio_reg->OSPEEDR &= ~(3 << (pin * 2));
+    gpio_reg->OSPEEDR |= ospeed << (pin * 2);
 }
 
 void GpioPullUpDown(volatile GpioRegs_t *const gpio_reg, const uint32_t pin, const GpioPupd_t pupd)
 {
-	gpio_reg->PUPDR &= ~(3 << (pin * 2));
-	gpio_reg->PUPDR |= pupd << (pin * 2);
+    gpio_reg->PUPDR &= ~(3 << (pin * 2));
+    gpio_reg->PUPDR |= pupd << (pin * 2);
 }
 
 uint32_t GpioInData(volatile GpioRegs_t *const gpio_reg, const uint32_t pin)
 {
-	return (gpio_reg->IDR & (1 << pin)) == (1 << pin);
+    return (gpio_reg->IDR & (1 << pin)) == (1 << pin);
 }
 
 void GpioOutHi(volatile GpioRegs_t *const gpio_reg, const uint32_t pin)
 {
-	gpio_reg->BSRR |= 1 << pin;
+    gpio_reg->BSRR |= 1 << pin;
 }
 
 void GpioOutLow(volatile GpioRegs_t *const gpio_reg, const uint32_t pin)
 {
-	gpio_reg->BSRR |= 1 << (pin + 16);
+    gpio_reg->BSRR |= 1 << (pin + 16);
 }
 
 void GpioToggle(volatile GpioRegs_t *const gpio_reg, const uint32_t pin)
 {
-	if (GpioInData(gpio_reg, pin) == 1)
-	{
-		gpio_reg->BSRR |= 1 << (pin + 16);
-	}
-	else
-	{
-		gpio_reg->BSRR |= 1 << pin;
-	}
+    if (GpioInData(gpio_reg, pin) == 1)
+    {
+        gpio_reg->BSRR |= 1 << (pin + 16);
+    }
+    else
+    {
+        gpio_reg->BSRR |= 1 << pin;
+    }
 }
 
 void GpioLockPortCfg(volatile GpioRegs_t *const gpio_reg, const uint16_t lck)
 {
-	gpio_reg->LCKR = (lck & (1 << 16));
-	gpio_reg->LCKR = lck;
-	gpio_reg->LCKR = (lck & (1 << 16));
+    gpio_reg->LCKR = (lck & (1 << 16));
+    gpio_reg->LCKR = lck;
+    gpio_reg->LCKR = (lck & (1 << 16));
 }
 
 void GpioAf(volatile GpioRegs_t *const gpio_reg, const uint32_t pin, const uint16_t af)
 {
-	if (pin < 8)
-	{
-		gpio_reg->AFRL &= ~(0xF << (pin * 4));
-		gpio_reg->AFRL |= af << (pin * 4);
-	}
-	else
-	{
-		gpio_reg->AFRH &= ~(0xF << ((pin - 8) * 4));
-		gpio_reg->AFRH |= af << ((pin - 8) * 4);
-	}
+    if (pin < 8)
+    {
+        gpio_reg->AFRL &= ~(0xF << (pin * 4));
+        gpio_reg->AFRL |= af << (pin * 4);
+    }
+    else
+    {
+        gpio_reg->AFRH &= ~(0xF << ((pin - 8) * 4));
+        gpio_reg->AFRH |= af << ((pin - 8) * 4);
+    }
 }
 
 

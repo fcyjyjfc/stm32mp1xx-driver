@@ -11,53 +11,52 @@
 #include <stdint.h>
 
 typedef struct {
-	uint32_t MODER;
-	uint32_t OTYPER;
-	uint32_t OSPEEDR;
-	uint32_t PUPDR;
-	uint32_t IDR;
-	uint32_t ODR;
-	uint32_t BSRR;
-	uint32_t LCKR;
-//	uint64_t AFR;
-	uint32_t AFRL;
-	uint32_t AFRH;
-	uint32_t BRR;
-	uint32_t RSVD0;
-	uint32_t SECCFGR;
-	uint8_t  RSVD1[0x3C8 - 0x30 + 4];
-	uint32_t HWCFGR[11];
-	uint32_t VERR;
-	uint32_t IPIDR;
-	uint32_t SIDR;
+    uint32_t MODER;
+    uint32_t OTYPER;
+    uint32_t OSPEEDR;
+    uint32_t PUPDR;
+    uint32_t IDR;
+    uint32_t ODR;
+    uint32_t BSRR;
+    uint32_t LCKR;
+    uint32_t AFRL;
+    uint32_t AFRH;
+    uint32_t BRR;
+    uint32_t RSVD0;
+    uint32_t SECCFGR;
+    uint8_t  RSVD1[0x3C8 - 0x30 + 4];
+    uint32_t HWCFGR[11];
+    uint32_t VERR;
+    uint32_t IPIDR;
+    uint32_t SIDR;
 } GpioRegs_t;
 
 
 typedef enum {
-	GPIO_MODER_INPUT,
-	GPIO_MODER_OUTPUT,
-	GPIO_MODER_AF,
-	GPIO_MODER_ANALOG
+    GPIO_MODER_INPUT,
+    GPIO_MODER_OUTPUT,
+    GPIO_MODER_AF,
+    GPIO_MODER_ANALOG
 } GpioModer_t;
 
 
 typedef enum {
-	GPIO_OTYPE_PUSH_PULL,
-	GPIO_OTYPE_OD
+    GPIO_OTYPE_PUSH_PULL,
+    GPIO_OTYPE_OD
 } GpioOtype_t;
 
 
 typedef enum {
-	GPIO_OSPEED_LOW,
-	GPIO_OSPEED_MEDIUM,
-	GPIO_OSPEED_HI,
-	GPIO_OSPEED_VERY_HI
+    GPIO_OSPEED_LOW,
+    GPIO_OSPEED_MEDIUM,
+    GPIO_OSPEED_HI,
+    GPIO_OSPEED_VERY_HI
 } GpioOspeed_t;
 
 typedef enum {
-	GPIO_PUPDR_NO,
-	GPIO_PUPDR_PULL_UP,
-	GPIO_PUPDR_PULL_DOWN,
+    GPIO_PUPDR_NO,
+    GPIO_PUPDR_PULL_UP,
+    GPIO_PUPDR_PULL_DOWN,
 } GpioPupd_t;
 
 

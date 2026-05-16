@@ -32,14 +32,14 @@ typedef struct {
 
 
 typedef enum {
-	I2C_BUS_STOP,
-	I2C_BUS_NO_STOP
+    I2C_BUS_STOP,
+    I2C_BUS_NO_STOP
 } I2cBusStop_t;
 
 
 typedef enum {
-	I2C_BUS_START,	// 本次通信为start
-	I2C_BUS_RESTART // 本次通信为restart
+    I2C_BUS_START,    // 本次通信为start
+    I2C_BUS_RESTART // 本次通信为restart
 } I2cBusStart_t;
 
 

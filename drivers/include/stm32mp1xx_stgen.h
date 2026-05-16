@@ -60,6 +60,10 @@ typedef struct {
 
 // extern volatile StgencRegs_t *const STGENC;
 // extern volatile StgenrRegs_t *const STGENR;
-extern const StgenRegs_t STGEN;
+extern StgenRegs_t STGEN;
+
+void StgenCfg(StgenRegs_t *const stgen_reg);
+int32_t StgenIsHalt(StgenRegs_t *const stgen_reg);
+uint64_t StgenTim(StgenRegs_t *const stgen_reg);
 
 #endif /* STM32MP1XX_STGEN_H_ */
