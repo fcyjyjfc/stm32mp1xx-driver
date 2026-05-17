@@ -7,6 +7,7 @@
 
 
 #include "stm32mp1xx_dts.h"
+#include "stm32mp1xx_rcc.h"
 
 
 volatile DtsRegs_t *const DTS = (void *)0x50028000;
@@ -14,6 +15,10 @@ volatile DtsRegs_t *const DTS = (void *)0x50028000;
 
 void DtsCfg(volatile DtsRegs_t *const dts_reg, const DtsCfg_t *const cfg)
 {
+   // enable DTS clock and release reset (APB3 bus, bit 16)
+   RCC->MP_APB3ENSETR |= 1 << 16;
+   RCC->APB3RSTCLRR  |= 1 << 16;
+
    // HSREF_CLK_DIV[6:0] @ bit [30:24]
    dts_reg->CFGR1 &= ~(0x7F << 24);
    dts_reg->CFGR1 |= (cfg->dts_calib_div & 0x7F) << 24;
@@ -67,6 +72,8 @@ int32_t DtsTemperature(volatile DtsRegs_t *const dts_reg, uint32_t fpclk, uint32
    uint16_t fmt0    = dts_reg->T0VALR1 & 0xFFFF;
    uint16_t ramp    = dts_reg->RAMPVALR & 0xFFFF;
    uint32_t smp_tim = (dts_reg->CFGR1 >> 16) & 0xF;
+   if (smp_tim == 0)
+       smp_tim = 1;
    uint32_t t0;
    int32_t  temp;
 
