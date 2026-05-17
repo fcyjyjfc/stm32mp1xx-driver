@@ -14,36 +14,6 @@ extern void UsartInit(void);
 extern void I2cInit(void);
 extern void IwdgInit(void);
 
-static void FormatVal(char *buf, int32_t val)
-{
-    if (val < 0)
-    {
-        *buf++ = '-';
-        val = -val;
-    }
-    if (val == 0)
-    {
-        *buf++ = '0';
-        *buf = '\0';
-        return;
-    }
-    char *p = buf;
-    while (val > 0)
-    {
-        *p++ = '0' + (val % 10);
-        val /= 10;
-    }
-    *p = '\0';
-    // reverse
-    while (p > buf)
-    {
-        p--;
-        char t = *buf;
-        *buf++ = *p;
-        *p = t;
-    }
-}
-
 
 int main(void)
 {

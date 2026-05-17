@@ -14,6 +14,7 @@ extern void SpiTest(void);
 extern void I2cTest(void);
 extern void DmaTest(void);
 extern void StgenTest(void);
+extern void IwdgTest(void);
 
 static const MenuEntry_t g_menu[] = {
     { "1", "GPIO",   GpioTest },
@@ -21,6 +22,7 @@ static const MenuEntry_t g_menu[] = {
     { "3", "I2C",    I2cTest  },
     { "4", "DMA",    DmaTest  },
     { "5", "STGEN",  StgenTest },
+    { "6", "IWDG",   IwdgTest },
 };
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
