@@ -34,16 +34,17 @@ typedef enum {
 
 
 typedef enum {
-    DST_TRIG_SOFTWARE   = 0,
-    DST_TRIG_LPTIM1_OUT = 1,
-    DST_TRIG_LPTIM2_OUT = 2,
-    DST_TRIG_LPTIM3_OUT = 3,
-    DST_TRIG_EXTI13     = 4
+    DTS_TRIG_SOFTWARE   = 0,
+    DTS_TRIG_LPTIM1_OUT = 1,
+    DTS_TRIG_LPTIM2_OUT = 2,
+    DTS_TRIG_LPTIM3_OUT = 3,
+    DTS_TRIG_EXTI13     = 4
 } DtsTrigSel_t;
 
 
 typedef struct {
-    uint32_t dts_calib_div : 8;
+    uint32_t dts_calib_div : 7;
+    uint32_t dts_q_meas_opt : 1;
     uint32_t dts_refclk : 1;
     uint32_t dts_smp_tim : 4;
     uint32_t dts_trig_sel : 4;
@@ -53,6 +54,10 @@ typedef struct {
 
 
 extern volatile DtsRegs_t *const DTS;
+
+extern void DtsCfg(volatile DtsRegs_t *const dts_reg, const DtsCfg_t *const cfg);
+extern void DtsSoftTrig(volatile DtsRegs_t *const dts_reg);
+extern int32_t DtsTemperature(volatile DtsRegs_t *const dts_reg, uint32_t fpclk, uint32_t flse);
 
 
 #endif /* STM32MP1XX_DTS_H_ */
