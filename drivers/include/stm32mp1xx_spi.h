@@ -63,6 +63,11 @@ typedef enum {
     SPI_SLAVE
 } SpiMstSlv_t;
 
+typedef enum {
+    SPI_SSM_HW,    // SS 硬件管理，内部 NSS 来自外部引脚
+    SPI_SSM_SW     // SS 软件管理，内部 NSS 来自 SSI 位
+} SpiSsMgmt_t;
+
 
 typedef struct {
     uint32_t        spi_baud_reate_div;
@@ -72,6 +77,7 @@ typedef struct {
     SpiCommMode_t   spi_comm_mode;
     SpiProtocol_t   spi_protocol;
     SpiMstSlv_t     spi_master;
+    SpiSsMgmt_t     spi_ss_mgmt;
 } SpiCfg_t;
 
 

@@ -50,128 +50,97 @@ void SpiCfg(volatile SpiRegs_t *const spi_reg, const SpiCfg_t *const cfg)
         spi_reg->CFG2 |= 1 << 23; // LSB先
     }
 
-    // 通信模式
+    // 通信模式 COMM[1:0] @ bit [18:17]
     spi_reg->CFG2 &= ~(3 << 17);
-    spi_reg->CFG2 |= cfg->spi_comm_mode;
+    spi_reg->CFG2 |= (cfg->spi_comm_mode & 3) << 17;
 
-    // SPI协议
+    // SPI协议 SP[2:0] @ bit [21:19]
     spi_reg->CFG2 &= ~(7 << 19);
-    spi_reg->CFG2 |= cfg->spi_protocol;
-    
-    // 主从模式选择
-    if (cfg->spi_master == SPI_MASTER)
-    {
-        spi_reg->CFG2 |= 1 << 22;
-    }
-    else
-    {
-        spi_reg->CFG2 &= ~(1 << 22);
-    }
+    spi_reg->CFG2 |= (cfg->spi_protocol & 7) << 19;
+
 //    spi_reg->IFCR |= 1 << 9;
     spi_reg->CFG1 &= ~(1 << 22); // 关闭硬件CRC
 
     spi_reg->CFG1 &= ~0x1F;
     spi_reg->CFG1 |= cfg->spi_word_len; // 字长
 
-    // 硬件SS，低有效
-    spi_reg->CFG2 |= 1 << 29;
-    spi_reg->CFG2 &= ~(1 << 26);
-    spi_reg->CFG2 &= ~(1 << 28);
-    spi_reg->CFG2 &= ~(1 << 30); // 多字节间SS有效
+    // SS 输出使能，SSIOP=0（低有效），SSOM=0（帧间不脉冲）
+    spi_reg->CFG2 |= 1 << 29;    // SSOE = 1
+    spi_reg->CFG2 &= ~(1 << 28); // SSIOP = 0
+    spi_reg->CFG2 &= ~(1 << 30); // SSOM = 0
+
+    // SS 管理方式
+    if (cfg->spi_ss_mgmt == SPI_SSM_SW)
+    {
+        spi_reg->CFG2 |= 1 << 26;   // SSM = 1，软件管理
+        spi_reg->CR1  |= 1 << 12;    // SSI = 1，内部 NSS 无效（SSIOP=0 时≠即无效）
+    }
+    else
+    {
+        spi_reg->CFG2 &= ~(1 << 26); // SSM = 0，硬件管理
+    }
 
     spi_reg->CFG2 &= ~0xF;
     spi_reg->CFG2 |= 8; // 在SS有效至发送数据直接按插入8个spi clock
     spi_reg->CFG2 |= 10 << 4; // 两个数据之间插入10个spi clock
 
+    spi_reg->CFG2 &= ~(1 << 22);
+    // 主从模式选择
+    if (cfg->spi_master == SPI_MASTER)
+    {
+        spi_reg->CFG2 |= 1 << 22;
+    }
 
-
-//    spi_reg->CR1 |= 1 << 10; // 传输挂起
-//    spi_reg->CR1 |= 1 << 8; // 主机自动挂起（FIFO满时挂起主机避免溢出丢失数据）
-
-    // TSER
-//    spi_reg->CR2 &= ~(0xFF << 16);
-//    spi_reg->CR2 |= 100 << 16;
-
-//    spi_reg->CFG1 |= 16; // FTHLV
     spi_reg->CR1 |= 1; // 使能SPI
 }
 
-
+uint8_t save_buf[300];
 void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *rd_buf, const uint32_t len)
 {
-    spi_reg->CR1 &= ~1; // 使能SPI
+    uint32_t wr_index, rd_index;
 
-    // TSIZE设置为待发送的数据个数
+    spi_reg->CR1 &= ~1; // 关闭SPI
+
+    // TSIZE: 传输总帧数
     spi_reg->CR2 &= ~0xFFFF;
     spi_reg->CR2 |= len;
 
-    // FTHLV 4 一个packet包含4个数据帧
-    spi_reg->CFG1 &= ~(0xF << 5);
-//    spi_reg->CFG1 |= 3 << 5; // FTHLV
-
-    // DSIZE 8 一个数据帧为8bit
-    spi_reg->CFG1 &= ~0xF;
+    // DSIZE = 8 (7 = 8-bit data)
+    spi_reg->CFG1 &= ~0x1F;
     spi_reg->CFG1 |= 7;
 
-    spi_reg->CR1 |= 1; // 使能SPI
-    spi_reg->CR1 |= 1 << 9; // 启动传输
+    spi_reg->CR1 |= 1;      // 使能SPI
+    spi_reg->CR1 |= 1 << 9; // 启动传输 (CSTART)
 
-    uint32_t write_val, read_val;
-    uint32_t packet_len;
-    uint32_t wr_index, rd_index;
+    wr_index = 0;
+    rd_index = 0;
 
-    packet_len = len - (len % 4);
-    for (wr_index = 0, rd_index = 0; wr_index < len/* || rd_index < len*/; )
+    while (wr_index < len || rd_index < len)
     {
-        if (wr_index < len)
+        // 发送: TXP (SR bit 1) = TxFIFO有空位
+        if (wr_index < len && (spi_reg->SR & (1 << 1)))
         {
-            if ((spi_reg->SR & (1 << 1)) != 0)
-            {
-                if (wr_buf != (void *)0)
-                {
-//                    write_val = (wr_buf[wr_index]) |
-//                                (wr_buf[wr_index + 1] << 8)  |
-//                                (wr_buf[wr_index + 2] << 16) |
-//                                (wr_buf[wr_index + 3] << 24);
-                    write_val = wr_buf[wr_index];
-                }
-                else
-                {
-                    write_val = 0;
-                }
-
-                spi_reg->TXDR = write_val;
-                wr_index += 1;
-            }
+            if (wr_buf != (void *)0)
+                {spi_reg->TXDR = wr_buf[wr_index];save_buf[wr_index] = wr_buf[wr_index];}
+            else
+                spi_reg->TXDR = 0xFF; // 仅接收时发dummy字节产生时钟
+            wr_index++;
         }
 
-//        if (rd_index < packet_len)
-//        {
-//            if ((spi_reg->SR & (1 << 0)) != 0)
-//            {
-//                read_val = spi_reg->RXDR;
-//                if (rd_buf != (void *)0)
-//                {
-//                    rd_buf[rd_index]       = read_val & 0xFF;
-//                    rd_buf[rd_index + 1]   = (read_val >> 8) & 0xFF;
-//                    rd_buf[rd_index + 2]   = (read_val >> 16) & 0xFF;
-//                    rd_buf[rd_index + 3]   = (read_val >> 24) & 0xFF;
-//                }
-//                rd_index += 4;
-//            }
-//
-//            if (((spi_reg->SR & (1 << 15)) == 0) && ((spi_reg->SR & (3 << 13)) == (len % 4)))
-//            {
-//                read_val = spi_reg->RXDR;
-//            }
-//        }
-//        else
-//        {
-//
-//        }
+        // 接收: RXP (SR bit 0) = RxFIFO有数据
+        if (rd_index < len && (spi_reg->SR & (1 << 0)))
+        {
+            uint32_t val = spi_reg->RXDR;
+            if (rd_buf != (void *)0)
+                rd_buf[rd_index] = val & 0xFF;
+            rd_index++;
+        }
     }
 
-    spi_reg->IFCR = 0xff8;
+    // 等待传输完成 (EOT = SR bit 3)
+    while ((spi_reg->SR & (1 << 3)) == 0);
+
+    spi_reg->IFCR = 0xFF8;
     spi_reg->CR1 &= ~1;
 }
 
