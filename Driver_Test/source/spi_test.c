@@ -93,7 +93,7 @@ static void PrintDec(char *buf, int32_t val)
 static void W25Q_WriteEnable(void)
 {
     uint8_t cmd = W25Q_CMD_WREN;
-    SpiTxRx(SPI4, &cmd, (void *)0, 1);
+    SpiTx(SPI4, &cmd, 1);
 }
 
 static uint8_t W25Q_ReadSR1(void)
@@ -132,7 +132,7 @@ static void W25Q_SectorErase(uint32_t addr)
     buf[3] = addr & 0xFF;
     W25Q_WriteEnable();
     W25Q_WaitBusy();
-    SpiTxRx(SPI4, buf, (void *)0, 4);
+    SpiTx(SPI4, buf, 4);
     W25Q_WaitBusy();
 }
 
@@ -149,7 +149,7 @@ static void W25Q_PageProgram(uint32_t addr, const uint8_t *data, uint16_t len)
 
     W25Q_WriteEnable();
     W25Q_WaitBusy();
-    SpiTxRx(SPI4, tx, (void *)0, 4 + len);
+    SpiTx(SPI4, tx, 4 + len);
     W25Q_WaitBusy();
 }
 
@@ -217,15 +217,32 @@ static void FlashTest(void)
     IwdgKickDog(IWDG2);
 
     // 4. Read back to verify erased (all 0xFF)
-//    W25Q_ReadData(0, verify, 256);
-//    PRINT("Erased data[0..15]:");
-//    for (i = 0; i < 16; i++)
-//    {
-//        PRINT(" ");
-//        PrintHex8(verify[i]);
-//    }
-//    PRINT("\r\n");
-//    IwdgKickDog(IWDG2);
+    PRINT("Reading page 0 (256 bytes)...\r\n");
+    W25Q_ReadData(0, verify, 256);
+    PRINT("Read done.\r\n");
+
+    int errors = 0;
+    for (i = 0; i < 256; i++)
+    {
+    	if (verify[i] != 0xFF)
+    		errors = 1;
+    }
+    if (errors == 0)
+    {
+    	PRINT("Verify PASSED (All 0xFF).\r\n");
+    }
+    else
+    {
+    	PRINT("Verify FAILED.\r\n");
+    }
+    PRINT("Erased data[0..15]:");
+    for (i = 0; i < 16; i++)
+    {
+        PRINT(" ");
+        PrintHex8(verify[i]);
+    }
+    PRINT("\r\n");
+    IwdgKickDog(IWDG2);
 
     // 5. Prepare test pattern and program page
     for (i = 0; i < 256; i++)
@@ -241,7 +258,7 @@ static void FlashTest(void)
     W25Q_ReadData(0, verify, 256);
     PRINT("Read done.\r\n");
 
-    int errors = 0;
+    errors = 0;
     for (i = 0; i < 256; i++)
     {
         if (verify[i] != (uint8_t)i)

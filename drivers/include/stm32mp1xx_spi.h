@@ -91,6 +91,8 @@ extern volatile SpiRegs_t *const SPI2;
 
 extern void SpiCfg(volatile SpiRegs_t *const spi_reg, const SpiCfg_t *const cfg);
 extern void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *rd_buf, const uint32_t len);
+extern void SpiTx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, const uint32_t len);
+extern void SpiRx(volatile SpiRegs_t *const spi_reg, uint8_t *rd_buf, const uint32_t len);
 
 
 #endif

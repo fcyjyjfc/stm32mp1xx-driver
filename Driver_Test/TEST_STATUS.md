@@ -35,6 +35,47 @@
 | Reset test | 通过 | 停止喂狗后 ~10s 触发复位 |
 | 二级菜单交互 | 通过 | 主菜单选 6 进入，1/2/0 功能正常 |
 
+## SPI
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| SPI4 时钟使能 | 通过 | RCC MP_APB2ENSETR bit9，GPIOE11-14 AF5 |
+| SpiCfg 初始化 | 通过 | GPIOE11-14 AF5，波特率分频 6，CPOL=0/CPHA=1，全双工，主机模式，MSB 先，8 位字长 |
+| SS 软件管理 (SSM=1+SSI=1) | 通过 | 避免 MODF（Flash CS 内部上拉导致低电平→主机模式故障），通过 CFG2 bit29(SSOE) 驱动引脚 |
+| SpiTxRx 全双工通信 | 通过 | 8-bit 访问 TXDR/RXDR 避免 packing（STRB 指令代替 STR），CSTART 前预写首字节防 UDR |
+| 无条件 RX FIFO 弹出 | 通过 | rd_buf=NULL 时也读取 RXDR，避免 RxFIFO 满导致 EOT 永不置位 |
+| 传输完成等待 (EOT) | 通过 | 等待 SR bit3 后清除 IFCR、关闭 SPI |
+| 波特率配置 (CFG1 bit30:28) | 通过 | SPI_CLK = APB2 / (2 × div) |
+| 字长配置 (DSIZE=7) | 通过 | CFG1 bit4:0=7（8 位），FTHLV=0（每帧一包） |
+| 帧间隔 (MIDI=10) | 通过 | CFG2 bit7:4=10，16 位模式间隔 10 SCK |
+| SS 有效到首数据延迟 (MSSI=8) | 通过 | CFG2 bit3:0=8，SS 有效后插入 8 SCK |
+
+### W25Q64 Flash Test
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| JEDEC ID 读取 | 通过 | 0xEF 0x40 0x17（W25Q64） |
+| 状态寄存器读取 (RDSR1) | 通过 | 2 字节事务，返回 rx[1] |
+| 写使能 + 扇区擦除 | 通过 | 0x20 命令 + 3 字节地址，WaitBusy 轮询 |
+| 页编程 (256 字节) | 通过 | 0x02 命令 + 3 字节地址 + 256 数据，Verify 0..255 通过 |
+| 页读取 (256 字节) | 通过 | 0x03 命令 + 3 字节地址 + 256 哑字节，数据正确 |
+
+### LED Display Test
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 74HC595 移位寄存器驱动 | 通过 | 2 字节 SPI 事务（位选 + 段码），4 位滚动显示 |
+| 滚动显示 | 通过 | 16 进制数 0-F 循环滚动，任意键停止 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| MODF 主机模式故障 | SS 引脚被 Flash CS 电阻拉低，MODF 检测到低电平 | SSM=1 + SSI=1 软件管理 |
+| SPI 数据偏移 6 字节 | TXDR 为 uint32_t，编译器生成 STR 指令→4 帧 packing | 8-bit 指针访问 (STRB)，每帧单包 |
+| ReadData 系统复位 | 栈溢出：FlashTest(~560B) + W25Q_ReadData(~536B) > 1KB SYS 栈 | start.S 栈从 2KB 扩大到 4KB |
+| SpiTxRx 卡死 (rd_buf=NULL) | RxFIFO 未弹出→FIFO 满→SPI 停滞→EOT 永不置位→看门狗复位 | 无条件读取 RXDR 再判断 rd_buf |
+
 ## I2C
 
 | 测试项 | 状态 | 说明 |

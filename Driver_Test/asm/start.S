@@ -68,10 +68,10 @@ irq_handler:
 // bl do_irq 
  ldmfd sp!,{r0-r12,pc}^ 
 
-stacktop:    .word   stack+4*512 
-.data 
+stacktop:    .word   stack+4*1024
+.data
 
-stack:  .space  4*512 
+stack:  .space  4*1024
 
 loop: 
  b loop 

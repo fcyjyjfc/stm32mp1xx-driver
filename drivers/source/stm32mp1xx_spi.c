@@ -109,6 +109,7 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
     spi_reg->CFG1 |= 7;
 
     spi_reg->CR1 |= 1;      // 使能SPI
+    spi_reg->CR1 |= 1 << 9; // 启动传输 (CSTART)
 
     wr_index = 0;
     rd_index = 0;
@@ -116,15 +117,6 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
     // 使用 8-bit 访问 TXDR/RXDR 以避免 packing（DSIZE=8 时不打包）
     volatile uint8_t *const txdr8 = (volatile uint8_t *)&spi_reg->TXDR;
     volatile uint8_t *const rxdr8 = (volatile uint8_t *)&spi_reg->RXDR;
-
-    // 先写第 1 个字节再启动传输，防止 UDR
-    if (wr_index < len && (spi_reg->SR & (1 << 1)))
-    {
-        *txdr8 = (wr_buf != (void *)0) ? wr_buf[wr_index] : 0xFF;
-        wr_index++;
-    }
-
-    spi_reg->CR1 |= 1 << 9; // 启动传输 (CSTART)
 
     while (wr_index < len || rd_index < len)
     {
@@ -151,3 +143,87 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
 }
 
 
+void SpiTx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, const uint32_t len)
+{
+    uint32_t wr_index;
+    uint32_t comm_bak;
+
+    spi_reg->CR1 &= ~1;                     /* 关闭 SPI */
+
+    comm_bak = spi_reg->CFG2 & (3 << 17);
+    spi_reg->CFG2 &= ~(3 << 17);
+    spi_reg->CFG2 |= SPI_COMM_SIMP_TX << 17;
+
+    spi_reg->CR2 &= ~0xFFFF;
+    spi_reg->CR2 |= len;
+
+    spi_reg->CFG1 &= ~0x1FF;
+    spi_reg->CFG1 |= 7;
+
+    spi_reg->CR1 |= 1;                      /* 使能 SPI */
+    spi_reg->CR1 |= 1 << 9;                 /* CSTART */
+
+    volatile uint8_t *const txdr8 = (volatile uint8_t *)&spi_reg->TXDR;
+
+    wr_index = 0;
+    while (wr_index < len)
+    {
+        if (spi_reg->SR & (1 << 1))         /* TXP */
+        {
+            *txdr8 = (wr_buf != (void *)0) ? wr_buf[wr_index] : 0xFF;
+            wr_index++;
+        }
+    }
+
+    while (!(spi_reg->SR & (1 << 3)));      /* EOT */
+
+    spi_reg->IFCR = 0xFF8;
+    spi_reg->CR1 &= ~1;
+
+    spi_reg->CFG2 &= ~(3 << 17);
+    spi_reg->CFG2 |= comm_bak;
+}
+
+
+void SpiRx(volatile SpiRegs_t *const spi_reg, uint8_t *rd_buf, const uint32_t len)
+{
+    uint32_t rd_index;
+    uint32_t comm_bak;
+
+    spi_reg->CR1 &= ~1;                     /* 关闭 SPI */
+
+    comm_bak = spi_reg->CFG2 & (3 << 17);
+    spi_reg->CFG2 &= ~(3 << 17);
+    spi_reg->CFG2 |= SPI_COMM_SIMP_RX << 17;
+
+    spi_reg->CR2 &= ~0xFFFF;
+    spi_reg->CR2 |= len;
+
+    spi_reg->CFG1 &= ~0x1FF;
+    spi_reg->CFG1 |= 7;
+
+    spi_reg->CR1 |= 1;                      /* 使能 SPI */
+    spi_reg->CR1 |= 1 << 9;                 /* CSTART */
+
+    volatile uint8_t *const rxdr8 = (volatile uint8_t *)&spi_reg->RXDR;
+
+    rd_index = 0;
+    while (rd_index < len)
+    {
+        if (spi_reg->SR & (1 << 0))         /* RXP */
+        {
+            uint8_t val = *rxdr8;
+            if (rd_buf != (void *)0)
+                rd_buf[rd_index] = val;
+            rd_index++;
+        }
+    }
+
+    while (!(spi_reg->SR & (1 << 3)));      /* EOT */
+
+    spi_reg->IFCR = 0xFF8;
+    spi_reg->CR1 &= ~1;
+
+    spi_reg->CFG2 &= ~(3 << 17);
+    spi_reg->CFG2 |= comm_bak;
+}
