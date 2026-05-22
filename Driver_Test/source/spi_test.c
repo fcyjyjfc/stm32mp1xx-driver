@@ -211,10 +211,10 @@ static void FlashTest(void)
     IwdgKickDog(IWDG2);
 
     // 3. Sector erase at address 0
-//    PRINT("Erasing sector 0...\r\n");
-//    W25Q_SectorErase(0);
-//    PRINT("Erase done.\r\n");
-//    IwdgKickDog(IWDG2);
+    PRINT("Erasing sector 0...\r\n");
+    W25Q_SectorErase(0);
+    PRINT("Erase done.\r\n");
+    IwdgKickDog(IWDG2);
 
     // 4. Read back to verify erased (all 0xFF)
 //    W25Q_ReadData(0, verify, 256);
@@ -237,7 +237,9 @@ static void FlashTest(void)
     IwdgKickDog(IWDG2);
 
     // 6. Read back and verify
+    PRINT("Reading page 0 (256 bytes)...\r\n");
     W25Q_ReadData(0, verify, 256);
+    PRINT("Read done.\r\n");
 
     int errors = 0;
     for (i = 0; i < 256; i++)

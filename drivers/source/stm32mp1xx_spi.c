@@ -94,7 +94,6 @@ void SpiCfg(volatile SpiRegs_t *const spi_reg, const SpiCfg_t *const cfg)
     spi_reg->CR1 |= 1; // 使能SPI
 }
 
-uint8_t save_buf[300];
 void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *rd_buf, const uint32_t len)
 {
     uint32_t wr_index, rd_index;
@@ -105,34 +104,41 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
     spi_reg->CR2 &= ~0xFFFF;
     spi_reg->CR2 |= len;
 
-    // DSIZE = 8 (7 = 8-bit data)
-    spi_reg->CFG1 &= ~0x1F;
+    // DSIZE = 8, FTHLV = 0 (每帧一包)
+    spi_reg->CFG1 &= ~0x1FF;
     spi_reg->CFG1 |= 7;
 
     spi_reg->CR1 |= 1;      // 使能SPI
-    spi_reg->CR1 |= 1 << 9; // 启动传输 (CSTART)
 
     wr_index = 0;
     rd_index = 0;
 
+    // 使用 8-bit 访问 TXDR/RXDR 以避免 packing（DSIZE=8 时不打包）
+    volatile uint8_t *const txdr8 = (volatile uint8_t *)&spi_reg->TXDR;
+    volatile uint8_t *const rxdr8 = (volatile uint8_t *)&spi_reg->RXDR;
+
+    // 先写第 1 个字节再启动传输，防止 UDR
+    if (wr_index < len && (spi_reg->SR & (1 << 1)))
+    {
+        *txdr8 = (wr_buf != (void *)0) ? wr_buf[wr_index] : 0xFF;
+        wr_index++;
+    }
+
+    spi_reg->CR1 |= 1 << 9; // 启动传输 (CSTART)
+
     while (wr_index < len || rd_index < len)
     {
-        // 发送: TXP (SR bit 1) = TxFIFO有空位
         if (wr_index < len && (spi_reg->SR & (1 << 1)))
         {
-            if (wr_buf != (void *)0)
-                {spi_reg->TXDR = wr_buf[wr_index];save_buf[wr_index] = wr_buf[wr_index];}
-            else
-                spi_reg->TXDR = 0xFF; // 仅接收时发dummy字节产生时钟
+            *txdr8 = (wr_buf != (void *)0) ? wr_buf[wr_index] : 0xFF;
             wr_index++;
         }
 
-        // 接收: RXP (SR bit 0) = RxFIFO有数据
         if (rd_index < len && (spi_reg->SR & (1 << 0)))
         {
-            uint32_t val = spi_reg->RXDR;
+            uint8_t val = *rxdr8;               // 无条件读取，必须弹出 FIFO
             if (rd_buf != (void *)0)
-                rd_buf[rd_index] = val & 0xFF;
+                rd_buf[rd_index] = val;
             rd_index++;
         }
     }

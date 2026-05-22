@@ -208,9 +208,9 @@ SPI4->CFG2 &= ~(1 << 30);    // SSOM = 0
 **数据帧** vs **数据包** vs **数据访问**：
 - **帧** = DSIZE 定义的 bits 数，是 SPI 总线上传输的最小单位
 - **包** = FTHLV 定义的帧数，是 FIFO 就绪标志（RXP/TXP）的触发单位
-- **访问** = CPU/DMA 对 TXDR/RXDR 的读写方式（8/16/32-bit），可以用一次 32-bit 访问处理 4 个 8-bit 帧（packing）
+- **访问** = CPU/DMA 对 TXDR/RXDR 的读写指令宽度（8/16/32-bit），决定 packing 的帧数
 
-> **注意点 1 — FTHLV 与 packing**：FTHLV ≠ 0 时用于 packing，将多个帧打包一起写入 FIFO。FTHLV 的上限 = 32 / DSIZE（因为 FIFO 访问最大 32-bit）。例如 DSIZE=8 时最多 4 帧/包，DSIZE=16 时最多 2 帧/包。FTHLV=0 时每帧一包，不 packing。
+> **注意点 1 — FTHLV 不是 packing！** 这是容易误解的地方。FTHLV 只控制 TXP/RXP 的触发阈值（多少帧视为一个"包"），不控制 packing。Packing 由**寄存器访问宽度**决定：CPU 用 STRB（8-bit）、STRH（16-bit）还是 STR（32-bit）访问 TXDR，SPI 就相应地打包 1、2 或 4 帧。
 
 ### FIFO 架构
 
@@ -267,6 +267,37 @@ DXP 是全双工下 TXP 和 RXP 的合并事件。使用时要注意：TXP 事�
 - **TSIZE=0 + CSTART=1** → 无限传输。此时**必须 FTHLV=0**（每帧一包），否则行为不可控。
 - **TSIZE > 0** → 到达指定帧数后自动结束，EOT 置位。
 - **TSER 非零** → TSIZE 用完后自动从 TSER 重载到 TSIZE，TSER 自行清零，TSERF 标志置位可触发中断。软件可在 TSERF 后写入下一个 TSER 值，实现**无限数据流**。
+
+### Packing — 访问宽度陷阱
+
+Packing 由 **CPU 访问宽度**决定，与 FTHLV 无关。
+
+| TXDR 访问指令 | 宽度 | DSIZE=8 时打包帧数 |
+|------|------|------|
+| STRB (byte) | 8-bit | 1 帧 |
+| STRH (halfword) | 16-bit | 2 帧 |
+| STR (word) | 32-bit | **4 帧** |
+
+**坑（实际踩过）：** 寄存器结构体将 `TXDR` 定义为 `uint32_t`：
+
+```c
+uint32_t TXDR;   // 在 SpiRegs_t 中
+spi_reg->TXDR = byte_val;  // 编译器生成 STR（32-bit 写）
+```
+
+DSIZE=8 时，32-bit 写 TXDR 会被 SPI 解释为 4 帧打包：写入 `0x000000VV` → FIFO 收到 `[VV, 0x00, 0x00, 0x00]`。每写 1 个有效字节，FIFO 中塞入 3 个零帧。
+
+同理 RXDR 也是 `uint32_t`，32-bit 读取会一次弹出 4 帧，取低 8 位时另 3 帧被丢弃。
+
+**修复：** 用强制 8-bit 指针访问 TXDR/RXDR，让编译器生成 STRB/LDRB：
+
+```c
+volatile uint8_t *const txdr8 = (volatile uint8_t *)&spi_reg->TXDR;
+*txdr8 = byte_val;                 // STRB → 1 帧
+
+// RX 同理
+uint8_t val = *rxdr8;               // LDRB → 1 帧
+```
 
 > **注意点 3 — TSIZE 16 位足够大**：TSIZE 最大 65535 帧，单次传输可达 64KB。大多数场景不需要 TSER 扩展，实际非对齐发生的概率很小，TSER 主要用于流式无限传输。
 
