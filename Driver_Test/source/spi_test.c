@@ -4,21 +4,22 @@
 #include "stm32mp1xx_rcc.h"
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
+#include "w25qxx.h"
+#include "m74hc595.h"
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
 
-/* W25QXX commands */
-#define W25Q_CMD_JEDECID    0x9F
-#define W25Q_CMD_RDSR1      0x05
-#define W25Q_CMD_WREN       0x06
-#define W25Q_CMD_SECERASE   0x20
-#define W25Q_CMD_PAGEPROG   0x02
-#define W25Q_CMD_RDDATA     0x03
-
 static SpiCfg_t Spi4Cfg;
+static int      SpiGpioDone = 0;
 
-static void SpiInit(void)
+
+/* 一次性的 GPIO + 时钟初始化 */
+static void SpiGpioInit(void)
 {
+//    if (SpiGpioDone)
+//        return;
+//    SpiGpioDone = 1;
+
     RCC->MP_APB2ENSETR |= 1 << 9;   // SPI4 clock
     RCC->MP_AHB4ENSETR |= 0x7f;      // GPIOA-G enable
 
@@ -42,18 +43,28 @@ static void SpiInit(void)
     GpioPullUpDown(GPIO_E, 12, GPIO_PUPDR_NO);
     GpioPullUpDown(GPIO_E, 13, GPIO_PUPDR_NO);
     GpioPullUpDown(GPIO_E, 14, GPIO_PUPDR_NO);
+}
+
+
+/* 初始化 SPI（GPIO 只做一次） */
+static void SpiInitComm(SpiCommMode_t comm_mode, SpiSsMgmt_t ss_mgmt)
+{
+    SpiGpioInit();
 
     Spi4Cfg.spi_baud_reate_div = 6;
     Spi4Cfg.spi_clk_cfg        = SPI_CLK_IDLE0_DELAY;
-    Spi4Cfg.spi_comm_mode      = SPI_COMM_FULL_DUPLEX;
+    Spi4Cfg.spi_comm_mode      = comm_mode;
     Spi4Cfg.spi_master         = SPI_MASTER;
     Spi4Cfg.spi_protocol       = SPI_PROTOCOL_MOTOROLA;
     Spi4Cfg.spi_shift          = SPI_SHIFT_MSB_FIRST;
     Spi4Cfg.spi_word_len       = 7;
-    Spi4Cfg.spi_ss_mgmt        = SPI_SSM_SW;
+    Spi4Cfg.spi_ss_mgmt        = ss_mgmt;
 
     SpiCfg(SPI4, &Spi4Cfg);
+    W25Q_Init(SPI4);
+    Led_Init(SPI4);
 }
+
 
 static void PrintHex8(uint8_t val)
 {
@@ -65,6 +76,7 @@ static void PrintHex8(uint8_t val)
     PRINT(buf);
 }
 
+
 static void PrintDec(char *buf, int32_t val)
 {
     if (val < 0)
@@ -73,10 +85,12 @@ static void PrintDec(char *buf, int32_t val)
         val = -val;
     }
     char *p = buf;
-    do {
+    do
+    {
         *p++ = '0' + val % 10;
         val /= 10;
-    } while (val > 0);
+    }
+    while (val > 0);
     *p = '\0';
     p--;
     while (buf < p)
@@ -88,90 +102,10 @@ static void PrintDec(char *buf, int32_t val)
     }
 }
 
-/* --- W25QXX helpers --- */
 
-static void W25Q_WriteEnable(void)
-{
-    uint8_t cmd = W25Q_CMD_WREN;
-    SpiTx(SPI4, &cmd, 1);
-}
-
-static uint8_t W25Q_ReadSR1(void)
-{
-    uint8_t tx[2] = { W25Q_CMD_RDSR1, 0xFF };
-    uint8_t rx[2];
-    SpiTxRx(SPI4, tx, rx, 2);
-    return rx[1];
-}
-
-static void W25Q_WaitBusy(void)
-{
-    while (W25Q_ReadSR1() & 0x01);
-}
-
-static void W25Q_ReadJEDECID(uint8_t id[3])
-{
-    uint8_t buf[4];
-    buf[0] = W25Q_CMD_JEDECID;
-    buf[1] = 0xFF;
-    buf[2] = 0xFF;
-    buf[3] = 0xFF;
-    uint8_t rd[4];
-    SpiTxRx(SPI4, buf, rd, 4);
-    id[0] = rd[1];
-    id[1] = rd[2];
-    id[2] = rd[3];
-}
-
-static void W25Q_SectorErase(uint32_t addr)
-{
-    uint8_t buf[4];
-    buf[0] = W25Q_CMD_SECERASE;
-    buf[1] = (addr >> 16) & 0xFF;
-    buf[2] = (addr >> 8) & 0xFF;
-    buf[3] = addr & 0xFF;
-    W25Q_WriteEnable();
-    W25Q_WaitBusy();
-    SpiTx(SPI4, buf, 4);
-    W25Q_WaitBusy();
-}
-
-static void W25Q_PageProgram(uint32_t addr, const uint8_t *data, uint16_t len)
-{
-    uint8_t tx[260];  // 4-byte header + max 256 data
-    tx[0] = W25Q_CMD_PAGEPROG;
-    tx[1] = (addr >> 16) & 0xFF;
-    tx[2] = (addr >> 8) & 0xFF;
-    tx[3] = addr & 0xFF;
-    int i;
-    for (i = 0; i < len; i++)
-        tx[4 + i] = data[i];
-
-    W25Q_WriteEnable();
-    W25Q_WaitBusy();
-    SpiTx(SPI4, tx, 4 + len);
-    W25Q_WaitBusy();
-}
-
-static void W25Q_ReadData(uint32_t addr, uint8_t *data, uint16_t len)
-{
-    uint8_t tx[260];  // 4-byte header + dummy
-    uint8_t rx[260];
-    tx[0] = W25Q_CMD_RDDATA;
-    tx[1] = (addr >> 16) & 0xFF;
-    tx[2] = (addr >> 8) & 0xFF;
-    tx[3] = addr & 0xFF;
-    int i;
-    for (i = 0; i < len; i++)
-        tx[4 + i] = 0xFF;
-
-    SpiTxRx(SPI4, tx, rx, 4 + len);
-
-    for (i = 0; i < len; i++)
-        data[i] = rx[4 + i];
-}
-
-/* ===== Flash Test ===== */
+/* ================================
+ *  1. 全双工测试 — W25QXX Flash
+ * ================================ */
 
 static void FlashTest(void)
 {
@@ -181,14 +115,13 @@ static void FlashTest(void)
     char dec[16];
     int i;
 
-    PRINT("\r\n===== W25QXX Flash Test =====\r\n");
+    PRINT("\r\n===== Full Duplex: W25QXX Flash =====\r\n");
 
-    SpiInit();
+    SpiInitComm(SPI_COMM_FULL_DUPLEX, SPI_SSM_SW);
     IwdgKickDog(IWDG2);
 
-    // 1. Read JEDEC ID
     W25Q_ReadJEDECID(id);
-    PRINT("JEDEC ID: ");
+    PRINT("[1] JEDEC ID: \r\n     ");
     PrintHex8(id[0]);
     PRINT(" ");
     PrintHex8(id[1]);
@@ -198,67 +131,52 @@ static void FlashTest(void)
 
     if (id[0] == 0xFF && id[1] == 0xFF && id[2] == 0xFF)
     {
-        PRINT("Flash not responding (all 0xFF). Check hardware.\r\n");
+        PRINT("Flash not responding (all 0xFF).\r\n");
         return;
     }
     IwdgKickDog(IWDG2);
 
-    // 2. Read SR1
-    uint8_t sr = W25Q_ReadSR1();
-    PRINT("SR1: ");
-    PrintHex8(sr);
-    PRINT("\r\n");
+    {
+        uint8_t sr = W25Q_ReadSR1();
+        PRINT("[2] SR1: \r\n     ");
+        PrintHex8(sr);
+        PRINT("\r\n");
+    }
     IwdgKickDog(IWDG2);
 
-    // 3. Sector erase at address 0
-    PRINT("Erasing sector 0...\r\n");
+    PRINT("[3] Erasing sector 0...\r\n");
     W25Q_SectorErase(0);
-    PRINT("Erase done.\r\n");
+    PRINT("     Erase done.\r\n");
     IwdgKickDog(IWDG2);
 
-    // 4. Read back to verify erased (all 0xFF)
-    PRINT("Reading page 0 (256 bytes)...\r\n");
     W25Q_ReadData(0, verify, 256);
-    PRINT("Read done.\r\n");
-
-    int errors = 0;
-    for (i = 0; i < 256; i++)
+    PRINT("[4] Verify erase...\r\n");
     {
-    	if (verify[i] != 0xFF)
-    		errors = 1;
+        int err = 0;
+        for (i = 0; i < 256; i++)
+        {
+            if (verify[i] != 0xFF)
+                err = 1;
+        }
+        if (err)
+            PRINT("     Erase verify FAILED\r\n");
+        else
+            PRINT("     Erase verify PASSED\r\n");
     }
-    if (errors == 0)
-    {
-    	PRINT("Verify PASSED (All 0xFF).\r\n");
-    }
-    else
-    {
-    	PRINT("Verify FAILED.\r\n");
-    }
-    PRINT("Erased data[0..15]:");
-    for (i = 0; i < 16; i++)
-    {
-        PRINT(" ");
-        PrintHex8(verify[i]);
-    }
-    PRINT("\r\n");
     IwdgKickDog(IWDG2);
 
-    // 5. Prepare test pattern and program page
     for (i = 0; i < 256; i++)
         buf[i] = i;
 
-    PRINT("Programming page 0 (256 bytes)...\r\n");
+    PRINT("[5] Programming page 0...\r\n");
     W25Q_PageProgram(0, buf, 256);
-    PRINT("Program done.\r\n");
+    PRINT("     Program done.\r\n");
     IwdgKickDog(IWDG2);
 
-    // 6. Read back and verify
-    PRINT("Reading page 0 (256 bytes)...\r\n");
+    PRINT("[6] Read & verify...\r\n");
     W25Q_ReadData(0, verify, 256);
-    PRINT("Read done.\r\n");
 
-    errors = 0;
+    int errors = 0;
     for (i = 0; i < 256; i++)
     {
         if (verify[i] != (uint8_t)i)
@@ -281,12 +199,16 @@ static void FlashTest(void)
 
     if (errors == 0)
     {
-        PRINT("Verify PASSED (0..255).\r\n");
-
-        PRINT("Data[0..31]:");
+        PRINT("     Program Verify PASSED (0..255).\r\n");
+        PRINT("     Data[0..31]:");
         for (i = 0; i < 32; i++)
         {
-            if ((i & 0xF) == 0) PRINT("\r\n  ");
+            if ((i & 0xF) == 0)
+            {
+                PRINT("\r\n     ");
+                PrintHex8(i);
+                PRINT(":");
+            }
             PRINT(" ");
             PrintHex8(verify[i]);
         }
@@ -294,62 +216,74 @@ static void FlashTest(void)
     }
     else
     {
-        PRINT("Verify FAILED: ");
+        PRINT("     Program Verify FAILED: ");
         PrintDec(dec, errors);
         PRINT(dec);
         PRINT(" errors\r\n");
     }
 }
 
-/* ===== LED Display Test ===== */
+
+/* ================================
+ *  2. LED Display Test
+ * ================================ */
 
 static void LedTest(void)
 {
+    volatile int d;
+    uint8_t num;
+    int j;
+
     PRINT("\r\n===== LED Display Test =====\r\n");
 
-    SpiInit();
+    SpiInitComm(SPI_COMM_FULL_DUPLEX, SPI_SSM_HW);
+    Led_Clear();
 
-    static const uint8_t hex_map[16] = {
-        0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07,
-        0x7F, 0x6F, 0x77, 0x7C, 0x39, 0x5E, 0x79, 0x71
-    };
-
-    uint8_t cmd[2];
-
-    // off
-    cmd[0] = 0; cmd[1] = 0;
-    SpiTxRx(SPI4, cmd, (void *)0, 2);
-
-    PRINT("Scrolling hex digits. Press any key to stop.\r\n");
-
-    int count = 0;
-    while (1)
+    /* 1. 4 个 LED 同时依次显示 0~F */
+    PRINT("All digits 0~F simultaneously:\r\n");
+    for (num = 0; num <= 15; num++)
     {
-        IwdgKickDog(IWDG2);
+        Led_DisplayAll(num);
+        for (d = 0; d < 300000; d++)
+            ;
+    }
 
-        int j;
-        for (j = 0; j < 4; j++)
+    /* 2. 全部关闭 */
+    Led_Clear();
+    PRINT("All off.\r\n");
+    for (d = 0; d < 300000; d++)
+        ;
+
+    /* 3. 显示多个 4 位数 */
+    uint16_t numbers[] = { 0x1234, 0x5678, 0x9ABC, 0xDEF0, 0x0000 };
+    int n;
+
+    IwdgKickDog(IWDG2);
+    PRINT("Displaying numbers:\r\n");
+    for (n = 0; n < 5; n++)
+    {
+        uint16_t val = numbers[n];
+        /* 每位显示约 1.5 秒（快速扫描保持视觉暂留） */
+        for (d = 0; d < 300; d++)
         {
-            cmd[0] = 1 << j;
-            cmd[1] = hex_map[(count + j) & 0xF];
-            SpiTxRx(SPI4, cmd, (void *)0, 2);
-        }
-
-        volatile int d;
-        for (d = 0; d < 500000; d++);
-
-        count++;
-
-        char ch;
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 1)
-        {
-            cmd[0] = 0; cmd[1] = 0;
-            SpiTxRx(SPI4, cmd, (void *)0, 2);
-            PRINT("stopped.\r\n");
-            break;
+            for (j = 0; j < 4; j++)
+            {
+                uint8_t digit_val = (val >> (12 - j * 4)) & 0xF;
+                Led_DisplayDigit(j + 1, digit_val);
+                volatile int k;
+                for (k = 0; k < 2000; k++)
+                    ;
+            }
+            IwdgKickDog(IWDG2);
         }
     }
+    IwdgKickDog(IWDG2);
+
+    /* 4. 清除退出 */
+    Led_Clear();
+    PRINT("Done.\r\n");
 }
+
 
 /* ===== Submenu ===== */
 
@@ -361,6 +295,7 @@ static void PrintSubMenu(void)
     PRINT("0. Back\r\n");
     PRINT("Select: ");
 }
+
 
 void SpiTest(void)
 {
@@ -389,12 +324,20 @@ void SpiTest(void)
         buf[pos] = '\0';
 
         if (strcmp(buf, "0") == 0)
+        {
             break;
+        }
         else if (strcmp(buf, "1") == 0)
+        {
             FlashTest();
+        }
         else if (strcmp(buf, "2") == 0)
+        {
             LedTest();
+        }
         else
+        {
             PRINT("Invalid selection.\r\n");
+        }
     }
 }

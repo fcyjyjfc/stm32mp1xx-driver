@@ -85,7 +85,7 @@ void SpiCfg(volatile SpiRegs_t *const spi_reg, const SpiCfg_t *const cfg)
     spi_reg->CFG2 |= 10 << 4; // 两个数据之间插入10个spi clock
 
     spi_reg->CFG2 &= ~(1 << 22);
-    // 主从模式选择
+    // 主从模式选择（放在SS设置之后，可以避免当SS一直为低时设置主机模式导致MODF的问题）
     if (cfg->spi_master == SPI_MASTER)
     {
         spi_reg->CFG2 |= 1 << 22;
@@ -146,13 +146,8 @@ void SpiTxRx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, uint8_t *
 void SpiTx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, const uint32_t len)
 {
     uint32_t wr_index;
-    uint32_t comm_bak;
 
     spi_reg->CR1 &= ~1;                     /* 关闭 SPI */
-
-    comm_bak = spi_reg->CFG2 & (3 << 17);
-    spi_reg->CFG2 &= ~(3 << 17);
-    spi_reg->CFG2 |= SPI_COMM_SIMP_TX << 17;
 
     spi_reg->CR2 &= ~0xFFFF;
     spi_reg->CR2 |= len;
@@ -179,22 +174,14 @@ void SpiTx(volatile SpiRegs_t *const spi_reg, const uint8_t *wr_buf, const uint3
 
     spi_reg->IFCR = 0xFF8;
     spi_reg->CR1 &= ~1;
-
-    spi_reg->CFG2 &= ~(3 << 17);
-    spi_reg->CFG2 |= comm_bak;
 }
 
 
 void SpiRx(volatile SpiRegs_t *const spi_reg, uint8_t *rd_buf, const uint32_t len)
 {
     uint32_t rd_index;
-    uint32_t comm_bak;
 
     spi_reg->CR1 &= ~1;                     /* 关闭 SPI */
-
-    comm_bak = spi_reg->CFG2 & (3 << 17);
-    spi_reg->CFG2 &= ~(3 << 17);
-    spi_reg->CFG2 |= SPI_COMM_SIMP_RX << 17;
 
     spi_reg->CR2 &= ~0xFFFF;
     spi_reg->CR2 |= len;
@@ -223,7 +210,4 @@ void SpiRx(volatile SpiRegs_t *const spi_reg, uint8_t *rd_buf, const uint32_t le
 
     spi_reg->IFCR = 0xFF8;
     spi_reg->CR1 &= ~1;
-
-    spi_reg->CFG2 &= ~(3 << 17);
-    spi_reg->CFG2 |= comm_bak;
 }
