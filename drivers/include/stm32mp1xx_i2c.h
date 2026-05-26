@@ -54,10 +54,11 @@ extern volatile I2cRegs_t *const I2C1;
 extern void I2cCfg(volatile I2cRegs_t *const i2c);
 extern void I2cMstWrite(volatile I2cRegs_t *const, const uint16_t, const uint8_t *, const uint32_t, const I2cBusStart_t start, const I2cBusStop_t);
 extern void I2cMstRead(volatile I2cRegs_t *const, const uint16_t, uint8_t *, const uint32_t, const I2cBusStart_t start, const I2cBusStop_t);
+
+#if 0
 extern void I2cReadE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t addr, uint8_t *dat, const uint32_t len);
 extern void I2cWriteE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t addr, const uint8_t *dat, const uint32_t len);
-extern void I2cWriteEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len);
-extern void I2cReadEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len);
+#endif
 
 
 #endif /* STM32MP1XX_I2C_H_ */

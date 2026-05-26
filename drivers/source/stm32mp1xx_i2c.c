@@ -69,26 +69,7 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
         i2c_reg->CR2 &= ~(255 << 16);
         i2c_reg->CR2 |= cur_wr_len << 16;
 
-        // 判断通信结束后是否生成STOP
-        if (stop == I2C_BUS_STOP)
-        {
-            // 经过测试，发送字节数大于255时（即分为多次发送，前面的发送设置RELOAD），设置
-            // AUTOEND不会生成STOP从而导致总线一直忙无法发起新的通信；只有发送字节<=255时
-            // AUTOEND才生成STOP
-            // 因此len<=255使用AUTOEND，len>255自动发送STOP
-            if (len > 255)
-            {
-                i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
-            }
-            else
-            {
-                i2c_reg->CR2 |= 1 << 25; // AUTOEND
-            }
-        }
-        else
-        {
-            i2c_reg->CR2 &= ~(1 << 25); // 不AUTOEND
-        }
+        i2c_reg->CR2 &= ~(1 << 25); // 禁止AUTOEND
 
         // 仅在发送开始时发送一个START
         if (first == 1)
@@ -120,25 +101,16 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
         total_wr_len += cur_wr_len; // 更新已发送长度
     }
 
-    // 若通信结束后要生成STOP则设置STOP等待总线产生STOP
     if (stop == I2C_BUS_STOP)
     {
-        if (len > 255)
+        while ((i2c_reg->ISR & (1 << 6)) == 0)
         {
-            // 等待所有数据发送完毕
-            while ((i2c_reg->ISR & (1 << 1)) == 0)
-            {
-                ;
-            }
-            i2c_reg->CR2 |= 1 << 14; // 手动发送STOP
+            ;
         }
-        else
+        i2c_reg->CR2 |= 1 << 14; // 手动STOP
+        while ((i2c_reg->ISR & (1 << 5)) == 0)
         {
-            // 等待直到检测到STOP
-            while ((i2c_reg->ISR & (1 << 5)) == 0)
-            {
-                ;
-            }
+            ;
         }
     }
 }
@@ -184,17 +156,7 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
         i2c_reg->CR2 &= ~(255 << 16);
         i2c_reg->CR2 |= cur_rd_len << 16;
 
-        if (stop == I2C_BUS_STOP)
-        {
-            if (len > 255)
-            {
-                i2c_reg->CR2 &= ~(1 << 25); // AUTOEND
-            }
-            else
-            {
-                i2c_reg->CR2 |= 1 << 25; // AUTOEND
-            }
-        }
+        i2c_reg->CR2 &= ~(1 << 25); // 禁止AUTOEND
 
         // 仅在发送开始时发送一个START
         if (first == 1)
@@ -228,22 +190,20 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
 
     if (stop == I2C_BUS_STOP)
     {
-        if (len > 255)
+        while ((i2c_reg->ISR & (1 << 6)) == 0)
         {
-            i2c_reg->CR2 |= 1 << 14; // 手动发送STOP
+            ;
         }
-        else
+        i2c_reg->CR2 |= 1 << 14; // 手动STOP
+        while ((i2c_reg->ISR & (1 << 5)) == 0)
         {
-            // 等待直到检测到STOP
-            while ((i2c_reg->ISR & (1 << 5)) == 0)
-            {
-                ;
-            }
+            ;
         }
     }
 }
 
 
+#if 0
 void I2cWriteE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t addr, const uint8_t *dat, const uint32_t len)
 {
     if ((i2c_reg->ISR & (1 << 15)) == (1 << 15))
@@ -475,42 +435,4 @@ void I2cReadE2(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint16_t
         }
     }
 }
-
-
-uint8_t I2cWrBuf[4096];
-
-
-void I2cWriteEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len)
-{
-    uint8_t *buf = (uint8_t *)&addr;
-    int i;
-    for (i = 0; i < 2; i++)
-    {
-        I2cWrBuf[i] = buf[1 - i];
-    }
-    for (; i < len + 2; i++)
-    {
-        I2cWrBuf[i] = dat[i - 2];
-    }
-    // START一个写传输，结束后STOP
-    I2cMstWrite(i2c, slave, I2cWrBuf, len + 2, I2C_BUS_START, I2C_BUS_STOP);
-}
-
-
-void I2cReadEeprom(volatile I2cRegs_t *const i2c, uint8_t slave, uint16_t addr, uint8_t *dat, uint32_t len)
-{
-    uint8_t *buf = (uint8_t *)&addr;
-    int i;
-    for (i = 0; i < 2; i++)
-    {
-        I2cWrBuf[i] = buf[1 - i];
-    }
-    // 1、START一个写通信（发送读取地址），不STOP
-    I2cMstWrite(i2c, slave, I2cWrBuf, 2, I2C_BUS_START, I2C_BUS_NO_STOP);
-    while ((i2c->ISR & (1 << 6)) == 0) // 等待传输完成TC
-    {
-        ;
-    }
-    // 2、RESTART一个读通信，结束后STOP
-    I2cMstRead(i2c, slave, dat, len, I2C_BUS_RESTART, I2C_BUS_STOP);
-}
+#endif

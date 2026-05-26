@@ -74,18 +74,25 @@
 | MODF 主机模式故障 | SS 引脚被 Flash CS 电阻拉低，MODF 检测到低电平 | SSM=1 + SSI=1 软件管理 |
 | SPI 数据偏移 6 字节 | TXDR 为 uint32_t，编译器生成 STR 指令→4 帧 packing | 8-bit 指针访问 (STRB)，每帧单包 |
 | ReadData 系统复位 | 栈溢出：FlashTest(~560B) + W25Q_ReadData(~536B) > 1KB SYS 栈 | start.S 栈从 2KB 扩大到 4KB |
-| SpiTxRx 卡死 (rd_buf=NULL) | RxFIFO 未弹出→FIFO 满→SPI 停滞→EOT 永不置位→看门狗复位 | 无条件读取 RXDR 再判断 rd_buf |
 
 ## I2C
 
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
-| I2C 初始化 | 待测 | PF14(AF5)=SCL, PF15(AF5)=SDA, OD, I2C1 |
-| EEPROM (0xA0) 写入 | 待测 | 0..31 写入地址0，0xAA 批量写入地址32 |
-| EEPROM (0xA0) 读取 | 待测 | 回读校验，数据比对 |
-| Sensor (0x80) 温度读取 | 待测 | 命令 0xE3，读 2 字节，计算公式 17572×raw/65536-4685 |
-| Sensor (0x80) 湿度读取 | 待测 | 命令 0xE5，读 2 字节，计算公式 125×raw/65536-6 |
-| 二级菜单交互 | 待测 | 1=EEPROM, 2=Sensor, 0=返回 |
+| I2C 初始化 | 通过 | PF14(AF5)=SCL, PF15(AF5)=SDA, OD, I2C1, TIMINGR=0x10707dbc |
+| EEPROM (0xA0) 写入 | 通过 | AT24C_Write: 0..31→addr0, 0xAA→addr32, 32 字节/页 |
+| EEPROM (0xA0) 读取 | 通过 | AT24C_Read: 回读校验通过 |
+| Sensor (0x80) 温度读取 | 通过 | 命令 0xE3, WRITE+RESTART+READ, 26.80°C |
+| Sensor (0x80) 湿度读取 | 通过 | 命令 0xE5, WRITE+RESTART+READ |
+| 二级菜单交互 | 通过 | 1=EEPROM, 2=Sensor, 0=返回 |
+| 器件分层 | 通过 | AT24CXX 器件驱动移至 devices/，I2cMstWrite/Read 为通用 I2C 接口 |
+| AUTOEND 改手动 STOP | 通过 | 读/写函数统一禁止 AUTOEND，手动发 STOP，解决 RESTART 前多余 STOP 问题 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| RESTART 前出现多余 STOP | AUTOEND 在 RESTART 场景中先于 START 设置，导致控制器在 NBYTES 传输完成后自动生成 STOP，再发起 RESTART，形成 STOP+RESTART 而非纯 RESTART | I2cMstWrite/I2cMstRead 统一禁止 AUTOEND，等待 TC 后手动发 STOP |
 
 ## DTS
 

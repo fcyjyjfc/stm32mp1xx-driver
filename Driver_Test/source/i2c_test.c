@@ -3,6 +3,8 @@
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_i2c.h"
 #include "stm32mp1xx_usart.h"
+#include "stm32mp1xx_iwdg.h"
+#include "at24cxx.h"
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
 
@@ -21,6 +23,7 @@ void I2cInit(void)
     GpioOspeed(GPIO_F, 14, GPIO_OSPEED_LOW);
 
     I2cCfg(I2C1);
+    AT24C_Init(I2C1, 0xA0);
 }
 
 // ==================== EEPROM Test (0xA0) ====================
@@ -36,14 +39,14 @@ static void I2cEepromTest(void)
     PRINT("\r\nEEPROM: write 0..31 to addr 0\r\n");
     for (i = 0; i < 32; i++)
         wr_buf[i] = i;
-    I2cWriteE2(I2C1, 0xA0, 0, wr_buf, 32);
+    AT24C_Write(0, wr_buf, 32);
 
     for (i = 0; i < 1000000; i++);
 
     PRINT("EEPROM: readback addr 0..31\r\n");
     for (i = 0; i < 32; i++)
         rd_buf[i] = 0;
-    I2cReadE2(I2C1, 0xA0, 0, rd_buf, 32);
+    AT24C_Read(0, rd_buf, 32);
 
     pass = 1;
     for (i = 0; i < 32; i++)
@@ -60,14 +63,14 @@ static void I2cEepromTest(void)
     PRINT("EEPROM: write 0xAA to addr 32..63\r\n");
     for (i = 0; i < 32; i++)
         wr_buf[i] = 0xAA;
-    I2cWriteEeprom(I2C1, 0xA0, 32, wr_buf, 32);
+    AT24C_Write(32, wr_buf, 32);
 
     for (i = 0; i < 1000000; i++);
 
     PRINT("EEPROM: readback addr 32..63\r\n");
     for (i = 0; i < 32; i++)
         rd_buf[i] = 0;
-    I2cReadEeprom(I2C1, 0xA0, 32, rd_buf, 32);
+    AT24C_Read(32, rd_buf, 32);
 
     pass = 1;
     for (i = 0; i < 32; i++)
@@ -124,7 +127,7 @@ static void I2cSensorTest(void)
     I2cMstRead(I2C1, 0x80, rd_buf, 2, I2C_BUS_RESTART, I2C_BUS_STOP);
 
     raw = (rd_buf[0] << 8) | rd_buf[1];
-    humidity = 125 * raw / 65536 - 6;
+    humidity = 12500 * raw / 65536 - 600;
 
     // format and print
     char buf[64];
@@ -158,9 +161,10 @@ static int ReadLine(char *buf, int max_len)
     char ch;
     while (pos < max_len - 1)
     {
+    	IwdgKickDog(IWDG2);
         if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
             continue;
-        if (ch == '\r' || ch == '\n')
+        if (ch == 'S' || ch == 's')
         {
             UsartWrite(USART4, (void *)"\r\n", 2);
             break;
@@ -178,6 +182,8 @@ void I2cTest(void)
 
     while (1)
     {
+    	IwdgKickDog(IWDG2);
+
         PRINT("\r\n----- I2C Test Menu -----\r\n");
         PRINT("1. EEPROM (0xA0)\r\n");
         PRINT("2. Sensor (0x80)\r\n");
