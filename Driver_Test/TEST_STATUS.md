@@ -87,12 +87,14 @@
 | 二级菜单交互 | 通过 | 1=EEPROM, 2=Sensor, 0=返回 |
 | 器件分层 | 通过 | AT24CXX 器件驱动移至 devices/，I2cMstWrite/Read 为通用 I2C 接口 |
 | AUTOEND 改手动 STOP | 通过 | 读/写函数统一禁止 AUTOEND，手动发 STOP，解决 RESTART 前多余 STOP 问题 |
+| 单次读写 >255 字节 | 通过 | 919 字节写入（I2cMstWrite 921 字节含 RELOAD）+ AT24C_Read 回读校验通过 |
 
 ### 已知问题/修复记录
 
 | 问题 | 原因 | 修复 |
 |------|------|------|
 | RESTART 前出现多余 STOP | AUTOEND 在 RESTART 场景中先于 START 设置，导致控制器在 NBYTES 传输完成后自动生成 STOP，再发起 RESTART，形成 STOP+RESTART 而非纯 RESTART | I2cMstWrite/I2cMstRead 统一禁止 AUTOEND，等待 TC 后手动发 STOP |
+| RELOAD 段尾 TC 不置位 | RELOAD→非 RELOAD 过渡时 CR2 分多次写入（先改 RELOAD、再清 NBYTES、再设 NBYTES），中间态 RELOAD=0 & NBYTES=0 可能使硬件误清除 TC | CR2 一次性写 RELOAD + NBYTES + AUTOEND + START，消除中间态 |
 
 ## DTS
 

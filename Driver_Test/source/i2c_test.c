@@ -22,6 +22,8 @@ static const char essay[] =
     "The I2C bus operates at standard speeds of 100 kHz or fast mode at 400 kHz, "
     "with the timing register configured according to the peripheral clock frequency.";
 
+static uint8_t i2c_tx_buf[921];
+
 void I2cInit(void)
 {
     *(uint32_t *)(0X50000000 + 0XA28) |= 1 << 5;
@@ -173,10 +175,9 @@ static void I2cEssayTest(void)
 {
     const uint32_t essay_len = sizeof(essay) - 1;
     uint8_t rd_buf[sizeof(essay)];
-    uint8_t wr_buf[sizeof(essay)];
     uint32_t offset;
     uint32_t i;
-    int pass;
+    uint32_t pass;
 
     IwdgKickDog(IWDG2);
 
@@ -220,13 +221,13 @@ static void I2cEssayTest(void)
     PRINT(pass ? "  Verify: PASS\r\n" : "  Verify: FAIL\r\n");
     IwdgKickDog(IWDG2);
 
-    // --- 3. single-shot write >255 bytes (waveform check) ---
-    PRINT("Direct write >255B (waveform)...\r\n");
-//    for (i = 0; i < 300; i++)
-//    {
-//        wr_buf[i] = i & 0xFF;
-//    }
-    AT24C_Write(0, essay, essay_len);
+    // --- 3. direct I2cMstWrite >255 bytes (waveform check) ---
+    PRINT("Direct I2cMstWrite >255B (waveform)...\r\n");
+    for (i = 0; i < 921; i++)
+    {
+        i2c_tx_buf[i] = 0x10 + (i & 0x0F);
+    }
+    I2cMstWrite(I2C1, 0xA0, i2c_tx_buf, 921, I2C_BUS_START, I2C_BUS_STOP);
     PRINT("  Done.\r\n");
 }
 
