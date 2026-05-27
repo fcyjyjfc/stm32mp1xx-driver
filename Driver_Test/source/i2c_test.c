@@ -8,6 +8,20 @@
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
 
+static const char essay[] =
+    "Embedded systems development on bare-metal ARM processors requires careful "
+    "attention to memory layout, peripheral initialization, and interrupt handling. "
+    "The STM32MP157 is a heterogeneous SoC featuring dual Cortex-A7 cores alongside "
+    "a Cortex-M4 coprocessor. When working with I2C peripherals, developers must "
+    "understand the timing requirements, acknowledge mechanisms, and the nuances "
+    "of repeated START conditions. A common pitfall is the interaction between "
+    "AUTOEND and RESTART, which can produce an unexpected STOP before the repeated "
+    "START, corrupting the bus transaction. By manually managing the STOP condition "
+    "and using the RELOAD mechanism for transfers exceeding 255 bytes, reliable "
+    "communication with EEPROM devices such as the AT24C64N can be achieved. "
+    "The I2C bus operates at standard speeds of 100 kHz or fast mode at 400 kHz, "
+    "with the timing register configured according to the peripheral clock frequency.";
+
 void I2cInit(void)
 {
     *(uint32_t *)(0X50000000 + 0XA28) |= 1 << 5;
@@ -153,7 +167,68 @@ static void I2cSensorTest(void)
     UsartWrite(USART4, (void *)buf, pos);
 }
 
-// ==================== I2C Test Sub-Menu ====================
+// ==================== >255-Byte Write / Read Test ====================
+
+static void I2cEssayTest(void)
+{
+    const uint32_t essay_len = sizeof(essay) - 1;
+    uint8_t rd_buf[sizeof(essay)];
+    uint8_t wr_buf[sizeof(essay)];
+    uint32_t offset;
+    uint32_t i;
+    int pass;
+
+    IwdgKickDog(IWDG2);
+
+    // --- 1. write essay page by page (32 bytes/page) ---
+    PRINT("\r\n--- >255B Test ---\r\n");
+    PRINT("Essay write page by page...\r\n");
+    offset = 0;
+    while (offset < essay_len)
+    {
+        uint32_t chunk = essay_len - offset;
+        if (chunk > 32)
+        {
+            chunk = 32;
+        }
+        AT24C_Write(offset, (const uint8_t *)(essay + offset), chunk);
+        for (i = 0; i < 500000; i++)
+        {
+            ;
+        }
+        offset += chunk;
+    }
+    IwdgKickDog(IWDG2);
+
+    // --- 2. read back in one shot (>255 bytes, tests RELOAD) ---
+    PRINT("Read back in single transaction (>255B)...\r\n");
+    for (i = 0; i < essay_len; i++)
+    {
+        rd_buf[i] = 0;
+    }
+    AT24C_Read(0, rd_buf, essay_len);
+
+    pass = 1;
+    for (i = 0; i < essay_len; i++)
+    {
+        if (rd_buf[i] != essay[i])
+        {
+            pass = 0;
+            break;
+        }
+    }
+    PRINT(pass ? "  Verify: PASS\r\n" : "  Verify: FAIL\r\n");
+    IwdgKickDog(IWDG2);
+
+    // --- 3. single-shot write >255 bytes (waveform check) ---
+    PRINT("Direct write >255B (waveform)...\r\n");
+//    for (i = 0; i < 300; i++)
+//    {
+//        wr_buf[i] = i & 0xFF;
+//    }
+    AT24C_Write(0, essay, essay_len);
+    PRINT("  Done.\r\n");
+}
 
 static int ReadLine(char *buf, int max_len)
 {
@@ -187,6 +262,7 @@ void I2cTest(void)
         PRINT("\r\n----- I2C Test Menu -----\r\n");
         PRINT("1. EEPROM (0xA0)\r\n");
         PRINT("2. Sensor (0x80)\r\n");
+        PRINT("3. >255B R/W\r\n");
         PRINT("0. Back\r\n");
         PRINT("--------------------------\r\n");
         PRINT("Select: ");
@@ -199,6 +275,8 @@ void I2cTest(void)
             I2cEepromTest();
         else if (strcmp(buf, "2") == 0)
             I2cSensorTest();
+        else if (strcmp(buf, "3") == 0)
+            I2cEssayTest();
         else
             PRINT("Invalid.\r\n");
     }

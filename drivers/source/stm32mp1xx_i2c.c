@@ -57,26 +57,27 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
         if (cur_wr_len > 255)
         {
             cur_wr_len = 255;
-            i2c_reg->CR2 |= 1 << 24;
             reload = 1;
         }
         else
         {
-            i2c_reg->CR2 &= ~(1 << 24); // 小于等于255个，不RELOAD
+            reload = 0;
         }
 
-        // NBYTES 发送字节数
-        i2c_reg->CR2 &= ~(255 << 16);
-        i2c_reg->CR2 |= cur_wr_len << 16;
-
-        i2c_reg->CR2 &= ~(1 << 25); // 禁止AUTOEND
-
-        // 仅在发送开始时发送一个START
+        // 一次性写 CR2：RELOAD + NBYTES + AUTOEND + START
+        uint32_t cr2 = i2c_reg->CR2;
+        cr2 &= ~((1 << 24) | (255 << 16) | (1 << 25));
+        cr2 |= cur_wr_len << 16;
+        if (reload == 1)
+        {
+            cr2 |= 1 << 24;
+        }
         if (first == 1)
         {
-            i2c_reg->CR2 |= 1 << 13; // 发送START自动进入主机模式
+            cr2 |= 1 << 13;
             first = 0;
         }
+        i2c_reg->CR2 = cr2;
 
         uint32_t index;
         for (index = 0; index < cur_wr_len; index++)
@@ -144,26 +145,27 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
         if (cur_rd_len > 255)
         {
             cur_rd_len = 255;
-            i2c_reg->CR2 |= 1 << 24;
             reload = 1;
         }
         else
         {
-            i2c_reg->CR2 &= ~(1 << 24); // 小于等于255个，不RELOAD
+            reload = 0;
         }
 
-        // NBYTES 发送字节数
-        i2c_reg->CR2 &= ~(255 << 16);
-        i2c_reg->CR2 |= cur_rd_len << 16;
-
-        i2c_reg->CR2 &= ~(1 << 25); // 禁止AUTOEND
-
-        // 仅在发送开始时发送一个START
+        // 一次性写 CR2：RELOAD + NBYTES + AUTOEND + START
+        uint32_t cr2 = i2c_reg->CR2;
+        cr2 &= ~((1 << 24) | (255 << 16) | (1 << 25));
+        cr2 |= cur_rd_len << 16;
+        if (reload == 1)
+        {
+            cr2 |= 1 << 24;
+        }
         if (first == 1)
         {
-            i2c_reg->CR2 |= 1 << 13; // 发送START自动进入主机模式
+            cr2 |= 1 << 13;
             first = 0;
         }
+        i2c_reg->CR2 = cr2;
 
         uint32_t index;
         for (index = 0; index < cur_rd_len; index++)
@@ -172,7 +174,7 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
             {
                 ;
             }
-            dat[index] = i2c_reg->RXDR; // 读取接收数据
+            dat[total_rd_len + index] = i2c_reg->RXDR; // 读取接收数据
         }
 
         // 若设置了RELOAD，等待TCR标志被设置
