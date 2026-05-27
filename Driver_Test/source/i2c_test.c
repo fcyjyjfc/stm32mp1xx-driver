@@ -5,6 +5,7 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "at24cxx.h"
+#include "si7006.h"
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
 
@@ -40,6 +41,7 @@ void I2cInit(void)
 
     I2cCfg(I2C1);
     AT24C_Init(I2C1, 0xA0);
+    SI7006_Init(I2C1);
 }
 
 // ==================== EEPROM Test (0xA0) ====================
@@ -122,28 +124,16 @@ static void FormatVal(char *buf, int32_t val)
 
 static void I2cSensorTest(void)
 {
-    uint8_t rd_buf[2];
-    uint16_t raw;
     int32_t temperature;
     int32_t humidity;
 
     // read temperature
     PRINT("\r\nSensor: read temperature...\r\n");
-    uint8_t temp_cmd = 0xE3;
-    I2cMstWrite(I2C1, 0x80, &temp_cmd, 1, I2C_BUS_START, I2C_BUS_NO_STOP);
-    I2cMstRead(I2C1, 0x80, rd_buf, 2, I2C_BUS_RESTART, I2C_BUS_STOP);
-
-    raw = (rd_buf[0] << 8) | rd_buf[1];
-    temperature = 17572 * raw / 65536 - 4685;
+    temperature = SI7006_ReadTemp();
 
     // read humidity
     PRINT("Sensor: read humidity...\r\n");
-    uint8_t hum_cmd = 0xE5;
-    I2cMstWrite(I2C1, 0x80, &hum_cmd, 1, I2C_BUS_START, I2C_BUS_NO_STOP);
-    I2cMstRead(I2C1, 0x80, rd_buf, 2, I2C_BUS_RESTART, I2C_BUS_STOP);
-
-    raw = (rd_buf[0] << 8) | rd_buf[1];
-    humidity = 12500 * raw / 65536 - 600;
+    humidity = SI7006_ReadHumi();
 
     // format and print
     char buf[64];
