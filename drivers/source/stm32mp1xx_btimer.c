@@ -17,7 +17,8 @@ uint32_t Tim6UifCnt = 0, Tim7UifCnt = 0;
 
 void BasicTimerCfg(volatile BasicTimerRegs_t *const tim_reg, const BasicTimerCfg_t *const cfg)
 {
-    tim_reg->CR1 |= 1 << 11;
+    tim_reg->CR1 &= ~1; // 先停止计时再配置
+    tim_reg->CR1 |= 1 << 11; // 打开UIF映射
 
     // ARR预加载
     tim_reg->CR1 &= ~(1 << 7);
@@ -37,18 +38,30 @@ void BasicTimerCfg(volatile BasicTimerRegs_t *const tim_reg, const BasicTimerCfg
     tim_reg->DIER |= cfg->tim_ude << 8;
     // 更新事件DMA中断使能
     tim_reg->DIER &= ~1;
-    tim_reg->DIER |= cfg->tim_ude;
+    tim_reg->DIER |= cfg->tim_uie;
 
     // 计数器时钟分频
     tim_reg->PSC = cfg->tim_psc;
     // 重载值
     tim_reg->ARR = cfg->tim_arr;
 
-    tim_reg->CR1 |= 1; // 启动计时
+    // tim_reg->CR1 |= 1; // 启动计时
 }
 
 
-// 生成更新事件
+void BasicTimerStart(volatile BasicTimerRegs_t *const tim_reg)
+{
+    tim_reg->CR1 |= 1;
+}
+
+
+void BasicTimerStop(volatile BasicTimerRegs_t *const tim_reg)
+{
+    tim_reg->CR1 &= ~1;
+}
+
+
+// 生成更新事件（需 CR1.URS=0 才生效，否则仅复位 CNT 不清 UIF）
 void BasicTimerUg(volatile BasicTimerRegs_t *const tim_reg)
 {
     tim_reg->EGR = 1;
@@ -65,7 +78,7 @@ uint32_t BasicTimerCnt(volatile BasicTimerRegs_t *const tim_reg)
 
 
 BasicTimerCfg_t Tim6Cfg;
-void BasicTimerInit()
+void BasicTimerInit(void)
 {
     Tim6Cfg.tim_psc = 15;
     Tim6Cfg.tim_arr = 10000;

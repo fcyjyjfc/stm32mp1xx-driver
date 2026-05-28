@@ -33,13 +33,23 @@ typedef struct {
     uint32_t tim_opm    : 1;  // 单脉冲模式
     uint32_t tim_urs    : 1;  // Update的中断及DMA源 0 所有事件 1 仅上/下溢事件
     uint32_t tim_udis   : 1;  // update禁止 0 使能 1 禁止
-    uint32_t tim_ude    : 1;  // update DMA请求禁止
-    uint32_t tim_uie    : 1;  // update 中断禁止
+    uint32_t tim_ude    : 1;  // update DMA请求使能
+    uint32_t tim_uie    : 1;  // update 中断使能
 } BasicTimerCfg_t;
 
 
 extern volatile BasicTimerRegs_t *const TIM6;
 extern volatile BasicTimerRegs_t *const TIM7;
+
+extern uint32_t Tim6UifCnt;
+extern uint32_t Tim7UifCnt;
+
+extern void BasicTimerCfg(volatile BasicTimerRegs_t *const tim_reg, const BasicTimerCfg_t *const cfg);
+extern void BasicTimerStart(volatile BasicTimerRegs_t *const tim_reg);
+extern void BasicTimerStop(volatile BasicTimerRegs_t *const tim_reg);
+extern void BasicTimerUg(volatile BasicTimerRegs_t *const tim_reg);
+extern uint32_t BasicTimerCnt(volatile BasicTimerRegs_t *const tim_reg);
+extern void BasicTimerInit(void);
 
 
 #endif /* STM32MP1XX_BTIMER_H_ */

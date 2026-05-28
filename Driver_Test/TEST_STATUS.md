@@ -111,6 +111,17 @@
 
 - [ ] 代码未写
 
+## BTIMER
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| TIM6 时钟使能 | 通过 | RCC->MP_APB1ENSETR bit4 |
+| BasicTimerCfg 配置 | 通过 | psc=15999, arr=5000, arpe=1, opm=0, urs=0, udis=0 |
+| BasicTimerStart/Stop | 通过 | CEN 位单独启停，退出时自动 Stop |
+| UIF 轮询 | 通过 | 检测 SR.0，清 UIF 后打印计数、翻转 GPIOZ6/Z7 LED |
+| 串口退出 | 通过 | 收到任意字符即停止 |
+| 主菜单入口 | 通过 | 按 8 进入 BTIMER 测试 |
+
 ## STGEN
 
 | 测试项 | 状态 | 说明 |
