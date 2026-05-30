@@ -36,6 +36,25 @@ typedef struct {
 } DmaRegs_t;
 
 
+typedef struct {
+    uint32_t CR[16];
+    uint8_t  RSVD0[0x40];
+    uint32_t CSR;
+    uint32_t CFR;
+    uint8_t  RSVD0[0x100 - 0x84 - 4];
+    uint32_t RGCR[8];
+    uint8_t  RSVD1[0x20];
+    uint32_t RGSR;
+    uint32_t RGCFR;
+    uint8_t  RSVD1[0x3EC - 0x144 - 4];
+    uint32_t HWCFGR2;
+    uint32_t HWCFGR1;
+    uint32_t VERR;
+    uint32_t IPIDR;
+    uint32_t SIDR;
+} DmaMuxRegs_t;
+
+
 typedef enum {
     DMA_BURST_DIS       = 0, // SINGLE
     DMA_BURST_INCR4     = 1, // 4 beats
@@ -120,7 +139,43 @@ typedef struct {
 } DmaCfg_t;
 
 
+typedef enum {
+    DMA_MUX_SYNC_POL_NO         = 0,
+    DMA_MUX_SYNC_POL_RIS_EDGE   = 1,
+    DMA_MUX_SYNC_POL_FAL_EDGE   = 2,
+    DMA_MUX_SYNC_POL_BOTH_EDGE  = 3
+} DmaMuxSyncPol_t;
+
+
+typedef enum {
+    DMA_MUX_TRI_POL_NO         = 0,
+    DMA_MUX_TRI_POL_RIS_EDGE   = 1,
+    DMA_MUX_TRI_POL_FAL_EDGE   = 2,
+    DMA_MUX_TRI_POL_BOTH_EDGE  = 3
+} DmaMuxTriPol_t;
+
+
+typedef struct {
+    uint32_t dma_mux_ch         : 3;
+    uint32_t dma_mux_sync_en    : 1;
+    uint32_t dma_mux_sync_id    : 3;
+    uint32_t dma_mux_sync_nbreq : 5;
+    uint32_t dma_mux_sync_pol   : 2;
+    uint32_t dma_mux_event_en   : 1;
+    uint32_t dma_mux_soie       : 1;
+    uint32_t dma_mux_req        : 7;
+    uint32_t dma_mux_req_gen_ch : 3;
+    uint32_t dma_mux_gnbreq     : 5;
+    uint32_t dma_mux_tri_pol    : 2;
+    uint32_t dma_mux_ge         : 1;
+    uint32_t dma_mux_oie        : 1;
+    uint32_t dma_mux_sig_id     : 3;
+} DmaMuxCfg_t;
+
+
 extern volatile DmaRegs_t *const DMA2;
 extern volatile DmaRegs_t *const DMA1;
+extern volatile DmaMuxRegs_t *const DMAMUX1;
+extern void DmaMuxCfg(volatile DmaMuxRegs_t *const dma_mux, const uint32_t ch, const DmaMuxCfg_t *const cfg);
 
 #endif /* STM32MP1XX_DMA_H_ */
