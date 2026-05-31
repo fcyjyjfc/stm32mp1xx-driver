@@ -1,12 +1,69 @@
 #include <string.h>
 #include <stdint.h>
 #include "stm32mp1xx_btimer.h"
+#include "stm32mp1xx_gic.h"
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+
+static volatile uint32_t tim6_irq_cnt = 0;
+
+
+static void tim6_isr(void)
+{
+    TIM6->SR &= ~1;
+    tim6_irq_cnt++;
+    GpioToggle(GPIO_Z, 6);
+}
+
+
+void Tim6IrqInit(void)
+{
+    RCC->MP_APB1ENSETR |= 1 << 4;
+
+    BasicTimerCfg_t cfg;
+    cfg.tim_psc = 15999;
+    cfg.tim_arr = 4999;
+    cfg.tim_arpe = 1;
+    cfg.tim_opm = 0;
+    cfg.tim_urs = 0;
+    cfg.tim_udis = 0;
+    cfg.tim_ude = 0;
+    cfg.tim_uie = 1;
+
+    BasicTimerCfg(TIM6, &cfg);
+
+    GicdInit();
+    GicdSetGroup(GIC_TIM6);
+    GicdSetPriority(GIC_TIM6, 1);
+    GicdSetTarget(GIC_TIM6, 1);
+    GicdSetTrigMode(GIC_TIM6, 0);
+
+    GicRegisterIrq(GIC_TIM6, tim6_isr);  /* 先注册，再使能 */
+
+    GicdEnableInt(GIC_TIM6);
+
+    GiccInit(10, 2);
+
+    __asm__ volatile(
+        "mrs r0, cpsr\n\t"
+        "bic r0, r0, #0x80\n\t"
+        "msr cpsr, r0\n\t"
+        :
+        :
+        : "r0"
+    );
+
+    BasicTimerStart(TIM6);
+
+    GpioMode(GPIO_Z, 6, GPIO_MODER_OUTPUT);
+    GpioOtype(GPIO_Z, 6, GPIO_OTYPE_PUSH_PULL);
+    GpioOutLow(GPIO_Z, 6);
+}
+
 
 static int ReadLine(char *buf, int max_len)
 {

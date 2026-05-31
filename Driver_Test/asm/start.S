@@ -65,7 +65,7 @@ init_stack:
 irq_handler: 
  sub  lr,lr,#4 
  stmfd sp!,{r0-r12,lr} 
-// bl do_irq 
+ bl do_irq
  ldmfd sp!,{r0-r12,pc}^ 
 
 stacktop:    .word   stack+4*1024
