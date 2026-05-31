@@ -17,7 +17,7 @@
 volatile GicdRegs_t *const GICD = (void *)GICD_BASE;
 volatile GiccRegs_t *const GICC = (void *)GICC_BASE;
 
-static IrqHandler_t irq_table[288];
+static IrqHandler_t irq_table[288];             /* 中断处理函数表 */
 
 
 void GicdEnableInt(uint32_t id)
@@ -94,7 +94,7 @@ void GicdSetGroup(uint32_t id)
     if (id >= GIC_MAX_ID)
         return;
 
-    GICD->IGROUPR[id >> 5] |= (1U << (id & 0x1F));
+    GICD->IGROUPR[id >> 5] |= (1U << (id & 0x1F));  /* 1 = Group 1 (非安全) */
 }
 
 
@@ -132,18 +132,18 @@ IrqHandler_t GicRegisterIrq(uint32_t id, IrqHandler_t handler)
     if (id >= GIC_MAX_ID)
         return (void *)0;
 
-    old = irq_table[id];
-    irq_table[id] = handler;
-    return old;
+    old = irq_table[id];                            /* 记录旧处理函数 */
+    irq_table[id] = handler;                        /* 注册新处理函数 */
+    return old;                                     /* 返回旧函数，可恢复 */
 }
 
 
 void do_irq(void)
 {
-    uint32_t id = GiccAckInt();
+    uint32_t id = GiccAckInt();                     /* 读 IAR 获取中断 ID */
 
     if (id < GIC_MAX_ID && irq_table[id])
-        irq_table[id]();
+        irq_table[id]();                            /* 分发到注册的处理函数 */
 
-    GiccEoiInt(id);
+    GiccEoiInt(id);                                 /* 写 EOIR 结束中断 */
 }
