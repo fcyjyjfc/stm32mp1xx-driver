@@ -140,10 +140,39 @@ IrqHandler_t GicRegisterIrq(uint32_t id, IrqHandler_t handler)
 
 void do_irq(void)
 {
-    uint32_t id = GiccAckInt();                     /* 读 IAR 获取中断 ID */
+    uint32_t id = GiccAckInt();
+    uint32_t spsr;
 
     if (id < GIC_MAX_ID && irq_table[id])
-        irq_table[id]();                            /* 分发到注册的处理函数 */
+    {
+        /* 保存 SPSR_irq (嵌套中断会覆盖它) */
+        __asm__ volatile("mrs %0, spsr" : "=r"(spsr));
 
-    GiccEoiInt(id);                                 /* 写 EOIR 结束中断 */
+        __asm__ volatile(                               /* 开 IRQ 允许抢占 */
+            "mrs r0, cpsr\n\t"
+            "bic r0, r0, #0x80\n\t"
+            "msr cpsr, r0\n\t"
+            "isb\n\t"                                   /* 保证 IRQ 立即被响应 */
+            :
+            :
+            : "r0"
+        );
+
+        irq_table[id]();
+
+        __asm__ volatile(                               /* 关 IRQ 准备 EOIR */
+            "mrs r0, cpsr\n\t"
+            "orr r0, r0, #0x80\n\t"
+            "msr cpsr, r0\n\t"
+            "isb\n\t"                                   /* 保证关中断立即生效 */
+            :
+            :
+            : "r0"
+        );
+
+        /* 恢复 SPSR_irq, 保证 first-level 返回 ^ 拿到正确 CPSR */
+        __asm__ volatile("msr spsr, %0" : : "r"(spsr));
+    }
+
+    GiccEoiInt(id);
 }

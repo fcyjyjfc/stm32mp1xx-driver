@@ -13,7 +13,6 @@
 extern void UsartInit(void);
 extern void I2cInit(void);
 extern void IwdgInit(void);
-extern void Tim6IrqInit(void);                      /* TIM6 中断初始化 */
 
 
 int main(void)
@@ -21,7 +20,6 @@ int main(void)
     UsartInit();
     I2cInit();
     IwdgInit();
-    Tim6IrqInit();
 
     while (1)
     {
