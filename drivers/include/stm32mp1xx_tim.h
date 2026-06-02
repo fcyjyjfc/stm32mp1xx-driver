@@ -95,7 +95,7 @@ typedef enum {
     TIM_SYNC_SRC_OC2REFC            = 0b101,
     TIM_SYNC_SRC_OC3REFC            = 0b110,
     TIM_SYNC_SRC_OC4REFC            = 0b111
-} Tim2AdcSync_t;
+} TimTrgSync_t;
 
 
 // CCxE\CCxNE\OCxM位预加载设置

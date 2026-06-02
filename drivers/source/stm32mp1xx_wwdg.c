@@ -1,5 +1,5 @@
 
-#include "stm32mp1571xx_wwdg.h"
+#include "stm32mp1xx_wwdg.h"
 
 
 volatile WwdgRegs_t *const WWDG = (void *)0x4000A000;
