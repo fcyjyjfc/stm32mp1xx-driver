@@ -61,12 +61,12 @@ init_stack:
  .align 4 
  /****  swi_interrupt handler  ****/ 
 
- /****  irq_handler  ****/ 
-irq_handler: 
- sub  lr,lr,#4 
- stmfd sp!,{r0-r12,lr} 
- bl do_irq
- ldmfd sp!,{r0-r12,pc}^ 
+ /****  irq_handler  ****/
+irq_handler:
+ sub  lr,lr,#4
+ stmfd sp!,{r0-r12,lr}            /* save regs + return addr   */
+ bl   do_irq
+ ldmfd sp!,{r0-r12,pc}^
 
 stacktop:    .word   stack+4*1024
 .data

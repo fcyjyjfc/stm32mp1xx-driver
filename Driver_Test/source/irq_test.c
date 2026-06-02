@@ -42,8 +42,8 @@ static int ReadLine(char *buf, int max_len)
  * ========== 子菜单函数声明 ==========
  */
 static void IrqTest_ExtiFalling(void);
-static void IrqTest_ExtiBoth(void);             /* TODO */
-static void IrqTest_Preempt(void);              /* TODO */
+static void IrqTest_ExtiBoth(void);
+static void IrqTest_Preempt(void);
 
 
 /*

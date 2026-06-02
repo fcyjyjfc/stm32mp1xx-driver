@@ -122,7 +122,23 @@
 | 串口退出 | 通过 | 收到任意字符即停止 |
 | 主菜单入口 | 通过 | 按 8 进入 BTIMER 测试 |
 
-## STGEN
+## IRQ
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| TIM6 中断 (register + ISR 分发) | 通过 | GIC 使能、注册 ISR、GiccInit/GicdInit 正确，TIM6 ISR 翻转 Z6 |
+| EXTI0 下降沿中断 | 通过 | PA0 按键下降沿触发，ISR 打印 "PA0 Pressed!"、翻转 Z7 |
+| EXTI0 双边沿中断 | 通过 | FPR/RPR 分别处理按下/释放，打印 Pressed!/Released!，Z7 亮/灭 |
+| 中断优先级抢占 (TIM6/TIM7) | **未通过** | cpsie i / MRS/MSR 均无法在 IRQ 模式下重新使能 IRQ，嵌套未发生 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| GICD 寄存器偏移错误 | GICD 基址 0xA0021000，寄存器偏移从 0x004 开始 | 修正 GicdRegs 结构体偏移 |
+| GiccInit PMR 导致 TIM6 被屏蔽 | PMR=80，TIM6 priority 10<<3=80，掩码等于优先级 | PMR 改为 0xFF |
+| 抢占测试：ISR 内重新使能 IRQ | cpsie i 已编译通过但未生效，MRS/MSR 方式同样无效 | 暂时标记为未完成，待进一步定位硬件层次问题 |
+| 抢占测试 start.S 嵌套修改导致跑飞 | start.S 中 MRS/MSR 操作 CPSR 后无 ISB，SPSR 被嵌套覆盖 | 回退 start.S 为简单版本 |
 
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
