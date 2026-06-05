@@ -82,4 +82,220 @@ typedef struct {
 
 #define ADC_BASE       0x48003000U
 
+
+/* ADC 索引 */
+typedef enum {
+    ADC_IDX1 = 0,
+    ADC_IDX2 = 1,
+} AdcIdx_t;
+
+/* ADC 分辨率 */
+typedef enum {
+    ADC_RES_16BIT = 0,
+    ADC_RES_14BIT = 1,
+    ADC_RES_12BIT = 2,
+    ADC_RES_10BIT = 3,
+    ADC_RES_8BIT  = 4,
+} AdcRes_t;
+
+/* ADC 连续模式 */
+typedef enum {
+    ADC_SINGLE    = 0,
+    ADC_CONTINUOUS = 1,
+} AdcContMode_t;
+
+/* ADC 溢出行为 */
+typedef enum {
+    ADC_OVR_PRESERVE  = 0,
+    ADC_OVR_OVERWRITE = 1,
+} AdcOvrMode_t;
+
+/* ADC DMA 模式 */
+typedef enum {
+    ADC_DMA_DISABLE  = 0,
+    ADC_DMA_ONESHOT  = 1,
+    ADC_DMA_DFSDM    = 2,
+    ADC_DMA_CIRCULAR = 3,
+} AdcDmaMode_t;
+
+/* ADC 时钟模式 */
+typedef enum {
+    ADC_CK_ASYNC = 0,
+    ADC_CK_HCLK1 = 1,
+    ADC_CK_HCLK2 = 2,
+    ADC_CK_HCLK4 = 3,
+} AdcCkMode_t;
+
+/* ADC 触发极性 */
+typedef enum {
+    ADC_TRIG_SOFTWARE = 0,
+    ADC_TRIG_RISING   = 1,
+    ADC_TRIG_FALLING  = 2,
+    ADC_TRIG_BOTH     = 3,
+} AdcTrigEn_t;
+
+/* ADC 采样时间（ADC 时钟周期数） */
+typedef enum {
+    ADC_SMP_1P5   = 0,
+    ADC_SMP_2P5   = 1,
+    ADC_SMP_8P5   = 2,
+    ADC_SMP_16P5  = 3,
+    ADC_SMP_32P5  = 4,
+    ADC_SMP_64P5  = 5,
+    ADC_SMP_128P5 = 6,
+    ADC_SMP_810P5 = 7,  /* 快速通道(VINP0~5)=387.5, 慢速通道(VINP6~19)=810.5 */
+} AdcSmp_t;
+
+
+/* 全局寄存器指针（定义在 .c） */
+extern volatile AdcRegs_t *const ADC;
+
+
+/* ===== ISR/IER 通用位掩码 =====
+ *
+ * ISR（中断状态寄存器）和 IER（中断使能寄存器）位布局完全相同。
+ * 这组宏两用：
+ *   读/清 ISR：AdcGetFlag(adc, ADC_FLAG_EOC) / AdcClearFlag(adc, ADC_FLAG_EOC)
+ *   使能中断：  adc->IER |= ADC_FLAG_EOC
+ */
+
+#define ADC_FLAG_ADRDY  (1u << 0)
+#define ADC_FLAG_EOSMP  (1u << 1)
+#define ADC_FLAG_EOC    (1u << 2)
+#define ADC_FLAG_EOS    (1u << 3)
+#define ADC_FLAG_OVR    (1u << 4)
+#define ADC_FLAG_JEOC   (1u << 5)
+#define ADC_FLAG_JEOS   (1u << 6)
+#define ADC_FLAG_AWD1   (1u << 7)
+#define ADC_FLAG_AWD2   (1u << 8)
+#define ADC_FLAG_AWD3   (1u << 9)
+#define ADC_FLAG_JQOVF  (1u << 10)
+#define ADC_FLAG_LDORDY (1u << 12)
+
+
+/* ===== CR 控制位掩码 ===== */
+
+#define ADC_CR_ADEN         (1u << 0)
+#define ADC_CR_ADDIS        (1u << 1)
+#define ADC_CR_ADSTART      (1u << 2)
+#define ADC_CR_JADSTART     (1u << 3)
+#define ADC_CR_ADSTP        (1u << 4)
+#define ADC_CR_JADSTP       (1u << 5)
+#define ADC_CR_BOOST        (1u << 8)
+#define ADC_CR_ADCALLIN     (1u << 16)
+#define ADC_CR_LINCALRDYW1  (1u << 22)
+#define ADC_CR_LINCALRDYW2  (1u << 23)
+#define ADC_CR_LINCALRDYW3  (1u << 24)
+#define ADC_CR_LINCALRDYW4  (1u << 25)
+#define ADC_CR_LINCALRDYW5  (1u << 26)
+#define ADC_CR_LINCALRDYW6  (1u << 27)
+#define ADC_CR_ADVREGEN     (1u << 28)
+#define ADC_CR_DEEPPWD      (1u << 29)
+#define ADC_CR_ADCALDIF     (1u << 30)
+#define ADC_CR_ADCAL        (1u << 31)
+
+
+/* ===== 校准结果结构体 ===== */
+
+typedef struct {
+    uint32_t calfact_s;        // CALFACT_S[10:0]  单端偏移系数
+    uint32_t calfact_d;        // CALFACT_D[10:0]  差分偏移系数
+    uint32_t lincalfact[6];    // 线性系数 160 位，分 6 段：
+                               //   [0]: W6  bits[159:150] 存于 CALFACT2[9:0]
+                               //   [1]: W5  bits[149:120] 存于 CALFACT2[29:0]
+                               //   [2]: W4  bits[119:90]
+                               //   [3]: W3  bits[89:60]
+                               //   [4]: W2  bits[59:30]
+                               //   [5]: W1  bits[29:0]
+} AdcCalibResult_t;
+
+
+/* ===== 函数声明 ===== */
+
+// 内联：标志读写
+static inline void AdcClearFlag(AdcIdx_t idx, uint32_t mask)
+{
+    ADC->ADC[idx].ISR = mask;
+}
+
+static inline uint32_t AdcGetFlag(AdcIdx_t idx, uint32_t mask)
+{
+    return !!(ADC->ADC[idx].ISR & mask);
+}
+
+static inline uint32_t AdcWaitFlagSet(AdcIdx_t idx, uint32_t mask, uint32_t tout)
+{
+    while (tout--)
+    {
+        if (ADC->ADC[idx].ISR & mask)
+            return 1;
+    }
+    return 0;
+}
+
+static inline uint32_t AdcWaitFlagClr(AdcIdx_t idx, uint32_t mask, uint32_t tout)
+{
+    while (tout--)
+    {
+        if (!(ADC->ADC[idx].ISR & mask))
+            return 1;
+    }
+    return 0;
+}
+
+static inline uint32_t AdcWaitEoc(AdcIdx_t idx, uint32_t tout)
+{
+    return AdcWaitFlagSet(idx, ADC_FLAG_EOC, tout);
+}
+
+static inline void AdcClearEoc(AdcIdx_t idx)
+{
+    AdcClearFlag(idx, ADC_FLAG_EOC);
+}
+
+static inline uint32_t AdcWaitEos(AdcIdx_t idx, uint32_t tout)
+{
+    return AdcWaitFlagSet(idx, ADC_FLAG_EOS, tout);
+}
+
+static inline void AdcClearEos(AdcIdx_t idx)
+{
+    AdcClearFlag(idx, ADC_FLAG_EOS);
+}
+
+void     AdcPowerUp(AdcIdx_t idx);
+void     AdcPowerDown(AdcIdx_t idx);
+uint32_t AdcCalibrate(AdcIdx_t idx, uint32_t adcaldif, uint32_t adcallin);
+uint32_t AdcEnable(AdcIdx_t idx);
+void     AdcDisable(AdcIdx_t idx);
+
+void     AdcStart(AdcIdx_t idx);
+void     AdcStartInjected(AdcIdx_t idx);
+void     AdcStop(AdcIdx_t idx);
+void     AdcStopInjected(AdcIdx_t idx);
+
+uint32_t AdcRead(AdcIdx_t idx);
+uint32_t AdcReadInjected(AdcIdx_t idx, uint32_t ch);
+
+void     AdcSetResolution(AdcIdx_t idx, AdcRes_t res);
+void     AdcSetContMode(AdcIdx_t idx, AdcContMode_t cont);
+void     AdcSetOvrMode(AdcIdx_t idx, AdcOvrMode_t mode);
+void     AdcSetAutoDelay(AdcIdx_t idx, uint32_t enable);
+void     AdcSetAutoInject(AdcIdx_t idx, uint32_t enable);
+void     AdcSetDmaMode(AdcIdx_t idx, AdcDmaMode_t dmngt);
+void     AdcSetDiscMode(AdcIdx_t idx, uint32_t discnum);
+
+void     AdcSetChanSeq(AdcIdx_t idx, uint32_t sqr, uint32_t pos, uint32_t ch);
+void     AdcSetSeqLen(AdcIdx_t idx, uint32_t len);
+
+void     AdcSetExtTrig(AdcIdx_t idx, uint32_t extsel, AdcTrigEn_t exten);
+void     AdcSetJExtTrig(AdcIdx_t idx, uint32_t jextsel, AdcTrigEn_t jexten);
+void     AdcSetJqConfig(AdcIdx_t idx, uint32_t disable, uint32_t mode);
+
+void     AdcSetSampleTime(AdcIdx_t idx, uint32_t ch, AdcSmp_t smp);
+
+void     AdcSetPrescaler(uint32_t presc);
+void     AdcSetCkMode(AdcCkMode_t ckmode);
+
+
 #endif /* STM32MP1XX_ADC_H_ */
