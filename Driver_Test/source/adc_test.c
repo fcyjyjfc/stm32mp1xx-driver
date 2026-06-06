@@ -5,6 +5,9 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
+#include "stm32mp1xx_exti.h"
+#include "stm32mp1xx_gic.h"
+#include "stm32mp1xx_gpio.h"
 
 #define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
 
@@ -37,7 +40,7 @@ static void Tim6Init(void)
 
     BasicTimerCfg_t cfg;
     cfg.tim_psc  = 15999;
-    cfg.tim_arr  = 15999;                             /* ~1Hz @64MHz */
+    cfg.tim_arr  = 63999;                             /* ~1Hz @64MHz */
     cfg.tim_arpe = 1;
     cfg.tim_opm  = 0;
     cfg.tim_urs  = 0;
@@ -467,6 +470,301 @@ static void TestContinuousAutoDelay(void)
 }
 
 /* ========================================================================
+ *  测试 7：注入转换（EXTI0/PA0 按键触发注入，过采样 1024x）
+ * ======================================================================== */
+
+static void exti0_inj_isr(void)
+{
+    ExtiClearFpr(0);
+    AdcStartInjected(ADC_IDX2);
+}
+
+static void TestInjected(void)
+{
+    RCC->MP_AHB2ENSETR |= (1u << 5);
+    AdcSetVrefint(1);
+    AdcSetTempSensor(1);
+    AdcSetVbat(1);
+    Adc2SetVddcore(1);
+
+    AdcPowerUp(ADC_IDX2);
+    AdcCalibrate(ADC_IDX2, 0, 0);
+    AdcSetPrescaler(1);
+    AdcSetResolution(ADC_IDX2, ADC_RES_16BIT);
+
+    /* 常规组：6 个内部通道，连续模式 */
+    AdcSetContMode(ADC_IDX2, ADC_CONTINUOUS);
+    AdcSetAutoDelay(ADC_IDX2, 1);
+    AdcSetRegularSeq(ADC_IDX2, CHAN_N, g_chans);
+    AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
+
+    /* 注入组：通道 1（外部滑动变阻器），采样最大，过采样 1024x 右移 10 */
+    AdcSetChanPreselect(ADC_IDX2, (1u << 1));
+    AdcSetSampleTime(ADC_IDX2, 1, ADC_SMP_810P5);
+    uint32_t inj_ch[] = { 1 };
+    AdcSetInjectedSeq(ADC_IDX2, 1, inj_ch, 0, ADC_TRIG_SOFTWARE);
+    AdcSetOverSample(ADC_IDX2, 1023, 10, 0, 1);
+
+    AdcEnable(ADC_IDX2);
+    AdcStart(ADC_IDX2);
+
+    /* ---- EXTI0/PA0 按键中断 ---- */
+    RCC->MP_AHB4ENSETR |= 1 << 0;
+    GpioMode(GPIO_A, 0, GPIO_MODER_INPUT);
+    GpioPullUpDown(GPIO_A, 0, GPIO_PUPDR_PULL_UP);
+    ExtiSetGpio(0, EXTI_GPIO_PA);
+    ExtiSetTrig(0, 2);
+    ExtiEnableInt(1, 0);
+    GicdSetGroup(GIC_EXTI0);
+    GicdSetPriority(GIC_EXTI0, 5);
+    GicdSetTarget(GIC_EXTI0, 1);
+    GicdSetTrigMode(GIC_EXTI0, 0);
+    GicRegisterIrq(GIC_EXTI0, exti0_inj_isr);
+    GicdEnableInt(GIC_EXTI0);
+    GicdInit();
+    GiccInit(10, 2);
+    __asm__ volatile(
+        "mrs r0, cpsr\n\t"
+        "bic r0, r0, #0x80\n\t"
+        "msr cpsr, r0\n\t"
+        :: : "r0"
+    );
+
+    PrintStr("\r\n--- Test 7: Injected CONT=1 AUTDLY=1 EXT=0(SW) EXTI0 triggers inj ch1 OS=1024x ---\r\n");
+    PrintStr("Press PA0 button to trigger injected conversion\r\n");
+
+    uint32_t reg_idx = 0;
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        uint8_t ch;
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
+        {
+            uint32_t val = AdcRead(ADC_IDX2);
+            PrintU32(g_names[reg_idx], val);
+            if (++reg_idx >= CHAN_N)
+                reg_idx = 0;
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
+        {
+            AdcClearEos(ADC_IDX2);
+            PrintStr("--- EOS ---\r\n");
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_JEOS))
+        {
+        	PrintStr("*********************************************************\r\n\r\n\r\n\r\n");
+            AdcClearJeos(ADC_IDX2);
+            uint32_t val = AdcReadInjected(ADC_IDX2, 0);
+            uint32_t mv = val * 3300 / 65536;
+            char buf[64];
+            int p = 0;
+            const char *s = "  [INJ ch1: ";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, val);
+            while (buf[p]) p++;
+            s = " = ";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, mv);
+            while (buf[p]) p++;
+            s = " mV]\r\n";
+
+
+            while (*s) buf[p++] = *s++;
+            UsartWrite(USART4, (void *)buf, p);
+            PrintStr("*********************************************************\r\n\r\n\r\n\r\n");
+        }
+
+        if (UsartReadOne(USART4, &ch))
+            break;
+    }
+
+    GicdDisableInt(GIC_EXTI0);
+    ExtiDisableInt(1, 0);
+    __asm__ volatile(
+        "mrs r0, cpsr\n\t"
+        "orr r0, r0, #0x80\n\t"
+        "msr cpsr, r0\n\t"
+        :: : "r0"
+    );
+    AdcStop(ADC_IDX2);
+    AdcDisable(ADC_IDX2);
+    AdcPowerDown(ADC_IDX2);
+}
+
+/* ========================================================================
+ *  测试 8：自动注入（JAUTO=1，TIM6 触发常规组后自动启动注入）
+ * ======================================================================== */
+
+static void TestAutoInject(void)
+{
+    RCC->MP_AHB2ENSETR |= (1u << 5);
+    AdcSetVrefint(1);
+    AdcSetTempSensor(1);
+    AdcSetVbat(1);
+    Adc2SetVddcore(1);
+
+    AdcPowerUp(ADC_IDX2);
+    AdcCalibrate(ADC_IDX2, 0, 0);
+    AdcSetPrescaler(1);
+    AdcSetResolution(ADC_IDX2, ADC_RES_16BIT);
+
+    /* 常规组：6 个内部通道，TIM6 触发单次 */
+    AdcSetContMode(ADC_IDX2, ADC_SINGLE);
+    AdcSetAutoDelay(ADC_IDX2, 0);
+    AdcSetRegularSeq(ADC_IDX2, CHAN_N, g_chans);
+    AdcSetExtTrig(ADC_IDX2, ADC_EXTSEL_TIM6_TRGO, ADC_TRIG_RISING);
+
+    /* 注入组：通道 1，过采样 1024x，JAUTO 自动触发（JEXTEN=0） */
+    AdcSetChanPreselect(ADC_IDX2, (1u << 1));
+    AdcSetSampleTime(ADC_IDX2, 1, ADC_SMP_810P5);
+    uint32_t inj_ch[] = { 1 };
+    AdcSetInjectedSeq(ADC_IDX2, 1, inj_ch, 0, ADC_TRIG_SOFTWARE);
+    AdcSetOverSample(ADC_IDX2, 1023, 10, 0, 1);
+    AdcSetAutoInject(ADC_IDX2, 1);                      /* JAUTO=1：EOS 后自动启动注入 */
+
+    AdcEnable(ADC_IDX2);
+    Tim6Init();
+    BasicTimerStart(TIM6);
+    AdcStart(ADC_IDX2);
+
+    PrintStr("\r\n--- Test 8: AutoInject CONT=0 EXT=TIM6_TRGO JAUTO=1 inj OS=1024x ---\r\n");
+
+    uint32_t reg_idx = 0;
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        uint8_t ch;
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
+        {
+            uint32_t val = AdcRead(ADC_IDX2);
+            PrintU32(g_names[reg_idx], val);
+            if (++reg_idx >= CHAN_N)
+                reg_idx = 0;
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
+        {
+            AdcClearEos(ADC_IDX2);
+            PrintStr("--- EOS (regular done, JAUTO starts injected) ---\r\n");
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_JEOS))
+        {
+            AdcClearJeos(ADC_IDX2);
+            uint32_t val = AdcReadInjected(ADC_IDX2, 0);
+            uint32_t mv = val * 3300 / 65536;
+            char buf[64];
+            int p = 0;
+            const char *s = "  [INJ ch1: ";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, val);
+            while (buf[p]) p++;
+            s = " = ";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, mv);
+            while (buf[p]) p++;
+            s = " mV]\r\n";
+            while (*s) buf[p++] = *s++;
+            UsartWrite(USART4, (void *)buf, p);
+        }
+
+        if (UsartReadOne(USART4, &ch))
+            break;
+    }
+
+    BasicTimerStop(TIM6);
+    AdcStop(ADC_IDX2);
+    AdcDisable(ADC_IDX2);
+    AdcPowerDown(ADC_IDX2);
+}
+
+/* ========================================================================
+ *  测试 9：模拟看门狗（AWD1 + AWD2，监控通道 1，不同阈值）
+ * ======================================================================== */
+
+static void TestAwd1(void)
+{
+    RCC->MP_AHB2ENSETR |= (1u << 5);
+
+    AdcPowerUp(ADC_IDX2);
+    AdcCalibrate(ADC_IDX2, 0, 0);
+    AdcSetPrescaler(1);
+    AdcSetResolution(ADC_IDX2, ADC_RES_16BIT);
+
+    /* 常规组：仅通道 1，TIM6 触发单次 */
+    AdcSetContMode(ADC_IDX2, ADC_SINGLE);
+    AdcSetAutoDelay(ADC_IDX2, 0);
+    uint32_t ch1[] = { 1 };
+    AdcSetRegularSeq(ADC_IDX2, 1, ch1);
+    AdcSetExtTrig(ADC_IDX2, ADC_EXTSEL_TIM6_TRGO, ADC_TRIG_RISING);
+
+    /* 通道预选 + 采样时间 */
+    AdcSetChanPreselect(ADC_IDX2, (1u << 1));
+    AdcSetSampleTime(ADC_IDX2, 1, ADC_SMP_810P5);
+
+    /* 看门狗 1：监控通道 1，LTR=1V，HTR=2V */
+    uint32_t ltr1 = 65535u * 1000 / 3300;     /* 19859 = 1V */
+    uint32_t htr1 = 65535u * 2000 / 3300;     /* 39718 = 2V */
+    AdcSetAwd1(ADC_IDX2, 1, 0, 1, 1, ltr1, htr1);
+
+    /* 看门狗 2：监控通道 1，LTR=1.2V，HTR=1.8V */
+    uint32_t ltr2 = 65535u * 1200 / 3300;     /* 23831 = 1.2V */
+    uint32_t htr2 = 65535u * 1800 / 3300;     /* 35746 = 1.8V */
+    AdcSetAwd2(ADC_IDX2, (1u << 1), ltr2, htr2);
+
+    AdcEnable(ADC_IDX2);
+    Tim6Init();
+    BasicTimerStart(TIM6);
+    AdcStart(ADC_IDX2);
+
+    PrintStr("\r\n--- Test 9: AWD1+2 CONT=0 EXT=TIM6_TRGO ch1 ---\r\n");
+    PrintStr("  AWD1: 1V~2V   AWD2: 1.2V~1.8V\r\n");
+
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        uint8_t ch;
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
+        {
+            uint32_t val = AdcRead(ADC_IDX2);
+            uint32_t mv = val * 3300 / 65536;
+            PrintU32("ch1", val);
+            char mv_str[12];
+            int p = 0;
+            NumToStr(mv_str, mv);
+            PrintStr("  (");
+            PrintStr(mv_str);
+            PrintStr(" mV)\r\n");
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_AWD1))
+        {
+            AdcClearFlag(ADC_IDX2, ADC_FLAG_AWD1);
+            PrintStr("*** AWD1: voltage OUT OF RANGE (1V~2V) ***\r\n");
+        }
+
+        if (AdcGetFlag(ADC_IDX2, ADC_FLAG_AWD2))
+        {
+            AdcClearFlag(ADC_IDX2, ADC_FLAG_AWD2);
+            PrintStr("*** AWD2: voltage OUT OF RANGE (1.2V~1.8V) ***\r\n");
+        }
+
+        if (UsartReadOne(USART4, &ch))
+            break;
+    }
+
+    BasicTimerStop(TIM6);
+    AdcStop(ADC_IDX2);
+    AdcDisable(ADC_IDX2);
+    AdcPowerDown(ADC_IDX2);
+}
+
+/* ========================================================================
  *  二级菜单入口
  * ======================================================================== */
 
@@ -485,6 +783,9 @@ void AdcTest(void)
         PrintStr("4. Discontinuous (DISCEN=2, TIM6 TRGO, 2 ch per trigger)\r\n");
         PrintStr("5. OVR block demo (no DR read, PRESERVE mode)\r\n");
         PrintStr("6. Continuous + AUTDLY (wait DR read, no OVR)\r\n");
+        PrintStr("7. Injected (EXTI0/PA0 triggers inj ch1 OS=1024x)\r\n");
+        PrintStr("8. AutoInject (JAUTO=1, TIM6 triggers reg, auto inj ch1 OS=1024x)\r\n");
+        PrintStr("9. AWD1+2 (monitor ch1, AWD1=1V~2V, AWD2=1.2V~1.8V)\r\n");
         PrintStr("0. Back to main menu\r\n");
         PrintStr("Select: ");
 
@@ -504,6 +805,12 @@ void AdcTest(void)
             TestOvrBlock();
         else if (strcmp(buf, "6") == 0)
             TestContinuousAutoDelay();
+        else if (strcmp(buf, "7") == 0)
+            TestInjected();
+        else if (strcmp(buf, "8") == 0)
+            TestAutoInject();
+        else if (strcmp(buf, "9") == 0)
+            TestAwd1();
         else
             PrintStr("Invalid selection.\r\n");
     }
