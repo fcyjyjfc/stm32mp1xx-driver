@@ -125,6 +125,18 @@ typedef enum {
     ADC_TRIG_BOTH     = 3,
 } AdcTrigEn_t;
 
+/* ADC 双 ADC 模式（CCR.DUAL[4:0]）*/
+typedef enum {
+    ADC_DUAL_INDEPENDENT       = 0x00, /* 独立模式 */
+    ADC_DUAL_REGINJ_SIMULT     = 0x01, /* 常规同步 + 注入同步（组合） */
+    ADC_DUAL_REG_SIMULT_ALT    = 0x02, /* 常规同步 + 交替触发（组合） */
+    ADC_DUAL_INJ_SIMULT_INTERL = 0x03, /* 注入同步 + 交错（组合） */
+    ADC_DUAL_INJ_SIMULT        = 0x05, /* 注入同步 */
+    ADC_DUAL_REG_SIMULT        = 0x06, /* 常规同步 */
+    ADC_DUAL_INTERLEAVED       = 0x07, /* 常规交错 */
+    ADC_DUAL_ALT_TRIG          = 0x09, /* 交替触发（注入） */
+} AdcDualMode_t;
+
 /* ADC 常规触发源选择（EXTSEL[4:0]） */
 typedef enum {
     ADC_EXTSEL_TIM1_OC1    = 0,

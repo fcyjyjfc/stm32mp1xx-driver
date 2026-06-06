@@ -357,6 +357,7 @@ static void TestDiscontinuous(void)
     BasicTimerStop(TIM6);
     AdcStop(ADC_IDX2);
     AdcDisable(ADC_IDX2);
+    AdcSetDiscMode(ADC_IDX2, 0);
     AdcPowerDown(ADC_IDX2);
 }
 
@@ -591,6 +592,8 @@ static void TestInjected(void)
     );
     AdcStop(ADC_IDX2);
     AdcDisable(ADC_IDX2);
+    AdcSetOverSample(ADC_IDX2, 0, 0, 0, 0);
+    AdcSetChanPreselect(ADC_IDX2, 0);
     AdcPowerDown(ADC_IDX2);
 }
 
@@ -679,6 +682,9 @@ static void TestAutoInject(void)
     BasicTimerStop(TIM6);
     AdcStop(ADC_IDX2);
     AdcDisable(ADC_IDX2);
+    AdcSetAutoInject(ADC_IDX2, 0);
+    AdcSetOverSample(ADC_IDX2, 0, 0, 0, 0);
+    AdcSetChanPreselect(ADC_IDX2, 0);
     AdcPowerDown(ADC_IDX2);
 }
 
@@ -761,6 +767,125 @@ static void TestAwd1(void)
     BasicTimerStop(TIM6);
     AdcStop(ADC_IDX2);
     AdcDisable(ADC_IDX2);
+    AdcSetAwd1(ADC_IDX2, 0, 0, 0, 0, 0, 0);
+    AdcSetAwd2(ADC_IDX2, 0, 0, 0);
+    AdcSetChanPreselect(ADC_IDX2, 0);
+    AdcPowerDown(ADC_IDX2);
+}
+
+/* ========================================================================
+ *  测试 10：双 ADC 同步模式（DUAL=REG_SIMULT，ADC1 ch1 + ADC2 VREFINT）
+ * ======================================================================== */
+
+static void TestDual(void)
+{
+    RCC->MP_AHB2ENSETR |= (1u << 4) | (1u << 5);
+    AdcSetVrefint(1);
+    AdcSetTempSensor(1);
+    AdcSetVbat(1);
+    Adc2SetVddcore(1);
+    AdcSetPrescaler(1);                         /* 和其他测试保持一致的时钟分频 */
+    AdcSetCkMode(ADC_CK_ASYNC);
+
+    /* === ADC1 配置（主，外部通道 1 滑动变阻器）=== */
+    AdcPowerUp(ADC_IDX1);
+    AdcCalibrate(ADC_IDX1, 0, 0);
+    AdcSetResolution(ADC_IDX1, ADC_RES_16BIT);
+    AdcSetContMode(ADC_IDX1, ADC_SINGLE);
+    AdcSetAutoDelay(ADC_IDX1, 0);
+    uint32_t adc1_ch[] = { 1 };
+    AdcSetRegularSeq(ADC_IDX1, 1, adc1_ch);
+    AdcSetExtTrig(ADC_IDX1, ADC_EXTSEL_TIM6_TRGO, ADC_TRIG_RISING);
+    AdcSetChanPreselect(ADC_IDX1, (1u << 1));
+    AdcSetSampleTime(ADC_IDX1, 1, ADC_SMP_810P5);
+
+    /* === ADC2 配置（从，内部 VREFINT）=== */
+    AdcPowerUp(ADC_IDX2);
+    AdcCalibrate(ADC_IDX2, 0, 0);
+    AdcSetResolution(ADC_IDX2, ADC_RES_16BIT);
+    AdcSetContMode(ADC_IDX2, ADC_SINGLE);
+    AdcSetAutoDelay(ADC_IDX2, 0);
+    AdcSetSampleTime(ADC_IDX2, ADC2_CH_VREFINT, ADC_SMP_810P5);
+    uint32_t adc2_ch[] = { ADC2_CH_VREFINT };
+    AdcSetRegularSeq(ADC_IDX2, 1, adc2_ch);
+
+    /* === 双 ADC 模式：常规同步（必须在两个 ADC 都禁用时配置）=== */
+    ADC->COMM.CCR = (ADC->COMM.CCR & ~0x1Fu) | ADC_DUAL_REG_SIMULT;
+
+    /* === 使能双 ADC 前确认状态 === */
+    if (!AdcEnable(ADC_IDX1))
+        PrintStr("ADC1 enable FAIL\r\n");
+    if (!AdcEnable(ADC_IDX2))
+        PrintStr("ADC2 enable FAIL\r\n");
+
+    Tim6Init();
+    BasicTimerStart(TIM6);
+    AdcStart(ADC_IDX1);                       /* 触发主 ADC1，ADC2 同步跟随 */
+
+    {
+        /* 打印 DUAL 模式值确认 */
+        char dbg[40];
+        int dp = 0;
+        const char *ds = "DUAL=";
+        while (*ds) dbg[dp++] = *ds++;
+        uint32_t dual_val = ADC->COMM.CCR & 0x1Fu;
+        NumToStr(dbg + dp, dual_val);
+        while (dbg[dp]) dp++;
+        ds = "\r\n";
+        while (*ds) dbg[dp++] = *ds++;
+        UsartWrite(USART4, (void *)dbg, dp);
+    }
+
+    PrintStr("--- Test 10: Dual REG_SIMULT ADC1 ch1(ext) + ADC2 VREFINT TIM6 trig ---\r\n");
+
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        uint8_t ch;
+
+        /* 等待两个 ADC 都完成转换 */
+        if (AdcGetFlag(ADC_IDX1, ADC_FLAG_EOC) && AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
+        {
+            uint32_t val1 = AdcRead(ADC_IDX1);
+            uint32_t val2 = AdcRead(ADC_IDX2);
+            uint32_t mv1 = val1 * 3300 / 65536;
+            uint32_t mv2 = val2 * 3300 / 65536;
+
+            char buf[128];
+            int p = 0;
+            const char *s = "ADC1 ch1: raw=";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, val1);
+            while (buf[p]) p++;
+            s = " (";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, mv1);
+            while (buf[p]) p++;
+            s = " mV)  ADC2 VREFINT: raw=";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, val2);
+            while (buf[p]) p++;
+            s = " (";
+            while (*s) buf[p++] = *s++;
+            NumToStr(buf + p, mv2);
+            while (buf[p]) p++;
+            s = " mV)\r\n";
+            while (*s) buf[p++] = *s++;
+            UsartWrite(USART4, (void *)buf, p);
+        }
+
+        if (UsartReadOne(USART4, &ch))
+            break;
+    }
+
+    BasicTimerStop(TIM6);
+    AdcStop(ADC_IDX1);
+    AdcStop(ADC_IDX2);
+    AdcDisable(ADC_IDX1);
+    AdcDisable(ADC_IDX2);
+    ADC->COMM.CCR &= ~0x1Fu;                 /* 恢复独立模式 */
+    AdcSetChanPreselect(ADC_IDX1, 0);
+    AdcPowerDown(ADC_IDX1);
     AdcPowerDown(ADC_IDX2);
 }
 
@@ -786,6 +911,7 @@ void AdcTest(void)
         PrintStr("7. Injected (EXTI0/PA0 triggers inj ch1 OS=1024x)\r\n");
         PrintStr("8. AutoInject (JAUTO=1, TIM6 triggers reg, auto inj ch1 OS=1024x)\r\n");
         PrintStr("9. AWD1+2 (monitor ch1, AWD1=1V~2V, AWD2=1.2V~1.8V)\r\n");
+        PrintStr("10. Dual REG_SIMULT (ADC1 ch1 potentiometer + ADC2 VREFINT)\r\n");
         PrintStr("0. Back to main menu\r\n");
         PrintStr("Select: ");
 
@@ -811,6 +937,8 @@ void AdcTest(void)
             TestAutoInject();
         else if (strcmp(buf, "9") == 0)
             TestAwd1();
+        else if (strcmp(buf, "10") == 0)
+            TestDual();
         else
             PrintStr("Invalid selection.\r\n");
     }
