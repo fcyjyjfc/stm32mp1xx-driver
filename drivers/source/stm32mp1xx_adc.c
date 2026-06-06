@@ -142,6 +142,62 @@ uint32_t AdcCalibrate(AdcIdx_t idx, uint32_t adcaldif, uint32_t adcallin)
     return 1;
 }
 
+uint32_t AdcRestoreCalib(AdcIdx_t idx, const AdcCalibResult_t *calib)
+{
+    /*
+     * 恢复校准系数，用于 DEEPPWD/STANDBY 唤醒后快速恢复校准状态。
+     * 前提：ADEN=1, ADSTART=0, JADSTART=0，否则跳出不写入。
+     *
+     * 步骤：
+     *   1. 写 CALFACT（CALFACT_S + CALFACT_D 偏移系数）
+     *   2. 通过 LINCALRDYW 握手依次写入 6 个线性系数
+     */
+    if (!(ADC->ADC[idx].CR & ADC_CR_ADEN))
+        return 0;
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return 0;
+
+    /* ---- 偏移系数（CALFACT_S + CALFACT_D） ---- */
+    uint32_t calfact = ADC->ADC[idx].CALFACT;
+    calfact = (calfact & ~0x7FFu) | (calib->calfact_s & 0x7FFu);
+    calfact = (calfact & ~(0x7FFu << 16)) | ((calib->calfact_d & 0x7FFu) << 16);
+    ADC->ADC[idx].CALFACT = calfact;
+
+    /* ---- 线性系数（CALFACT2，需 LINCALRDYW 握手） ----
+     *
+     * 手册写入规程（adc_p1503_1509.txt:242-265）：
+     *   步骤 3..20 依次处理 W6..W1:
+     *     写 CALFACT2 → 置 LINCALRDYWx → 轮询该位 =1 确认生效
+     *   W6 仅使用 CALFACT2[9:0]（bits[159:150]），[29:10] 为 0
+     *   W5..W1 使用 CALFACT2[29:0]（各 30 位）
+     *   每次只能操作一个 LINCALRDYWx 位
+     */
+    static const uint32_t lincalrdy[6] = {
+        ADC_CR_LINCALRDYW6, ADC_CR_LINCALRDYW5, ADC_CR_LINCALRDYW4,
+        ADC_CR_LINCALRDYW3, ADC_CR_LINCALRDYW2, ADC_CR_LINCALRDYW1,
+    };
+
+    for (int i = 0; i < 6; i++)
+    {
+        uint32_t val = calib->lincalfact[i];
+        if (i == 0)
+            val &= 0x3FFu;               /* W6: bits[159:150], only CALFACT2[9:0] valid */
+        ADC->ADC[idx].CALFACT2 = val;
+        ADC->ADC[idx].CR |= lincalrdy[i];
+
+        uint32_t tout = 1000000;
+        while (tout--)
+        {
+            if (ADC->ADC[idx].CR & lincalrdy[i])
+                break;
+        }
+        if (!tout)
+            return 0;
+    }
+
+    return 1;
+}
+
 uint32_t AdcEnable(AdcIdx_t idx)
 {
     /*
@@ -372,27 +428,40 @@ void AdcSetDiscMode(AdcIdx_t idx, uint32_t discnum)
     }
 }
 
-void AdcSetChanSeq(AdcIdx_t idx, uint32_t sqr, uint32_t pos, uint32_t ch)
+void AdcSetRegularSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels)
 {
     /*
-     * SQR1~SQR4 中每个 SQx 字段占 5 位，通道号 0~19。
-     * 寄存器中每个字段之间有保留位间隔（5 位 + 1 位保留 = 6 位一组）。
-     * sqr: 1~4, pos: 该寄存器内第几个 SQx（0 起始）
-     * 例：AdcSetChanSeq(adc, 1, 0, 3) → SQR1.SQ1 = 3（第1笔转换通道3）
+     * 一键配置常规序列：长度 + 各位置通道号。
+     *   len: 转换笔数 1~16
+     *   channels[0..len-1]: 依次填入 SQ1~SQN 的通道号
+     * 内部自动分配到 SQR1~SQR4 对应位域。
+     * 约束：ADSTART=0 时才能写，否则跳过。
      */
-    uint32_t shift = pos * 6 + 6;
-    volatile uint32_t *reg = &ADC->ADC[idx].SQR1 + (sqr - 1);
-    *reg = (*reg & ~(0x1Fu << shift)) | ((ch & 0x1Fu) << shift);
-}
+    if (ADC->ADC[idx].CR & ADC_CR_ADSTART)
+        return;
 
-void AdcSetSeqLen(AdcIdx_t idx, uint32_t len)
-{
-    /*
-     * SQR1.L[3:0]: 常规序列长度。
-     * 0=1笔, 1=2笔, ..., 15=16笔。
-     * 序列长度必须 ≥ 实际填入的 SQx 数量。
-     */
-    ADC->ADC[idx].SQR1 = (ADC->ADC[idx].SQR1 & ~0xFu) | (len & 0xFu);
+    if (len > 16) len = 16;
+    if (len == 0) return;
+
+    /* 清空所有 SQR 寄存器 */
+    ADC->ADC[idx].SQR1 = 0;
+    ADC->ADC[idx].SQR2 = 0;
+    ADC->ADC[idx].SQR3 = 0;
+    ADC->ADC[idx].SQR4 = 0;
+
+    /* 填写通道序列 */
+    for (uint32_t i = 1; i <= len; i++)
+    {
+        uint32_t reg_idx = i / 5;
+        uint32_t pos     = i % 5;
+        uint32_t shift   = pos * 6;
+        volatile uint32_t *reg = &ADC->ADC[idx].SQR1 + reg_idx;
+
+        *reg = (*reg & ~(0x1Fu << shift)) | ((channels[i - 1] & 0x1Fu) << shift);
+    }
+
+    /* 设置序列长度 L[3:0] */
+    ADC->ADC[idx].SQR1 |= (len - 1) & 0xFu;
 }
 
 void AdcSetExtTrig(AdcIdx_t idx, uint32_t extsel, AdcTrigEn_t exten)
@@ -408,37 +477,89 @@ void AdcSetExtTrig(AdcIdx_t idx, uint32_t extsel, AdcTrigEn_t exten)
     ADC->ADC[idx].CFGR = (ADC->ADC[idx].CFGR & ~(3u << 10)) | ((exten & 3u) << 10);
 }
 
-void AdcSetJExtTrig(AdcIdx_t idx, uint32_t jextsel, AdcTrigEn_t jexten)
+void AdcSetInjectedSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels,
+                       uint32_t jextsel, AdcTrigEn_t jexten)
 {
     /*
-     * 注入触发配置在 JSQR 中（不是 CFGR），
-     * 可以利用上下文队列在运行时切换（JQDIS=0 时）。
-     * 约束：JADSTART=0 时才能写，否则跳过。
+     * 一键配置注入序列：触发 + 长度 + 各位置通道号。
+     *   len: 转换笔数 1~4
+     *   channels[0..len-1]: 依次填入 JSQ1~JSQN 的通道号
+     *   约束：JADSTART=0 时才能写，否则跳过。
      */
     if (ADC->ADC[idx].CR & ADC_CR_JADSTART)
         return;
 
-    ADC->ADC[idx].JSQR = (ADC->ADC[idx].JSQR & ~(0x1Fu << 2)) | ((jextsel & 0x1Fu) << 2);
-    ADC->ADC[idx].JSQR = (ADC->ADC[idx].JSQR & ~(3u << 7)) | ((jexten & 3u) << 7);
+    if (len > 4) len = 4;
+    if (len == 0) return;
+
+    uint32_t jsqr = 0;
+
+    /* 触发选择 */
+    jsqr |= (jextsel & 0x1Fu) << 2;
+    jsqr |= (jexten & 3u) << 7;
+
+    /* 序列长度 JL[1:0] */
+    jsqr |= ((len - 1) & 3u);
+
+    /* 填写通道序列 (JSQ1~JSQ4) */
+    for (uint32_t i = 0; i < len; i++)
+    {
+        uint32_t shift = i * 6 + 9;
+        jsqr |= (channels[i] & 0x1Fu) << shift;
+    }
+
+    ADC->ADC[idx].JSQR = jsqr;
 }
 
-void AdcSetJqConfig(AdcIdx_t idx, uint32_t disable, uint32_t mode)
+void AdcSetJqConfig(AdcIdx_t idx, uint32_t disable, uint32_t mode, uint32_t jdiscen)
 {
     /*
-     * disable=0 使能队列，disable=1 关闭队列（队列关闭会清空 JSQR）。
-     * mode：   0=队列永不空（保留上次配置），1=队列可空（空时关闭注入触发）。
+     * 注入通道配置（CFGR 相关位集中设置）：
+     *   disable: JQDIS=1 关闭注入上下文队列（队列关闭会清空 JSQR）
+     *   mode:    JQM=1 队列可空模式
+     *   jdiscen: JDISCEN=1 注入不连续模式（每触发只转 1 个注入通道）
      * 约束：ADSTART=0 且 JADSTART=0 时才能写，否则跳过。
+     * 注意：JDISCEN 与 JAUTO 互斥（JAUTO=1 时 JDISCEN 必须为 0）。
      */
     if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
         return;
 
     uint32_t cfgr = ADC->ADC[idx].CFGR;
-    cfgr &= ~((1u << 31) | (1u << 21));     /* 清 JQDIS + JQM */
+    cfgr &= ~((1u << 31) | (1u << 21) | (1u << 20));  /* 清 JQDIS + JQM + JDISCEN */
     if (disable)
-        cfgr |= (1u << 31);                  /* JQDIS=1 */
+        cfgr |= (1u << 31);                            /* JQDIS=1 */
     if (mode)
-        cfgr |= (1u << 21);                  /* JQM=1 */
+        cfgr |= (1u << 21);                            /* JQM=1 */
+    if (jdiscen)
+        cfgr |= (1u << 20);                            /* JDISCEN=1 */
     ADC->ADC[idx].CFGR = cfgr;
+}
+
+void AdcSetChanPreselect(AdcIdx_t idx, uint32_t mask)
+{
+    /*
+     * PCSEL[19:0]：通道预选，对应位写 1 使能该通道的 IO 连接。
+     * 未预选的通道转换结果不可靠。
+     * 约束：ADSTART=0 且 JADSTART=0 时才能写，否则跳过。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return;
+
+    ADC->ADC[idx].PCSEL = mask & 0xFFFFFu;
+}
+
+void AdcSetDiffMode(AdcIdx_t idx, uint32_t mask)
+{
+    /*
+     * DIFSEL[19:0]：通道差分模式选择，每个bit对应一个通道。
+     *   对应位写 0 = 单端，写 1 = 差分。
+     * 仅影响通道的模拟输入方式，不区分常规或注入。
+     * 约束：ADC 禁用且非校准中（ADEN=0, ADCAL=0）时才能写，否则跳过。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADEN | ADC_CR_ADCAL))
+        return;
+
+    ADC->ADC[idx].DIFSEL = mask & 0xFFFFFu;
 }
 
 void AdcSetSampleTime(AdcIdx_t idx, uint32_t ch, AdcSmp_t smp)
@@ -455,6 +576,67 @@ void AdcSetSampleTime(AdcIdx_t idx, uint32_t ch, AdcSmp_t smp)
     volatile uint32_t *reg = (ch < 10) ? &ADC->ADC[idx].SMPR1 : &ADC->ADC[idx].SMPR2;
     uint32_t shift = (ch % 10) * 3;
     *reg = (*reg & ~(7u << shift)) | ((smp & 7u) << shift);
+}
+
+void AdcSetOverSample(AdcIdx_t idx, uint32_t ratio, uint32_t shift,
+                      uint32_t enable_reg, uint32_t enable_inj)
+{
+    /*
+     * 过采样配置（CFGR2）。
+     *   ratio:   0=1x, 1=2x, ..., 1023=1024x
+     *   shift:   过采样右移位 0~15（补偿累加后的位宽扩展）
+     *   enable_reg:  常规过采样使能
+     *   enable_inj: 注入过采样使能
+     * 约束：ADSTART=0 时才能写，否则跳过。
+     */
+    if (ADC->ADC[idx].CR & ADC_CR_ADSTART)
+        return;
+
+    uint32_t cfgr2 = ADC->ADC[idx].CFGR2;
+    cfgr2 &= ~((0x3FFu << 16) | (0xFu << 5) | (1u << 1) | (1u << 0));
+    cfgr2 |= (ratio & 0x3FFu) << 16;        /* OSVR */
+    cfgr2 |= (shift & 0xFu) << 5;            /* OVSS */
+    if (enable_reg)
+        cfgr2 |= (1u << 0);                  /* ROVSE */
+    if (enable_inj)
+        cfgr2 |= (1u << 1);                  /* JOVSE */
+    ADC->ADC[idx].CFGR2 = cfgr2;
+}
+
+void AdcSetOverSampleMode(AdcIdx_t idx, uint32_t rovs_mode, uint32_t trovs)
+{
+    /*
+     * 过采样行为模式。
+     *   rovs_mode: 0=继续模式（注入时不中断过采样，注完后继续）
+     *              1=重启模式（注入时中止过采样，注完后重头开始）
+     *   trovs:     0=连续过采样（触发一次采完全部）
+     *              1=触发过采样（每次触发采一个样）
+     * 约束：ADSTART=0 时才能写，否则跳过。
+     */
+    if (ADC->ADC[idx].CR & ADC_CR_ADSTART)
+        return;
+
+    uint32_t cfgr2 = ADC->ADC[idx].CFGR2;
+    cfgr2 &= ~((1u << 10) | (1u << 9));
+    if (rovs_mode)
+        cfgr2 |= (1u << 10);                 /* ROVSM */
+    if (trovs)
+        cfgr2 |= (1u << 9);                  /* TROVS */
+    ADC->ADC[idx].CFGR2 = cfgr2;
+}
+
+void AdcSetLeftShift(AdcIdx_t idx, uint32_t shift)
+{
+    /*
+     * LSHIFT：最终结果左移 0~15 位。
+     * 右对齐 16 位数据时可配合左移实现 32 位对齐，方便软件读取。
+     * 约束：ADSTART=0 时才能写，否则跳过。
+     */
+    if (ADC->ADC[idx].CR & ADC_CR_ADSTART)
+        return;
+
+    ADC->ADC[idx].CFGR2 = (ADC->ADC[idx].CFGR2 & ~(0xFu << 28))
+                        | ((shift & 0xFu) << 28);
 }
 
 void AdcSetPrescaler(uint32_t presc)
@@ -476,4 +658,56 @@ void AdcSetCkMode(AdcCkMode_t ckmode)
      * 约束：两个 ADC 均处于禁用状态（ADEN=0）时才能写。
      */
     ADC->COMM.CCR = (ADC->COMM.CCR & ~(3u << 16)) | ((ckmode & 3u) << 16);
+}
+
+void AdcSetVrefint(uint32_t enable)
+{
+    /*
+     * VREFEN（CCR bit 22）：使能内部参考电压通道。
+     * ADC1 通道 17 / ADC2 通道 13。
+     * 约束：所有 ADC 均处于禁用状态时才能写。
+     */
+    if (enable)
+        ADC->COMM.CCR |= ADC_CCR_VREFEN;
+    else
+        ADC->COMM.CCR &= ~ADC_CCR_VREFEN;
+}
+
+void AdcSetTempSensor(uint32_t enable)
+{
+    /*
+     * TSEN（CCR bit 23）：使能温度传感器。
+     * ADC1 通道 16 / ADC2 通道 12。
+     * 约束：所有 ADC 均处于禁用状态时才能写。
+     */
+    if (enable)
+        ADC->COMM.CCR |= ADC_CCR_TSEN;
+    else
+        ADC->COMM.CCR &= ~ADC_CCR_TSEN;
+}
+
+void AdcSetVbat(uint32_t enable)
+{
+    /*
+     * VBATEN（CCR bit 24）：使能 VBAT 监测。
+     * VBAT 经内部 /4 分压后接入 ADC1 通道 18 / ADC2 通道 15。
+     * 约束：所有 ADC 均处于禁用状态时才能写。
+     */
+    if (enable)
+        ADC->COMM.CCR |= ADC_CCR_VBATEN;
+    else
+        ADC->COMM.CCR &= ~ADC_CCR_VBATEN;
+}
+
+void Adc2SetVddcore(uint32_t enable)
+{
+    /*
+     * VDDCOREEN（ADC2_OR bit 0）：使能 VDDCORE 监测。
+     * 仅 ADC2 通道 14。
+     * 约束：ADC2 禁用时才能写。
+     */
+    if (enable)
+        ADC->ADC[1].OR |= ADC2_OR_VDDCOREEN;
+    else
+        ADC->ADC[1].OR &= ~ADC2_OR_VDDCOREEN;
 }

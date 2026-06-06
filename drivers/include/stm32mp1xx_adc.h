@@ -210,6 +210,48 @@ typedef struct {
 } AdcCalibResult_t;
 
 
+/* ===== ADC_CCR 内部通道使能位 ===== */
+
+#define ADC_CCR_VBATEN   (1u << 24)
+#define ADC_CCR_TSEN     (1u << 23)
+#define ADC_CCR_VREFEN   (1u << 22)
+
+/* ===== ADC2_OR 位 ===== */
+
+#define ADC2_OR_VDDCOREEN (1u << 0)
+
+
+/* ===== 内部通道号（用于 SQR/JSQR 序列）=====
+ *
+ * ADC1 内部通道映射（图 Figure 181）：
+ *   通道 16: VSENSE      温度传感器（需 CCR.TSEN=1）
+ *   通道 17: VREFINT     内部参考电压（需 CCR.VREFEN=1）
+ *   通道 18: VBAT/4      VBAT 监测（需 CCR.VBATEN=1）
+ *
+ * ADC2 内部通道映射（图 Figure 182, Table 187）：
+ *   通道 12: VSENSE      温度传感器（需 CCR.TSEN=1）
+ *   通道 13: VREFINT     内部参考电压（需 CCR.VREFEN=1）
+ *   通道 14: VDDCORE     内核电压监测（需 ADC2_OR.VDDCOREEN=1）
+ *   通道 15: VBAT/4      VBAT 监测（需 CCR.VBATEN=1）
+ *   通道 16: DAC_OUT1    DAC1 通道 1 输出
+ *   通道 17: DAC_OUT2    DAC1 通道 2 输出
+ *
+ * 注：ADC1 的通道 16~18 与外部引脚复用，使能内部信号后外部引脚自动断开。
+ *     ADC2 的通道 12/13/15 同样与外部引脚复用，14/16/17 为专用内部通道。
+ */
+
+#define ADC_CH_VSENSE    16      /* ADC1 only */
+#define ADC_CH_VREFINT   17      /* ADC1 only */
+#define ADC_CH_VBAT      18      /* ADC1 only */
+
+#define ADC2_CH_VSENSE   12
+#define ADC2_CH_VREFINT  13
+#define ADC2_CH_VDDCORE  14
+#define ADC2_CH_VBAT     15
+#define ADC2_CH_DAC1     16
+#define ADC2_CH_DAC2     17
+
+
 /* ===== 函数声明 ===== */
 
 // 内联：标志读写
@@ -266,6 +308,7 @@ static inline void AdcClearEos(AdcIdx_t idx)
 void     AdcPowerUp(AdcIdx_t idx);
 void     AdcPowerDown(AdcIdx_t idx);
 uint32_t AdcCalibrate(AdcIdx_t idx, uint32_t adcaldif, uint32_t adcallin);
+uint32_t AdcRestoreCalib(AdcIdx_t idx, const AdcCalibResult_t *calib);
 uint32_t AdcEnable(AdcIdx_t idx);
 void     AdcDisable(AdcIdx_t idx);
 
@@ -285,17 +328,30 @@ void     AdcSetAutoInject(AdcIdx_t idx, uint32_t enable);
 void     AdcSetDmaMode(AdcIdx_t idx, AdcDmaMode_t dmngt);
 void     AdcSetDiscMode(AdcIdx_t idx, uint32_t discnum);
 
-void     AdcSetChanSeq(AdcIdx_t idx, uint32_t sqr, uint32_t pos, uint32_t ch);
-void     AdcSetSeqLen(AdcIdx_t idx, uint32_t len);
+void     AdcSetRegularSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels);
 
 void     AdcSetExtTrig(AdcIdx_t idx, uint32_t extsel, AdcTrigEn_t exten);
-void     AdcSetJExtTrig(AdcIdx_t idx, uint32_t jextsel, AdcTrigEn_t jexten);
-void     AdcSetJqConfig(AdcIdx_t idx, uint32_t disable, uint32_t mode);
+void     AdcSetInjectedSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels,
+                           uint32_t jextsel, AdcTrigEn_t jexten);
+void     AdcSetJqConfig(AdcIdx_t idx, uint32_t disable, uint32_t mode, uint32_t jdiscen);
 
 void     AdcSetSampleTime(AdcIdx_t idx, uint32_t ch, AdcSmp_t smp);
 
+void     AdcSetChanPreselect(AdcIdx_t idx, uint32_t mask);
+void     AdcSetDiffMode(AdcIdx_t idx, uint32_t mask);
+
+void     AdcSetOverSample(AdcIdx_t idx, uint32_t ratio, uint32_t shift,
+                          uint32_t enable_reg, uint32_t enable_inj);
+void     AdcSetOverSampleMode(AdcIdx_t idx, uint32_t rovs_mode, uint32_t trovs);
+void     AdcSetLeftShift(AdcIdx_t idx, uint32_t shift);
+
 void     AdcSetPrescaler(uint32_t presc);
 void     AdcSetCkMode(AdcCkMode_t ckmode);
+
+void     AdcSetVrefint(uint32_t enable);
+void     AdcSetTempSensor(uint32_t enable);
+void     AdcSetVbat(uint32_t enable);
+void     Adc2SetVddcore(uint32_t enable);
 
 
 #endif /* STM32MP1XX_ADC_H_ */
