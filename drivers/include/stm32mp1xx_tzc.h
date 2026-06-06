@@ -1,4 +1,4 @@
-
+#include <stdint.h>
 typedef struct {
     uint32_t REGION_BASE_LOW0;
     uint32_t REGION_BASE_HIGH0;

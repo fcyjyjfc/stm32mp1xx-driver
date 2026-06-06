@@ -41,12 +41,12 @@ typedef struct {
     uint8_t  RSVD0[0x40];
     uint32_t CSR;
     uint32_t CFR;
-    uint8_t  RSVD0[0x100 - 0x84 - 4];
+    uint8_t  RSVD1[0x100 - 0x84 - 4];
     uint32_t RGCR[8];
-    uint8_t  RSVD1[0x20];
+    uint8_t  RSVD2[0x20];
     uint32_t RGSR;
     uint32_t RGCFR;
-    uint8_t  RSVD1[0x3EC - 0x144 - 4];
+    uint8_t  RSVD3[0x3EC - 0x144 - 4];
     uint32_t HWCFGR2;
     uint32_t HWCFGR1;
     uint32_t VERR;

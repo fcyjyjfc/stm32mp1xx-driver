@@ -229,7 +229,9 @@ void AdcDisable(AdcIdx_t idx)
 
     /*
      * ADDIS=1 请求禁用 ADC，硬件完成内部下电后自动清 ADEN 和 ADDIS。
+     * 清所有 ISR 标志，防止残留状态影响下次使能。
      */
+    ADC->ADC[idx].ISR = 0xFFFFFFFFu;
     ADC->ADC[idx].CR |= ADC_CR_ADDIS;
     while (ADC->ADC[idx].CR & ADC_CR_ADEN)
         ;
@@ -298,7 +300,7 @@ uint32_t AdcReadInjected(AdcIdx_t idx, uint32_t ch)
      * ch: 0~3 对应 JDR1~JDR4
      * 读 JDRy 会自动清除对应通道的 JEOC 标志。
      */
-    return ((uint32_t *)&ADC->ADC[idx].JDR1)[ch];
+    return ADC->ADC[idx].JDR[ch];
 }
 
 
@@ -434,7 +436,7 @@ void AdcSetRegularSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels)
      * 一键配置常规序列：长度 + 各位置通道号。
      *   len: 转换笔数 1~16
      *   channels[0..len-1]: 依次填入 SQ1~SQN 的通道号
-     * 内部自动分配到 SQR1~SQR4 对应位域。
+     * 内部自动分配到 SQR[0]~SQR[3] 对应位域。
      * 约束：ADSTART=0 时才能写，否则跳过。
      */
     if (ADC->ADC[idx].CR & ADC_CR_ADSTART)
@@ -444,10 +446,10 @@ void AdcSetRegularSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels)
     if (len == 0) return;
 
     /* 清空所有 SQR 寄存器 */
-    ADC->ADC[idx].SQR1 = 0;
-    ADC->ADC[idx].SQR2 = 0;
-    ADC->ADC[idx].SQR3 = 0;
-    ADC->ADC[idx].SQR4 = 0;
+    ADC->ADC[idx].SQR[0] = 0;
+    ADC->ADC[idx].SQR[1] = 0;
+    ADC->ADC[idx].SQR[2] = 0;
+    ADC->ADC[idx].SQR[3] = 0;
 
     /* 填写通道序列 */
     for (uint32_t i = 1; i <= len; i++)
@@ -455,13 +457,13 @@ void AdcSetRegularSeq(AdcIdx_t idx, uint32_t len, const uint32_t *channels)
         uint32_t reg_idx = i / 5;
         uint32_t pos     = i % 5;
         uint32_t shift   = pos * 6;
-        volatile uint32_t *reg = &ADC->ADC[idx].SQR1 + reg_idx;
+        volatile uint32_t *reg = &ADC->ADC[idx].SQR[reg_idx];
 
         *reg = (*reg & ~(0x1Fu << shift)) | ((channels[i - 1] & 0x1Fu) << shift);
     }
 
     /* 设置序列长度 L[3:0] */
-    ADC->ADC[idx].SQR1 |= (len - 1) & 0xFu;
+    ADC->ADC[idx].SQR[0] |= (len - 1) & 0xFu;
 }
 
 void AdcSetExtTrig(AdcIdx_t idx, uint32_t extsel, AdcTrigEn_t exten)
@@ -639,6 +641,28 @@ void AdcSetLeftShift(AdcIdx_t idx, uint32_t shift)
                         | ((shift & 0xFu) << 28);
 }
 
+void AdcSetOffset(AdcIdx_t idx, uint32_t ofr_num, uint32_t ch,
+                   uint32_t offset, uint32_t ssate)
+{
+    /*
+     * OFR1~OFR4：偏移校正寄存器。
+     *   OFFSET[25:0]   —— 校正值（转换结果减去该值）
+     *   OFFSET_CH[4:0]  —— 偏移作用于哪个通道
+     *   SSATE           —— 1=单端模式生效，0=差分模式生效
+     * 约束：ADSTART=0 且 JADSTART=0 时才能写。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return;
+    if (ofr_num > 3)
+        return;
+
+    uint32_t reg = (offset & 0x3FFFFFFu)
+                | ((ch & 0x1Fu) << 26)
+                | (ssate ? ADC_OFR_SSATE : 0);
+
+    ADC->ADC[idx].OFR[ofr_num] = reg;
+}
+
 void AdcSetPrescaler(uint32_t presc)
 {
     /*
@@ -711,3 +735,66 @@ void Adc2SetVddcore(uint32_t enable)
     else
         ADC->ADC[1].OR &= ~ADC2_OR_VDDCOREEN;
 }
+
+void AdcSetAwd1(AdcIdx_t idx, uint32_t en_reg, uint32_t en_inj,
+                 uint32_t single, uint32_t ch,
+                 uint32_t ltr, uint32_t htr)
+{
+    /*
+     * AWD1 配置（CFGR 相关位）：
+     *   AWD1EN(23)  —— 常规通道使能
+     *   JAWD1EN(24) —— 注入通道使能
+     *   AWD1SGL(22) —— 0=所有通道，1=指定通道
+     *   AWD1CH(30:26)—— 指定通道号
+     *   LTR1/HTR1   —— 低/高阈值
+     * 约束：ADSTART=0 且 JADSTART=0。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return;
+
+    uint32_t cfgr = ADC->ADC[idx].CFGR;
+    cfgr &= ~((1u << 23) | (1u << 24) | (1u << 22) | (0x1Fu << 26));
+    cfgr |= (en_reg  ? (1u << 23) : 0)
+          | (en_inj  ? (1u << 24) : 0)
+          | (single  ? (1u << 22) : 0)
+          | ((ch & 0x1Fu) << 26);
+    ADC->ADC[idx].CFGR = cfgr;
+
+    ADC->ADC[idx].LTR1 = ltr & 0x3FFFFFFu;
+    ADC->ADC[idx].HTR1 = htr & 0x3FFFFFFu;
+}
+
+void AdcSetAwd2(AdcIdx_t idx, uint32_t ch_mask,
+                 uint32_t ltr, uint32_t htr)
+{
+    /*
+     * AWD2 配置：
+     *   AWD2CR[19:0] —— 通道位掩码（全 0=禁用）
+     *   LTR2/HTR2    —— 低/高阈值
+     * 约束：ADSTART=0 且 JADSTART=0。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return;
+
+    ADC->ADC[idx].AWD2CR = ch_mask & 0xFFFFFu;
+    ADC->ADC[idx].LTR2   = ltr & 0x3FFFFFFu;
+    ADC->ADC[idx].HTR2   = htr & 0x3FFFFFFu;
+}
+
+void AdcSetAwd3(AdcIdx_t idx, uint32_t ch_mask,
+                 uint32_t ltr, uint32_t htr)
+{
+    /*
+     * AWD3 配置：
+     *   AWD3CR[19:0] —— 通道位掩码
+     *   LTR3/HTR3    —— 低/高阈值
+     * 约束：ADSTART=0 且 JADSTART=0。
+     */
+    if (ADC->ADC[idx].CR & (ADC_CR_ADSTART | ADC_CR_JADSTART))
+        return;
+
+    ADC->ADC[idx].AWD3CR = ch_mask & 0xFFFFFu;
+    ADC->ADC[idx].LTR3   = ltr & 0x3FFFFFFu;
+    ADC->ADC[idx].HTR3   = htr & 0x3FFFFFFu;
+}
+

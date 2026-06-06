@@ -1,4 +1,6 @@
 
+#include <stdint.h>
+
 typedef struct {
     uint32_t CR;
     uint32_t SWTRGR;

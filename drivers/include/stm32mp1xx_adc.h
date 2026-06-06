@@ -27,23 +27,14 @@ typedef struct {
     uint32_t LTR1;          // 0x020 ADC watchdog lower threshold register 1
     uint32_t HTR1;          // 0x024 ADC watchdog higher threshold register 1
     uint32_t RSVD1[2];      // 0x028-0x02C
-    uint32_t SQR1;          // 0x030 ADC regular sequence register 1
-    uint32_t SQR2;          // 0x034 ADC regular sequence register 2
-    uint32_t SQR3;          // 0x038 ADC regular sequence register 3
-    uint32_t SQR4;          // 0x03C ADC regular sequence register 4
+    uint32_t SQR[4];        // 0x030-0x03C ADC regular sequence registers 1-4
     uint32_t DR;            // 0x040 ADC regular data register
     uint32_t RSVD2[2];      // 0x044-0x048
     uint32_t JSQR;          // 0x04C ADC injected sequence register
     uint32_t RSVD3[4];      // 0x050-0x05C
-    uint32_t OFR1;          // 0x060 ADC offset register 1
-    uint32_t OFR2;          // 0x064 ADC offset register 2
-    uint32_t OFR3;          // 0x068 ADC offset register 3
-    uint32_t OFR4;          // 0x06C ADC offset register 4
+    uint32_t OFR[4];        // 0x060-0x06C ADC offset registers 1-4
     uint32_t RSVD4[4];      // 0x070-0x07C
-    uint32_t JDR1;          // 0x080 ADC injected data register 1
-    uint32_t JDR2;          // 0x084 ADC injected data register 2
-    uint32_t JDR3;          // 0x088 ADC injected data register 3
-    uint32_t JDR4;          // 0x08C ADC injected data register 4
+    uint32_t JDR[4];        // 0x080-0x08C ADC injected data registers 1-4
     uint32_t RSVD5[4];      // 0x090-0x09C
     uint32_t AWD2CR;        // 0x0A0 ADC analog watchdog 2 config
     uint32_t AWD3CR;        // 0x0A4 ADC analog watchdog 3 config
@@ -134,6 +125,52 @@ typedef enum {
     ADC_TRIG_BOTH     = 3,
 } AdcTrigEn_t;
 
+/* ADC 常规触发源选择（EXTSEL[4:0]） */
+typedef enum {
+    ADC_EXTSEL_TIM1_OC1    = 0,
+    ADC_EXTSEL_TIM1_OC2    = 1,
+    ADC_EXTSEL_TIM1_OC3    = 2,
+    ADC_EXTSEL_TIM2_OC2    = 3,
+    ADC_EXTSEL_TIM3_TRGO   = 4,
+    ADC_EXTSEL_TIM4_OC4    = 5,
+    ADC_EXTSEL_EXTI11      = 6,
+    ADC_EXTSEL_TIM8_TRGO   = 7,
+    ADC_EXTSEL_TIM8_TRGO2  = 8,
+    ADC_EXTSEL_TIM1_TRGO   = 9,
+    ADC_EXTSEL_TIM1_TRGO2  = 10,
+    ADC_EXTSEL_TIM2_TRGO   = 11,
+    ADC_EXTSEL_TIM4_TRGO   = 12,
+    ADC_EXTSEL_TIM6_TRGO   = 13,
+    ADC_EXTSEL_TIM15_TRGO  = 14,
+    ADC_EXTSEL_TIM3_OC4    = 15,
+    ADC_EXTSEL_LPTIM1_OUT  = 18,
+    ADC_EXTSEL_LPTIM2_OUT  = 19,
+    ADC_EXTSEL_LPTIM3_OUT  = 20,
+} AdcExtsel_t;
+
+/* ADC 注入触发源选择（JEXTSEL[4:0]） */
+typedef enum {
+    ADC_JEXTSEL_TIM1_TRGO  = 0,
+    ADC_JEXTSEL_TIM1_OC4   = 1,
+    ADC_JEXTSEL_TIM2_TRGO  = 2,
+    ADC_JEXTSEL_TIM2_OC1   = 3,
+    ADC_JEXTSEL_TIM3_OC4   = 4,
+    ADC_JEXTSEL_TIM4_TRGO  = 5,
+    ADC_JEXTSEL_EXTI15     = 6,
+    ADC_JEXTSEL_TIM8_OC4   = 7,
+    ADC_JEXTSEL_TIM1_TRGO2 = 8,
+    ADC_JEXTSEL_TIM8_TRGO  = 9,
+    ADC_JEXTSEL_TIM8_TRGO2 = 10,
+    ADC_JEXTSEL_TIM3_OC3   = 11,
+    ADC_JEXTSEL_TIM3_TRGO  = 12,
+    ADC_JEXTSEL_TIM3_OC1   = 13,
+    ADC_JEXTSEL_TIM6_TRGO  = 14,
+    ADC_JEXTSEL_TIM15_TRGO = 15,
+    ADC_JEXTSEL_LPTIM1_OUT = 18,
+    ADC_JEXTSEL_LPTIM2_OUT = 19,
+    ADC_JEXTSEL_LPTIM3_OUT = 20,
+} AdcJExtsel_t;
+
 /* ADC 采样时间（ADC 时钟周期数） */
 typedef enum {
     ADC_SMP_1P5   = 0,
@@ -216,6 +253,10 @@ typedef struct {
 #define ADC_CCR_TSEN     (1u << 23)
 #define ADC_CCR_VREFEN   (1u << 22)
 
+/* ===== ADC_OFR SSATE ===== */
+
+#define ADC_OFR_SSATE    (1u << 31)
+
 /* ===== ADC2_OR 位 ===== */
 
 #define ADC2_OR_VDDCOREEN (1u << 0)
@@ -223,12 +264,7 @@ typedef struct {
 
 /* ===== 内部通道号（用于 SQR/JSQR 序列）=====
  *
- * ADC1 内部通道映射（图 Figure 181）：
- *   通道 16: VSENSE      温度传感器（需 CCR.TSEN=1）
- *   通道 17: VREFINT     内部参考电压（需 CCR.VREFEN=1）
- *   通道 18: VBAT/4      VBAT 监测（需 CCR.VBATEN=1）
- *
- * ADC2 内部通道映射（图 Figure 182, Table 187）：
+ * 内部信号只连接到 ADC2（图 Figure 182, Table 187）：
  *   通道 12: VSENSE      温度传感器（需 CCR.TSEN=1）
  *   通道 13: VREFINT     内部参考电压（需 CCR.VREFEN=1）
  *   通道 14: VDDCORE     内核电压监测（需 ADC2_OR.VDDCOREEN=1）
@@ -236,13 +272,8 @@ typedef struct {
  *   通道 16: DAC_OUT1    DAC1 通道 1 输出
  *   通道 17: DAC_OUT2    DAC1 通道 2 输出
  *
- * 注：ADC1 的通道 16~18 与外部引脚复用，使能内部信号后外部引脚自动断开。
- *     ADC2 的通道 12/13/15 同样与外部引脚复用，14/16/17 为专用内部通道。
+ * ADC1 没有专用内部通道（图 Figure 181），其所有通道均为外部 GPIO 输入。
  */
-
-#define ADC_CH_VSENSE    16      /* ADC1 only */
-#define ADC_CH_VREFINT   17      /* ADC1 only */
-#define ADC_CH_VBAT      18      /* ADC1 only */
 
 #define ADC2_CH_VSENSE   12
 #define ADC2_CH_VREFINT  13
@@ -305,6 +336,50 @@ static inline void AdcClearEos(AdcIdx_t idx)
     AdcClearFlag(idx, ADC_FLAG_EOS);
 }
 
+static inline uint32_t AdcWaitJeoc(AdcIdx_t idx, uint32_t tout)
+{
+    return AdcWaitFlagSet(idx, ADC_FLAG_JEOC, tout);
+}
+
+static inline void AdcClearJeoc(AdcIdx_t idx)
+{
+    AdcClearFlag(idx, ADC_FLAG_JEOC);
+}
+
+static inline uint32_t AdcWaitJeos(AdcIdx_t idx, uint32_t tout)
+{
+    return AdcWaitFlagSet(idx, ADC_FLAG_JEOS, tout);
+}
+
+static inline void AdcClearJeos(AdcIdx_t idx)
+{
+    AdcClearFlag(idx, ADC_FLAG_JEOS);
+}
+
+/* ===== 内联：中断使能 =====
+ *
+ * IER 位布局与 ISR 完全相同，直接使用 ADC_FLAG_* 宏。
+ * 约束（手册 IER 描述）：
+ *   ADRDYIE/EOSMPIE/EOCIE/EOSIE/OVRIE 需 ADSTART=0
+ *   JEOCIE/JEOSIE/JQOVFIE               需 JADSTART=0
+ *   AWD1IE/AWD2IE/AWD3IE                需 ADSTART=0 且 JADSTART=0
+ */
+
+static inline void AdcEnableIrq(AdcIdx_t idx, uint32_t mask)
+{
+    ADC->ADC[idx].IER |= mask;
+}
+
+static inline void AdcDisableIrq(AdcIdx_t idx, uint32_t mask)
+{
+    ADC->ADC[idx].IER &= ~mask;
+}
+
+static inline uint32_t AdcGetIrqEnabled(AdcIdx_t idx, uint32_t mask)
+{
+    return !!(ADC->ADC[idx].IER & mask);
+}
+
 void     AdcPowerUp(AdcIdx_t idx);
 void     AdcPowerDown(AdcIdx_t idx);
 uint32_t AdcCalibrate(AdcIdx_t idx, uint32_t adcaldif, uint32_t adcallin);
@@ -345,6 +420,9 @@ void     AdcSetOverSample(AdcIdx_t idx, uint32_t ratio, uint32_t shift,
 void     AdcSetOverSampleMode(AdcIdx_t idx, uint32_t rovs_mode, uint32_t trovs);
 void     AdcSetLeftShift(AdcIdx_t idx, uint32_t shift);
 
+void     AdcSetOffset(AdcIdx_t idx, uint32_t ofr_num, uint32_t ch,
+                       uint32_t offset, uint32_t ssate);
+
 void     AdcSetPrescaler(uint32_t presc);
 void     AdcSetCkMode(AdcCkMode_t ckmode);
 
@@ -352,6 +430,14 @@ void     AdcSetVrefint(uint32_t enable);
 void     AdcSetTempSensor(uint32_t enable);
 void     AdcSetVbat(uint32_t enable);
 void     Adc2SetVddcore(uint32_t enable);
+
+void     AdcSetAwd1(AdcIdx_t idx, uint32_t en_reg, uint32_t en_inj,
+                     uint32_t single, uint32_t ch,
+                     uint32_t ltr, uint32_t htr);
+void     AdcSetAwd2(AdcIdx_t idx, uint32_t ch_mask,
+                     uint32_t ltr, uint32_t htr);
+void     AdcSetAwd3(AdcIdx_t idx, uint32_t ch_mask,
+                     uint32_t ltr, uint32_t htr);
 
 
 #endif /* STM32MP1XX_ADC_H_ */

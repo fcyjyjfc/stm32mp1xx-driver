@@ -77,6 +77,12 @@ uint32_t BasicTimerCnt(volatile BasicTimerRegs_t *const tim_reg)
 }
 
 
+void BasicTimerSetTrgo(volatile BasicTimerRegs_t *const tim_reg, BtimerTrgo_t mode)
+{
+    tim_reg->CR2 &= ~(7u << 4);
+    tim_reg->CR2 |= (mode & 7u) << 4;
+}
+
 BasicTimerCfg_t Tim6Cfg;
 void BasicTimerInit(void)
 {

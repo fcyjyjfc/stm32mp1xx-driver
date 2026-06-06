@@ -51,5 +51,14 @@ extern void BasicTimerUg(volatile BasicTimerRegs_t *const tim_reg);
 extern uint32_t BasicTimerCnt(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerInit(void);
 
+/* TRGO 主模式选择（CR2.MMS[2:0]）*/
+typedef enum {
+    BTIM_TRGO_RESET    = 0,  /* UG 位作为 TRGO */
+    BTIM_TRGO_ENABLE   = 1,  /* CNT_EN 作为 TRGO */
+    BTIM_TRGO_UPDATE   = 2,  /* 更新事件作为 TRGO */
+} BtimerTrgo_t;
+
+extern void BasicTimerSetTrgo(volatile BasicTimerRegs_t *const tim_reg, BtimerTrgo_t mode);
+
 
 #endif /* STM32MP1XX_BTIMER_H_ */

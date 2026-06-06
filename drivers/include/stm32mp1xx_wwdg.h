@@ -1,4 +1,4 @@
-
+#include <stdint.h>
 typedef struct {
     uint32_t CR;
     uint32_t CFR;
@@ -23,7 +23,7 @@ typedef enum {
 typedef struct {
     uint32_t        wwdg_ew_en      : 1;
     uint32_t        wwdg_ew_comp    : 7;
-    uint32_t        wwdg_t;         : 6;
+    uint32_t        wwdg_t          : 6;
     WwdgDivSel_t    wwdg_div_sel;
 } WwdgCfg_t;
 
