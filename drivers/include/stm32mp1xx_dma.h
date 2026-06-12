@@ -115,33 +115,176 @@ typedef enum {
 } DmaFlowCtrl_t;
 
 
-/* DMA Stream 配置参数 */
+/*
+ * DMA Stream 配置参数
+ * 用法: DmaCfg_t cfg = DMA_CFG_DEFAULT; 然后只修改需要的字段
+ * 默认: M→P, 32bit, MINC=1, 直接模式, 单次传输, DMA流控, 无中断
+ * DmaCfg() 内部会自动修正以下冲突:
+ *   M→M:     强制 FIFO 模式, 禁止 PFCTRL/DBM/CIRC
+ *   直接模式: 强制 Burst=SINGLE, MSIZE=PSIZE, PINCOS=0
+ *   PBURST!=0: 强制 PINCOS=0
+ *   外设流控:  禁止 CIRC
+ *   双缓冲:    强制 CIRC=1
+ */
 typedef struct {
     uint32_t dma_mem0_addr;         // M0AR
     uint32_t dma_mem1_addr;         // M1AR (仅 DBM)
     uint32_t dma_per_addr;          // PAR
     uint32_t dma_ndtr           : 16; // 传输数量
     uint32_t dma_stream_num     : 3;  // Stream 编号 0~7
-    uint32_t dma_mem_burst      : 3;  // MBURST
-    uint32_t dma_per_burst      : 3;  // PBURST
-    uint32_t dma_dir            : 2;  // DIR
+    uint32_t dma_mem_burst      : 3;  // MBURST, 直接模式下强制=0
+    uint32_t dma_per_burst      : 3;  // PBURST, 直接模式下强制=0
+    uint32_t dma_dir            : 2;  // DIR, M→M 时强制 FIFO
     uint32_t dma_stream_pri     : 2;  // PL
-    uint32_t dma_msize          : 2;  // MSIZE, 直接模式下硬件强制=PSIZE
+    uint32_t dma_msize          : 2;  // MSIZE, 直接模式下强制=PSIZE
     uint32_t dma_psize          : 2;  // PSIZE
     uint32_t dma_memaddr_incr   : 1;  // MINC
     uint32_t dma_peraddr_incr   : 1;  // PINC
     uint32_t dma_fifo_thre      : 2;  // FTH
-    uint32_t dma_circual_buf    : 1;  // CIRC, DBM 时硬件强制 1
-    uint32_t dma_double_buf     : 1;  // DBM, 禁止 M→M
-    uint32_t dma_flow_ctrl      : 1;  // PFCTRL
-    uint32_t dma_dm_dis         : 1;  // DMDIS, 0=直接模式 1=FIFO 模式
-    uint32_t dma_pincos_4       : 1;  // PINCOS, 1=外设地址固定+4
+    uint32_t dma_circual_buf    : 1;  // CIRC, DBM 强制=1, PFCTRL 强制=0
+    uint32_t dma_double_buf     : 1;  // DBM, M→M 时强制=0
+    uint32_t dma_flow_ctrl      : 1;  // PFCTRL, M→M 时强制=0
+    uint32_t dma_dm_dis         : 1;  // DMDIS, 0=直接模式 1=FIFO, M→M 强制=1
+    uint32_t dma_pincos_4       : 1;  // PINCOS, 直接模式或 PBURST!=0 时强制=0
     uint32_t dma_tcie           : 1;  // TCIE 传输完成中断
     uint32_t dma_htie           : 1;  // HTIE 半传输中断
     uint32_t dma_teie           : 1;  // TEIE 传输错误中断
     uint32_t dma_dmeie          : 1;  // DMEIE 直接模式错误中断
     uint32_t dma_feie           : 1;  // FEIE FIFO 错误中断 (在 FCR 中)
 } DmaCfg_t;
+
+/* 默认配置: M→P, 直接模式, 32bit, MINC=1, 其余=0 */
+extern const DmaCfg_t DMA_CFG_DEFAULT;
+
+
+/* DMAREQ_ID, Table 111, 用于 DmaMuxRoute 的 req_id 参数 */
+typedef enum {
+    DMAMUX_REQ_NONE         = 0,
+    DMAMUX_REQ_GEN0         = 1,
+    DMAMUX_REQ_GEN1         = 2,
+    DMAMUX_REQ_GEN2         = 3,
+    DMAMUX_REQ_GEN3         = 4,
+    DMAMUX_REQ_GEN4         = 5,
+    DMAMUX_REQ_GEN5         = 6,
+    DMAMUX_REQ_GEN6         = 7,
+    DMAMUX_REQ_GEN7         = 8,
+    DMAMUX_REQ_ADC1         = 9,
+    DMAMUX_REQ_ADC2         = 10,
+    DMAMUX_REQ_TIM1_CH1     = 11,
+    DMAMUX_REQ_TIM1_CH2     = 12,
+    DMAMUX_REQ_TIM1_CH3     = 13,
+    DMAMUX_REQ_TIM1_CH4     = 14,
+    DMAMUX_REQ_TIM1_UP      = 15,
+    DMAMUX_REQ_TIM1_TRIG    = 16,
+    DMAMUX_REQ_TIM1_COM     = 17,
+    DMAMUX_REQ_TIM2_CH1     = 18,
+    DMAMUX_REQ_TIM2_CH2     = 19,
+    DMAMUX_REQ_TIM2_CH3     = 20,
+    DMAMUX_REQ_TIM2_CH4     = 21,
+    DMAMUX_REQ_TIM2_UP      = 22,
+    DMAMUX_REQ_TIM3_CH1     = 23,
+    DMAMUX_REQ_TIM3_CH2     = 24,
+    DMAMUX_REQ_TIM3_CH3     = 25,
+    DMAMUX_REQ_TIM3_CH4     = 26,
+    DMAMUX_REQ_TIM3_UP      = 27,
+    DMAMUX_REQ_TIM3_TRIG    = 28,
+    DMAMUX_REQ_TIM4_CH1     = 29,
+    DMAMUX_REQ_TIM4_CH2     = 30,
+    DMAMUX_REQ_TIM4_CH3     = 31,
+    DMAMUX_REQ_TIM4_UP      = 32,
+    DMAMUX_REQ_I2C1_RX      = 33,
+    DMAMUX_REQ_I2C1_TX      = 34,
+    DMAMUX_REQ_I2C2_RX      = 35,
+    DMAMUX_REQ_I2C2_TX      = 36,
+    DMAMUX_REQ_SPI1_RX      = 37,
+    DMAMUX_REQ_SPI1_TX      = 38,
+    DMAMUX_REQ_SPI2_RX      = 39,
+    DMAMUX_REQ_SPI2_TX      = 40,
+    /* 41~42: Reserved */
+    DMAMUX_REQ_USART2_RX    = 43,
+    DMAMUX_REQ_USART2_TX    = 44,
+    DMAMUX_REQ_USART3_RX    = 45,
+    DMAMUX_REQ_USART3_TX    = 46,
+    DMAMUX_REQ_TIM8_CH1     = 47,
+    DMAMUX_REQ_TIM8_CH2     = 48,
+    DMAMUX_REQ_TIM8_CH3     = 49,
+    DMAMUX_REQ_TIM8_CH4     = 50,
+    DMAMUX_REQ_TIM8_UP      = 51,
+    DMAMUX_REQ_TIM8_TRIG    = 52,
+    DMAMUX_REQ_TIM8_COM     = 53,
+    /* 54: Reserved */
+    DMAMUX_REQ_TIM5_CH1     = 55,
+    DMAMUX_REQ_TIM5_CH2     = 56,
+    DMAMUX_REQ_TIM5_CH3     = 57,
+    DMAMUX_REQ_TIM5_CH4     = 58,
+    DMAMUX_REQ_TIM5_UP      = 59,
+    DMAMUX_REQ_TIM5_TRIG    = 60,
+    DMAMUX_REQ_SPI3_RX      = 61,
+    DMAMUX_REQ_SPI3_TX      = 62,
+    DMAMUX_REQ_UART4_RX     = 63,
+    DMAMUX_REQ_UART4_TX     = 64,
+    DMAMUX_REQ_UART5_RX     = 65,
+    DMAMUX_REQ_UART5_TX     = 66,
+    DMAMUX_REQ_DAC1         = 67,
+    DMAMUX_REQ_DAC2         = 68,
+    DMAMUX_REQ_TIM6_UP      = 69,
+    DMAMUX_REQ_TIM7_UP      = 70,
+    DMAMUX_REQ_USART6_RX    = 71,
+    DMAMUX_REQ_USART6_TX    = 72,
+    DMAMUX_REQ_I2C3_RX      = 73,
+    DMAMUX_REQ_I2C3_TX      = 74,
+    DMAMUX_REQ_DCMI         = 75,
+    DMAMUX_REQ_CRYP2_IN     = 76,
+    DMAMUX_REQ_CRYP2_OUT    = 77,
+    DMAMUX_REQ_HASH2_IN     = 78,
+    DMAMUX_REQ_UART7_RX     = 79,
+    DMAMUX_REQ_UART7_TX     = 80,
+    DMAMUX_REQ_UART8_RX     = 81,
+    DMAMUX_REQ_UART8_TX     = 82,
+    DMAMUX_REQ_SPI4_RX      = 83,
+    DMAMUX_REQ_SPI4_TX      = 84,
+    DMAMUX_REQ_SPI5_RX      = 85,
+    DMAMUX_REQ_SPI5_TX      = 86,
+    DMAMUX_REQ_SAI1_A       = 87,
+    DMAMUX_REQ_SAI1_B       = 88,
+    DMAMUX_REQ_SAI2_A       = 89,
+    DMAMUX_REQ_SAI2_B       = 90,
+    DMAMUX_REQ_DFSDM1_FLT4  = 91,
+    DMAMUX_REQ_DFSDM1_FLT5  = 92,
+    DMAMUX_REQ_SPDIFRX_DT   = 93,
+    DMAMUX_REQ_SPDIFRX_CS   = 94,
+    DMAMUX_REQ_SAI4_A       = 99,
+    DMAMUX_REQ_SAI4_B       = 100,
+    DMAMUX_REQ_DFSDM1_FLT0  = 101,
+    DMAMUX_REQ_DFSDM1_FLT1  = 102,
+    DMAMUX_REQ_DFSDM1_FLT2  = 103,
+    DMAMUX_REQ_DFSDM1_FLT3  = 104,
+    DMAMUX_REQ_TIM15_CH1    = 105,
+    DMAMUX_REQ_TIM15_UP     = 106,
+    DMAMUX_REQ_TIM15_TRIG   = 107,
+    DMAMUX_REQ_TIM15_COM    = 108,
+    DMAMUX_REQ_TIM16_CH1    = 109,
+    DMAMUX_REQ_TIM16_UP     = 110,
+    DMAMUX_REQ_TIM17_CH1    = 111,
+    DMAMUX_REQ_TIM17_UP     = 112,
+    DMAMUX_REQ_SAI3_A       = 113,
+    DMAMUX_REQ_SAI3_B       = 114,
+    DMAMUX_REQ_I2C5_RX      = 115,
+    DMAMUX_REQ_I2C5_TX      = 116
+} DmaMuxReqId_t;
+
+
+/* 触发/同步输入源, Table 112/113, 用于 SIG_ID 和 SYNC_ID */
+typedef enum {
+    DMAMUX_MUX_EVT0     = 0,
+    DMAMUX_MUX_EVT1     = 1,
+    DMAMUX_MUX_EVT2     = 2,
+    DMAMUX_TRIG_LPTIM1  = 3,
+    DMAMUX_TRIG_LPTIM2  = 4,
+    DMAMUX_TRIG_LPTIM3  = 5,
+    DMAMUX_TRIG_EXTI0   = 6,
+    DMAMUX_TRIG_TIM12   = 7
+} DmaMuxTrigSyncId_t;
 
 
 /* 同步极性, CxCR bit[18:17] SPOL */
@@ -186,6 +329,29 @@ typedef struct {
 extern volatile DmaRegs_t *const DMA2;
 extern volatile DmaRegs_t *const DMA1;
 extern volatile DmaMuxRegs_t *const DMAMUX1;
-extern void DmaMuxCfg(volatile DmaMuxRegs_t *const dma_mux, const uint32_t ch, const DmaMuxCfg_t *const cfg);
+
+extern void DmaCfg(volatile DmaRegs_t *const dma, const DmaCfg_t *const cfg);
+
+extern void DmaMuxSyncDisable(volatile DmaMuxRegs_t *mux, uint32_t ch);
+extern void DmaMuxSyncEnable(volatile DmaMuxRegs_t *mux, uint32_t ch,
+                              uint32_t sync_id, DmaMuxSyncPol_t pol,
+                              uint32_t nbreq, uint32_t ege);
+extern void DmaMuxReqGenDisable(volatile DmaMuxRegs_t *mux, uint32_t gen_ch);
+extern void DmaMuxReqGenEnable(volatile DmaMuxRegs_t *mux, uint32_t gen_ch,
+                                uint32_t sig_id, DmaMuxTriPol_t pol,
+                                uint32_t gnbreq);
+extern void DmaMuxRoute(volatile DmaMuxRegs_t *mux, uint32_t ch, uint32_t req_id);
+
+/* 同步溢出中断 */
+extern void DmaMuxSoieEnable(volatile DmaMuxRegs_t *mux, uint32_t ch);
+extern void DmaMuxSoieDisable(volatile DmaMuxRegs_t *mux, uint32_t ch);
+extern uint32_t DmaMuxSyncOvfGet(volatile DmaMuxRegs_t *mux, uint32_t ch);
+extern void DmaMuxSyncOvfClear(volatile DmaMuxRegs_t *mux, uint32_t ch);
+
+/* 触发溢出中断 */
+extern void DmaMuxOieEnable(volatile DmaMuxRegs_t *mux, uint32_t gen_ch);
+extern void DmaMuxOieDisable(volatile DmaMuxRegs_t *mux, uint32_t gen_ch);
+extern uint32_t DmaMuxReqGenOvfGet(volatile DmaMuxRegs_t *mux, uint32_t gen_ch);
+extern void DmaMuxReqGenOvfClear(volatile DmaMuxRegs_t *mux, uint32_t gen_ch);
 
 #endif /* STM32MP1XX_DMA_H_ */
