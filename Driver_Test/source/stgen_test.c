@@ -1,21 +1,7 @@
 #include <string.h>
 #include "stm32mp1xx_stgen.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
-
-static void PrintHex32(char *buf, uint32_t val)
-{
-    int i;
-    for (i = 28; i >= 0; i -= 4)
-    {
-        uint32_t n = (val >> i) & 0xF;
-        *buf++ = n < 10 ? '0' + n : 'A' + n - 10;
-    }
-    *buf = '\0';
-}
+#include "test_common.h"
 
 static inline uint64_t CpuTimRead(void)
 {

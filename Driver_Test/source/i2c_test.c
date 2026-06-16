@@ -2,12 +2,9 @@
 #include <stdint.h>
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_i2c.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
 #include "at24cxx.h"
 #include "si7006.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+#include "test_common.h"
 
 static const char essay[] =
     "Embedded systems development on bare-metal ARM processors requires careful "
@@ -221,54 +218,13 @@ static void I2cEssayTest(void)
     PRINT("  Done.\r\n");
 }
 
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-    while (pos < max_len - 1)
-    {
-    	IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-    buf[pos] = '\0';
-    return pos;
-}
+static const MenuEntry_t i2c_menu[] = {
+    { "1", "EEPROM (0xA0)", I2cEepromTest },
+    { "2", "Sensor (0x80)", I2cSensorTest },
+    { "3", ">255B R/W",     I2cEssayTest },
+};
 
 void I2cTest(void)
 {
-    char buf[8];
-
-    while (1)
-    {
-    	IwdgKickDog(IWDG2);
-
-        PRINT("\r\n----- I2C Test Menu -----\r\n");
-        PRINT("1. EEPROM (0xA0)\r\n");
-        PRINT("2. Sensor (0x80)\r\n");
-        PRINT("3. >255B R/W\r\n");
-        PRINT("0. Back\r\n");
-        PRINT("--------------------------\r\n");
-        PRINT("Select: ");
-
-        ReadLine(buf, sizeof(buf));
-
-        if (strcmp(buf, "0") == 0)
-            break;
-        if (strcmp(buf, "1") == 0)
-            I2cEepromTest();
-        else if (strcmp(buf, "2") == 0)
-            I2cSensorTest();
-        else if (strcmp(buf, "3") == 0)
-            I2cEssayTest();
-        else
-            PRINT("Invalid.\r\n");
-    }
+    RunSubMenu("I2C Test", i2c_menu, sizeof(i2c_menu) / sizeof(i2c_menu[0]));
 }

@@ -6,65 +6,7 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
-
-/* ========================================================================
- *  辅助
- * ======================================================================== */
-
-static void NumToStr(char *buf, uint32_t val)
-{
-    char rev[12];
-    int i = 0;
-    do {
-        rev[i++] = '0' + val % 10;
-        val /= 10;
-    } while (val);
-    while (i > 0)
-        *buf++ = rev[--i];
-    *buf = '\0';
-}
-
-static void PrintU32(const char *label, uint32_t val)
-{
-    char buf[48];
-    int p = 0;
-    while (*label) buf[p++] = *label++;
-    buf[p++] = ':';
-    buf[p++] = ' ';
-    NumToStr(buf + p, val);
-    while (buf[p]) p++;
-    buf[p++] = '\r';
-    buf[p++] = '\n';
-    UsartWrite(USART4, (void *)buf, p);
-}
-
-static void PrintStr(const char *s)
-{
-    UsartWrite(USART4, (void *)s, strlen(s));
-}
-
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-    while (pos < max_len - 1)
-    {
-        IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-    buf[pos] = '\0';
-    return pos;
-}
+#include "test_common.h"
 
 /* ========================================================================
  *  DAC 写值后用 ADC2 内部通道回读验证
@@ -112,7 +54,7 @@ static void TestBasicOutput(void)
     AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
     AdcEnable(ADC_IDX2);
 
-    PrintStr("\r\n--- DAC Basic Output Test (SW trigger, ADC2 internal readback) ---\r\n");
+    PRINT("\r\n--- DAC Basic Output Test (SW trigger, ADC2 internal readback) ---\r\n");
 
     /* 输出并回读 */
     const uint16_t vals[] = { 0, 512, 1024, 2048, 3072, 4095 };
@@ -153,7 +95,7 @@ static void TestBasicOutput(void)
 
     DacCalibrate(DAC1, 1);
 
-    PrintStr("--- Repeat after re-calibration ---\r\n");
+    PRINT("--- Repeat after re-calibration ---\r\n");
 
     for (int i = 0; i < 6; i++)
     {
@@ -189,7 +131,7 @@ static void TestBasicOutput(void)
     AdcDisable(ADC_IDX2);
     AdcPowerDown(ADC_IDX2);
     DAC1->CR &= ~1;                              /* 关 DAC ch1 */
-    PrintStr("--- Test done ---\r\n");
+    PRINT("--- Test done ---\r\n");
 }
 
 /* ========================================================================
@@ -252,7 +194,7 @@ static void TestTriangle(void)
     AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
     AdcEnable(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 2: Triangle wave ch2 DHR=1000 MAMP=2047 TIM6 trigger 4 cycles ---\r\n");
+    PRINT("\r\n--- Test 2: Triangle wave ch2 DHR=1000 MAMP=2047 TIM6 trigger 4 cycles ---\r\n");
 
     /* 启动 TIM6 */
     BasicTimerStart(TIM6);
@@ -260,7 +202,7 @@ static void TestTriangle(void)
     uint32_t step = 0;
     uint32_t total = (2047 * 2) * 4;              /* 4094 步/周期 × 4 = 16376 */
 
-    PrintStr("\r\n");
+    PRINT("\r\n");
     while (step < total)
     {
         IwdgKickDog(IWDG2);
@@ -301,7 +243,7 @@ static void TestTriangle(void)
     AdcDisable(ADC_IDX2);
     AdcPowerDown(ADC_IDX2);
     DAC1->CR &= ~(1 << 16);
-    PrintStr("\r\n--- Test done ---\r\n");
+    PRINT("\r\n--- Test done ---\r\n");
 }
 
 /* ========================================================================
@@ -361,7 +303,7 @@ static void TestNoise(void)
     AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
     AdcEnable(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 3: Noise wave ch2 DHR=1000 MAMP=2047 TIM6 trigger, any key to stop ---\r\n");
+    PRINT("\r\n--- Test 3: Noise wave ch2 DHR=1000 MAMP=2047 TIM6 trigger, any key to stop ---\r\n");
 
     BasicTimerStart(TIM6);
 
@@ -400,7 +342,7 @@ static void TestNoise(void)
     AdcDisable(ADC_IDX2);
     AdcPowerDown(ADC_IDX2);
     DAC1->CR &= ~(1 << 16);
-    PrintStr("\r\n--- Test done ---\r\n");
+    PRINT("\r\n--- Test done ---\r\n");
 }
 
 /* ========================================================================
@@ -451,7 +393,7 @@ static void TestSampleHold(void)
     AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
     AdcEnable(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 4: Sample & Hold ch2, long-term hold verification ---\r\n");
+    PRINT("\r\n--- Test 4: Sample & Hold ch2, long-term hold verification ---\r\n");
 
     /* Step 1: DacSoftTrig 写 DHR=2000 + 触发采样 */
     DacSoftTrig(DAC1, 2, 2000);
@@ -463,7 +405,7 @@ static void TestSampleHold(void)
 
     /* Step 2: DacWriteDhr 改 DHR=0 不触发, 长期保持 ~10s */
     DacWriteDhr(DAC1, 2, 0);
-    PrintStr("DacWriteDhr DHR=0 (no trigger). Sampling every ~500ms:\r\n");
+    PRINT("DacWriteDhr DHR=0 (no trigger). Sampling every ~500ms:\r\n");
 
     uint32_t v_min = 4095, v_max = 0;
     for (int t = 0; t < 20; t++)
@@ -496,7 +438,7 @@ static void TestSampleHold(void)
             UsartWrite(USART4, (void *)buf, p);
         }
     }
-    PrintStr("...\r\n");
+    PRINT("...\r\n");
 
     /* Step 3: DacSoftTrig 触发新采样 (DHR 已是 0) */
     DacSoftTrig(DAC1, 2, 0);
@@ -511,14 +453,14 @@ static void TestSampleHold(void)
     int32_t update = (int32_t)v2 - (int32_t)((v_max + v_min) / 2);
     if (update < 0) update = -update;
     if (held_ok && update > 1500)
-        PrintStr("S&H PASS: value held ~10s, updated on trigger\r\n");
+        PRINT("S&H PASS: value held ~10s, updated on trigger\r\n");
     else
     {
-        PrintStr("S&H FAIL: range=");
+        PRINT("S&H FAIL: range=");
         char dbuf[16];
         NumToStr(dbuf, v_max - v_min);
         UsartWrite(USART4, (void *)dbuf, strlen(dbuf));
-        PrintStr("\r\n");
+        PRINT("\r\n");
     }
 
     AdcStop(ADC_IDX2);
@@ -526,7 +468,7 @@ static void TestSampleHold(void)
     AdcPowerDown(ADC_IDX2);
     cfg.dac_ch2_en = 0;
     DacCfg(DAC1, &cfg);
-    PrintStr("--- Test done ---\r\n");
+    PRINT("--- Test done ---\r\n");
 }
 
 /* ========================================================================
@@ -574,7 +516,7 @@ static void TestDualChannel(void)
     AdcSetExtTrig(ADC_IDX2, 0, ADC_TRIG_SOFTWARE);
     AdcEnable(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 5: Dual channel sync via DHR12RD ---\r\n");
+    PRINT("\r\n--- Test 5: Dual channel sync via DHR12RD ---\r\n");
 
     /* 测试 4 组值对 */
     const uint16_t pairs[][2] = { {0, 4095}, {1024, 3072}, {2048, 2048}, {3072, 1024} };
@@ -633,7 +575,7 @@ static void TestDualChannel(void)
     cfg.dac_ch1_en = 0;
     cfg.dac_ch2_en = 0;
     DacCfg(DAC1, &cfg);
-    PrintStr("--- Test done ---\r\n");
+    PRINT("--- Test done ---\r\n");
 }
 
 /* ========================================================================
@@ -710,7 +652,7 @@ static void TestSinCos(void)
           48,  200,  634, 1283, 2048, 2813, 3462, 3896
     };
 
-    PrintStr("\r\n--- Test 6: Sin/Ch1 Cos/Ch2, 2 cycles, amp=4000pp ---\r\n");
+    PRINT("\r\n--- Test 6: Sin/Ch1 Cos/Ch2, 2 cycles, amp=4000pp ---\r\n");
 
     DacWriteDualDhr(DAC1, sin_tab[0], cos_tab[0]);
     BasicTimerStart(TIM6);
@@ -765,7 +707,7 @@ static void TestSinCos(void)
     cfg.dac_ch1_en = 0;
     cfg.dac_ch2_en = 0;
     DacCfg(DAC1, &cfg);
-    PrintStr("--- Test done ---\r\n");
+    PRINT("--- Test done ---\r\n");
 
 #undef STEPS
 }
@@ -774,41 +716,16 @@ static void TestSinCos(void)
  *  主菜单
  * ======================================================================== */
 
+static const MenuEntry_t dac_menu[] = {
+    { "1", "Basic output (SW + ADC2 readback)", TestBasicOutput },
+    { "2", "Triangle wave ch2",                 TestTriangle },
+    { "3", "Noise wave ch2",                    TestNoise },
+    { "4", "Sample & Hold ch2",                 TestSampleHold },
+    { "5", "Dual channel sync (DHR12RD)",       TestDualChannel },
+    { "6", "Sin/Cos dual (2 cycles)",           TestSinCos },
+};
+
 void DacTest(void)
 {
-    char buf[8];
-    uint32_t exit = 0;
-
-    while (!exit)
-    {
-        IwdgKickDog(IWDG2);
-        PrintStr("\r\n===== DAC Test Menu =====\r\n");
-        PrintStr("1. Basic output (SW trigger + ADC2 internal readback)\r\n");
-        PrintStr("2. Triangle wave ch2 (DHR=1000 MAMP=2047 TIM6 trigger)\r\n");
-        PrintStr("3. Noise wave ch2 (DHR=1000 MAMP=2047 TIM6 trigger)\r\n");
-        PrintStr("4. Sample & Hold ch2 (long-term hold ~10s)\r\n");
-        PrintStr("5. Dual channel sync (DHR12RD + ADC2 dual read)\r\n");
-        PrintStr("6. Sin/Ch1 Cos/Ch2 (2 cycles, amp=4000pp)\r\n");
-        PrintStr("0. Back to main menu\r\n");
-        PrintStr("Select: ");
-
-        ReadLine(buf, sizeof(buf));
-
-        if (strcmp(buf, "0") == 0)
-            exit = 1;
-        else if (strcmp(buf, "1") == 0)
-            TestBasicOutput();
-        else if (strcmp(buf, "2") == 0)
-            TestTriangle();
-        else if (strcmp(buf, "3") == 0)
-            TestNoise();
-        else if (strcmp(buf, "4") == 0)
-            TestSampleHold();
-        else if (strcmp(buf, "5") == 0)
-            TestDualChannel();
-        else if (strcmp(buf, "6") == 0)
-            TestSinCos();
-        else
-            PrintStr("Invalid selection.\r\n");
-    }
+    RunSubMenu("DAC Test", dac_menu, sizeof(dac_menu) / sizeof(dac_menu[0]));
 }

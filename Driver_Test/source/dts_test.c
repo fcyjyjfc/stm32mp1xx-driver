@@ -1,32 +1,6 @@
 #include <string.h>
 #include "stm32mp1xx_dts.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
-
-static void PrintDec(char *buf, int32_t val)
-{
-    if (val < 0)
-    {
-        *buf++ = '-';
-        val = -val;
-    }
-    char *p = buf;
-    do {
-        *p++ = '0' + val % 10;
-        val /= 10;
-    } while (val > 0);
-    *p = '\0';
-    p--;
-    while (buf < p)
-    {
-        char t = *buf;
-        *buf++ = *p;
-        *p = t;
-        p--;
-    }
-}
+#include "test_common.h"
 
 void DtsTest(void)
 {

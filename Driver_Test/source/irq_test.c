@@ -4,40 +4,8 @@
 #include "stm32mp1xx_exti.h"
 #include "stm32mp1xx_gic.h"
 #include "stm32mp1xx_gpio.h"
-#include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_rcc.h"
-#include "stm32mp1xx_iwdg.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
-
-/*
- * 串口读一行，'S' 作为结束符
- */
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-
-    while (pos < max_len - 1)
-    {
-        IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-
-    buf[pos] = '\0';
-    return pos;
-}
-
+#include "test_common.h"
 /*
  * ========== 子菜单函数声明 ==========
  */
@@ -64,38 +32,15 @@ static void tim6_isr(void)
  * ========== 子菜单 ==========
  */
 
+static const MenuEntry_t irq_menu[] = {
+    { "1", "TIM6 + EXTI0 falling edge", IrqTest_ExtiFalling },
+    { "2", "EXTI0 both edge",           IrqTest_ExtiBoth },
+    { "3", "Preempt",                   IrqTest_Preempt },
+};
+
 void IrqTest(void)
 {
-
-    while (1)
-    {
-        IwdgKickDog(IWDG2);
-        PRINT("\r\n===== IRQ Test Menu =====\r\n");
-        PRINT("1. TIM6 + EXTI0 falling edge\r\n");
-        PRINT("2. EXTI0 both edge\r\n");
-        PRINT("3. Preempt\r\n");
-        PRINT("0. Back\r\n");
-        PRINT("===========================\r\n");
-        PRINT("Select: ");
-
-        /* 读一行，'S' 结束 */
-        char buf[8];
-        ReadLine(buf, sizeof(buf));
-
-        if (strcmp(buf, "1") == 0)
-            IrqTest_ExtiFalling();
-        else if (strcmp(buf, "2") == 0)
-            IrqTest_ExtiBoth();
-        else if (strcmp(buf, "3") == 0)
-            IrqTest_Preempt();
-        else if (strcmp(buf, "0") == 0)
-        {
-            PRINT("Back to main menu.\r\n");
-            return;
-        }
-        else
-            PRINT("Invalid.\r\n");
-    }
+    RunSubMenu("IRQ Test", irq_menu, sizeof(irq_menu) / sizeof(irq_menu[0]));
 }
 
 

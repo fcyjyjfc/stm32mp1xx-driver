@@ -8,8 +8,7 @@
 #include "stm32mp1xx_exti.h"
 #include "stm32mp1xx_gic.h"
 #include "stm32mp1xx_gpio.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+#include "test_common.h"
 
 /* 内部通道（仅 ADC2）*/
 static const uint32_t g_chans[] = {
@@ -51,72 +50,6 @@ static void Tim6Init(void)
     BasicTimerSetTrgo(TIM6, BTIM_TRGO_UPDATE);                      /* MMS=010: 更新事件 → TRGO */
 }
 
-static void NumToStr(char *buf, uint32_t val)
-{
-    char rev[12];
-    int i = 0;
-    do {
-        rev[i++] = '0' + val % 10;
-        val /= 10;
-    } while (val);
-    while (i > 0)
-        *buf++ = rev[--i];
-    *buf = '\0';
-}
-
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-    while (pos < max_len - 1)
-    {
-        IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-    buf[pos] = '\0';
-    return pos;
-}
-
-static void PrintStr(const char *s)
-{
-    UsartWrite(USART4, (void *)s, strlen(s));
-}
-
-static void PrintU32(const char *label, uint32_t val)
-{
-    char buf[48];
-    int p = 0;
-    while (*label) buf[p++] = *label++;
-    buf[p++] = ':';
-    buf[p++] = ' ';
-    NumToStr(buf + p, val);
-    while (buf[p]) p++;
-    buf[p++] = '\r';
-    buf[p++] = '\n';
-    UsartWrite(USART4, (void *)buf, p);
-}
-
-/* ========================================================================
- *  打印一轮全部通道结果
- * ======================================================================== */
-
-static void PrintAllResults(void)
-{
-    for (uint32_t i = 0; i < CHAN_N; i++)
-    {
-        AdcWaitEoc(ADC_IDX2, 1000000);
-        PrintU32(g_names[i], AdcRead(ADC_IDX2));
-    }
-}
-
 /* ========================================================================
  *  测试 1：单次模式（TIM6 每触发一次转一轮全部通道）
  * ======================================================================== */
@@ -142,7 +75,7 @@ static void TestSingleSeq(void)
     BasicTimerStart(TIM6);
     AdcStart(ADC_IDX2);                              /* 等待硬件触发 */
 
-    PrintStr("\r\n--- Test 1: Single CONT=0 AUTDLY=0 EXT=13(TRIG_RISING) TIM6_TRGO ---\r\n");
+    PRINT("\r\n--- Test 1: Single CONT=0 AUTDLY=0 EXT=13(TRIG_RISING) TIM6_TRGO ---\r\n");
 
     uint32_t ch_idx = 0;
     while (1)
@@ -161,7 +94,7 @@ static void TestSingleSeq(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS ---\r\n");
+            PRINT("--- EOS ---\r\n");
         }
 
         if (UsartReadOne(USART4, &ch))
@@ -197,7 +130,7 @@ static void TestContinuous(void)
     AdcEnable(ADC_IDX2);
     AdcStart(ADC_IDX2);                              /* 触发一次，连续转换 */
 
-    PrintStr("\r\n--- Test 2: Continuous CONT=1 AUTDLY=0 EXT=0(SW) OVR risk ---\r\n");
+    PRINT("\r\n--- Test 2: Continuous CONT=1 AUTDLY=0 EXT=0(SW) OVR risk ---\r\n");
 
     uint32_t ch_idx = 0;
     while (1)
@@ -216,7 +149,7 @@ static void TestContinuous(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS ---\r\n");
+            PRINT("--- EOS ---\r\n");
         }
 
         if (UsartReadOne(USART4, &ch))
@@ -251,7 +184,7 @@ static void TestSingleSw(void)
     AdcEnable(ADC_IDX2);
     AdcStart(ADC_IDX2);                              /* 触发一次，跑一轮 */
 
-    PrintStr("\r\n--- Test 3: Single CONT=0 AUTDLY=0 EXT=0(SW) one shot ---\r\n");
+    PRINT("\r\n--- Test 3: Single CONT=0 AUTDLY=0 EXT=0(SW) one shot ---\r\n");
 
     uint32_t ch_idx = 0;
     while (1)
@@ -269,7 +202,7 @@ static void TestSingleSw(void)
         if ((ch_idx == CHAN_N) && AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS (done) ---\r\n");
+            PRINT("--- EOS (done) ---\r\n");
             break;
         }
 
@@ -308,7 +241,7 @@ static void TestDiscontinuous(void)
     BasicTimerStart(TIM6);
     AdcStart(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 4: Discontinuous CONT=0 AUTDLY=0 DISC=2 EXT=13(TIM6_TRGO) ---\r\n");
+    PRINT("\r\n--- Test 4: Discontinuous CONT=0 AUTDLY=0 DISC=2 EXT=13(TIM6_TRGO) ---\r\n");
 
     uint32_t seq_cnt = 0;
     uint32_t ch_pos  = 0;                            /* 当前在序列中的位置 */
@@ -342,7 +275,7 @@ static void TestDiscontinuous(void)
             seq_cnt++;
             char buf[16];
             int p = 0;
-            PrintStr("  --- EOS #");
+            PRINT("  --- EOS #");
             NumToStr(buf, seq_cnt);
             while (buf[p]) p++;
             buf[p++] = '\r';
@@ -387,7 +320,7 @@ static void TestOvrBlock(void)
     AdcEnable(ADC_IDX2);
     AdcStart(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 5: OVR block CONT=0 AUTDLY=0 OVRMODE=PRESERVE no DR read ---\r\n");
+    PRINT("\r\n--- Test 5: OVR block CONT=0 AUTDLY=0 OVRMODE=PRESERVE no DR read ---\r\n");
 
     while (1)
     {
@@ -397,13 +330,13 @@ static void TestOvrBlock(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS (sequence complete) ---\r\n");
+            PRINT("--- EOS (sequence complete) ---\r\n");
         }
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_OVR))
         {
-            PrintStr("OVR detected! Sequence blocked (EOS never comes).\r\n");
-            PrintStr("Press any key to exit.\r\n");
+            PRINT("OVR detected! Sequence blocked (EOS never comes).\r\n");
+            PRINT("Press any key to exit.\r\n");
             break;
         }
 
@@ -439,7 +372,7 @@ static void TestContinuousAutoDelay(void)
     AdcEnable(ADC_IDX2);
     AdcStart(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 6: Continuous+AUTDLY CONT=1 AUTDLY=1 EXT=0(SW) no OVR ---\r\n");
+    PRINT("\r\n--- Test 6: Continuous+AUTDLY CONT=1 AUTDLY=1 EXT=0(SW) no OVR ---\r\n");
 
     uint32_t ch_idx = 0;
     while (1)
@@ -458,7 +391,7 @@ static void TestContinuousAutoDelay(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS ---\r\n");
+            PRINT("--- EOS ---\r\n");
         }
 
         if (UsartReadOne(USART4, &ch))
@@ -531,8 +464,8 @@ static void TestInjected(void)
         :: : "r0"
     );
 
-    PrintStr("\r\n--- Test 7: Injected CONT=1 AUTDLY=1 EXT=0(SW) EXTI0 triggers inj ch1 OS=1024x ---\r\n");
-    PrintStr("Press PA0 button to trigger injected conversion\r\n");
+    PRINT("\r\n--- Test 7: Injected CONT=1 AUTDLY=1 EXT=0(SW) EXTI0 triggers inj ch1 OS=1024x ---\r\n");
+    PRINT("Press PA0 button to trigger injected conversion\r\n");
 
     uint32_t reg_idx = 0;
     while (1)
@@ -551,12 +484,12 @@ static void TestInjected(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS ---\r\n");
+            PRINT("--- EOS ---\r\n");
         }
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_JEOS))
         {
-        	PrintStr("*********************************************************\r\n\r\n\r\n\r\n");
+        	PRINT("*********************************************************\r\n\r\n\r\n\r\n");
             AdcClearJeos(ADC_IDX2);
             uint32_t val = AdcReadInjected(ADC_IDX2, 0);
             uint32_t mv = val * 3300 / 65536;
@@ -575,7 +508,7 @@ static void TestInjected(void)
 
             while (*s) buf[p++] = *s++;
             UsartWrite(USART4, (void *)buf, p);
-            PrintStr("*********************************************************\r\n\r\n\r\n\r\n");
+            PRINT("*********************************************************\r\n\r\n\r\n\r\n");
         }
 
         if (UsartReadOne(USART4, &ch))
@@ -633,7 +566,7 @@ static void TestAutoInject(void)
     BasicTimerStart(TIM6);
     AdcStart(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 8: AutoInject CONT=0 EXT=TIM6_TRGO JAUTO=1 inj OS=1024x ---\r\n");
+    PRINT("\r\n--- Test 8: AutoInject CONT=0 EXT=TIM6_TRGO JAUTO=1 inj OS=1024x ---\r\n");
 
     uint32_t reg_idx = 0;
     while (1)
@@ -652,7 +585,7 @@ static void TestAutoInject(void)
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
             AdcClearEos(ADC_IDX2);
-            PrintStr("--- EOS (regular done, JAUTO starts injected) ---\r\n");
+            PRINT("--- EOS (regular done, JAUTO starts injected) ---\r\n");
         }
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_JEOS))
@@ -727,8 +660,8 @@ static void TestAwd1(void)
     BasicTimerStart(TIM6);
     AdcStart(ADC_IDX2);
 
-    PrintStr("\r\n--- Test 9: AWD1+2 CONT=0 EXT=TIM6_TRGO ch1 ---\r\n");
-    PrintStr("  AWD1: 1V~2V   AWD2: 1.2V~1.8V\r\n");
+    PRINT("\r\n--- Test 9: AWD1+2 CONT=0 EXT=TIM6_TRGO ch1 ---\r\n");
+    PRINT("  AWD1: 1V~2V   AWD2: 1.2V~1.8V\r\n");
 
     while (1)
     {
@@ -741,23 +674,22 @@ static void TestAwd1(void)
             uint32_t mv = val * 3300 / 65536;
             PrintU32("ch1", val);
             char mv_str[12];
-            int p = 0;
             NumToStr(mv_str, mv);
-            PrintStr("  (");
-            PrintStr(mv_str);
-            PrintStr(" mV)\r\n");
+            PRINT("  (");
+            PRINT(mv_str);
+            PRINT(" mV)\r\n");
         }
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_AWD1))
         {
             AdcClearFlag(ADC_IDX2, ADC_FLAG_AWD1);
-            PrintStr("*** AWD1: voltage OUT OF RANGE (1V~2V) ***\r\n");
+            PRINT("*** AWD1: voltage OUT OF RANGE (1V~2V) ***\r\n");
         }
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_AWD2))
         {
             AdcClearFlag(ADC_IDX2, ADC_FLAG_AWD2);
-            PrintStr("*** AWD2: voltage OUT OF RANGE (1.2V~1.8V) ***\r\n");
+            PRINT("*** AWD2: voltage OUT OF RANGE (1.2V~1.8V) ***\r\n");
         }
 
         if (UsartReadOne(USART4, &ch))
@@ -814,9 +746,9 @@ static void TestDual(void)
 
     /* === 使能双 ADC 前确认状态 === */
     if (!AdcEnable(ADC_IDX1))
-        PrintStr("ADC1 enable FAIL\r\n");
+        PRINT("ADC1 enable FAIL\r\n");
     if (!AdcEnable(ADC_IDX2))
-        PrintStr("ADC2 enable FAIL\r\n");
+        PRINT("ADC2 enable FAIL\r\n");
 
     Tim6Init();
     BasicTimerStart(TIM6);
@@ -836,7 +768,7 @@ static void TestDual(void)
         UsartWrite(USART4, (void *)dbg, dp);
     }
 
-    PrintStr("--- Test 10: Dual REG_SIMULT ADC1 ch1(ext) + ADC2 VREFINT TIM6 trig ---\r\n");
+    PRINT("--- Test 10: Dual REG_SIMULT ADC1 ch1(ext) + ADC2 VREFINT TIM6 trig ---\r\n");
 
     while (1)
     {
@@ -893,53 +825,20 @@ static void TestDual(void)
  *  二级菜单入口
  * ======================================================================== */
 
+static const MenuEntry_t adc_menu[] = {
+    { "1",  "Single (TIM6 TRGO)",           TestSingleSeq },
+    { "2",  "Continuous (SW, OVR risk)",     TestContinuous },
+    { "3",  "Single (SW, one shot)",         TestSingleSw },
+    { "4",  "Discontinuous (DISC=2, TIM6)",  TestDiscontinuous },
+    { "5",  "OVR block (PRESERVE, no read)", TestOvrBlock },
+    { "6",  "Continuous + AUTDLY",           TestContinuousAutoDelay },
+    { "7",  "Injected (EXTI0 OS=1024x)",     TestInjected },
+    { "8",  "AutoInject (JAUTO=1 OS=1024x)", TestAutoInject },
+    { "9",  "AWD1+2 (ch1 1V~2V/1.2V~1.8V)", TestAwd1 },
+    { "10", "Dual REG_SIMULT (ADC1+ADC2)",   TestDual },
+};
+
 void AdcTest(void)
 {
-    char buf[8];
-    uint32_t exit = 0;
-
-    while (!exit)
-    {
-        IwdgKickDog(IWDG2);
-        PrintStr("\r\n===== ADC Test Menu =====\r\n");
-        PrintStr("1. Single (TIM6 TRGO, each trigger converts all channels)\r\n");
-        PrintStr("2. Continuous (software trigger, no delay, OVR possible)\r\n");
-        PrintStr("3. Single (software trigger, one shot, auto stop)\r\n");
-        PrintStr("4. Discontinuous (DISCEN=2, TIM6 TRGO, 2 ch per trigger)\r\n");
-        PrintStr("5. OVR block demo (no DR read, PRESERVE mode)\r\n");
-        PrintStr("6. Continuous + AUTDLY (wait DR read, no OVR)\r\n");
-        PrintStr("7. Injected (EXTI0/PA0 triggers inj ch1 OS=1024x)\r\n");
-        PrintStr("8. AutoInject (JAUTO=1, TIM6 triggers reg, auto inj ch1 OS=1024x)\r\n");
-        PrintStr("9. AWD1+2 (monitor ch1, AWD1=1V~2V, AWD2=1.2V~1.8V)\r\n");
-        PrintStr("10. Dual REG_SIMULT (ADC1 ch1 potentiometer + ADC2 VREFINT)\r\n");
-        PrintStr("0. Back to main menu\r\n");
-        PrintStr("Select: ");
-
-        ReadLine(buf, sizeof(buf));
-
-        if (strcmp(buf, "0") == 0)
-            exit = 1;
-        else if (strcmp(buf, "1") == 0)
-            TestSingleSeq();
-        else if (strcmp(buf, "2") == 0)
-            TestContinuous();
-        else if (strcmp(buf, "3") == 0)
-            TestSingleSw();
-        else if (strcmp(buf, "4") == 0)
-            TestDiscontinuous();
-        else if (strcmp(buf, "5") == 0)
-            TestOvrBlock();
-        else if (strcmp(buf, "6") == 0)
-            TestContinuousAutoDelay();
-        else if (strcmp(buf, "7") == 0)
-            TestInjected();
-        else if (strcmp(buf, "8") == 0)
-            TestAutoInject();
-        else if (strcmp(buf, "9") == 0)
-            TestAwd1();
-        else if (strcmp(buf, "10") == 0)
-            TestDual();
-        else
-            PrintStr("Invalid selection.\r\n");
-    }
+    RunSubMenu("ADC Test", adc_menu, sizeof(adc_menu) / sizeof(adc_menu[0]));
 }

@@ -2,24 +2,16 @@
 #include "stm32mp1xx_spi.h"
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_rcc.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
 #include "w25qxx.h"
 #include "m74hc595.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+#include "test_common.h"
 
 static SpiCfg_t Spi4Cfg;
-static int      SpiGpioDone = 0;
 
 
 /* 一次性的 GPIO + 时钟初始化 */
 static void SpiGpioInit(void)
 {
-//    if (SpiGpioDone)
-//        return;
-//    SpiGpioDone = 1;
-
     RCC->MP_APB2ENSETR |= 1 << 9;   // SPI4 clock
     RCC->MP_AHB4ENSETR |= 0x7f;      // GPIOA-G enable
 
@@ -63,43 +55,6 @@ static void SpiInitComm(SpiCommMode_t comm_mode, SpiSsMgmt_t ss_mgmt)
     SpiCfg(SPI4, &Spi4Cfg);
     W25Q_Init(SPI4);
     Led_Init(SPI4);
-}
-
-
-static void PrintHex8(uint8_t val)
-{
-    char buf[3];
-    char hex[] = "0123456789ABCDEF";
-    buf[0] = hex[val >> 4];
-    buf[1] = hex[val & 0xF];
-    buf[2] = '\0';
-    PRINT(buf);
-}
-
-
-static void PrintDec(char *buf, int32_t val)
-{
-    if (val < 0)
-    {
-        *buf++ = '-';
-        val = -val;
-    }
-    char *p = buf;
-    do
-    {
-        *p++ = '0' + val % 10;
-        val /= 10;
-    }
-    while (val > 0);
-    *p = '\0';
-    p--;
-    while (buf < p)
-    {
-        char t = *buf;
-        *buf++ = *p;
-        *p = t;
-        p--;
-    }
 }
 
 
@@ -287,57 +242,12 @@ static void LedTest(void)
 
 /* ===== Submenu ===== */
 
-static void PrintSubMenu(void)
-{
-    PRINT("\r\n===== SPI Test =====\r\n");
-    PRINT("1. W25QXX Flash\r\n");
-    PRINT("2. LED Display\r\n");
-    PRINT("0. Back\r\n");
-    PRINT("Select: ");
-}
-
+static const MenuEntry_t spi_menu[] = {
+    { "1", "W25QXX Flash", FlashTest },
+    { "2", "LED Display",  LedTest },
+};
 
 void SpiTest(void)
 {
-    char buf[8];
-
-    while (1)
-    {
-        IwdgKickDog(IWDG2);
-        PrintSubMenu();
-
-        int pos = 0;
-        char ch;
-        while (pos < (int)sizeof(buf) - 1)
-        {
-            IwdgKickDog(IWDG2);
-            if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-                continue;
-            if (ch == 'S' || ch == 's')
-            {
-                UsartWrite(USART4, (void *)"\r\n", 2);
-                break;
-            }
-            UsartWrite(USART4, &ch, 1);
-            buf[pos++] = ch;
-        }
-        buf[pos] = '\0';
-
-        if (strcmp(buf, "0") == 0)
-        {
-            break;
-        }
-        else if (strcmp(buf, "1") == 0)
-        {
-            FlashTest();
-        }
-        else if (strcmp(buf, "2") == 0)
-        {
-            LedTest();
-        }
-        else
-        {
-            PRINT("Invalid selection.\r\n");
-        }
-    }
+    RunSubMenu("SPI Test", spi_menu, sizeof(spi_menu) / sizeof(spi_menu[0]));
 }

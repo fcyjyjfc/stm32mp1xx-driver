@@ -1,13 +1,6 @@
 #include <string.h>
 #include "test_menu.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
-
-typedef struct {
-    const char *key;
-    const char *desc;
-    void (*func)(void);
-} MenuEntry_t;
+#include "test_common.h"
 
 extern void GpioTest(void);
 extern void SpiTest(void);
@@ -37,8 +30,6 @@ static const MenuEntry_t g_menu[] = {
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
 
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
-
 static void PrintMenu(void)
 {
     PRINT("\r\n===== Driver Test Menu =====\r\n");
@@ -53,31 +44,6 @@ static void PrintMenu(void)
     PRINT("0. Exit\r\n");
     PRINT("============================\r\n");
     PRINT("Select: ");
-}
-
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-
-    while (pos < max_len - 1)
-    {
-    	IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-
-    buf[pos] = '\0';
-    return pos;
 }
 
 void TestMenu_Run(void)

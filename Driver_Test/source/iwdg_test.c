@@ -1,8 +1,6 @@
 #include <string.h>
 #include "stm32mp1xx_iwdg.h"
-#include "stm32mp1xx_usart.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+#include "test_common.h"
 
 static IwdgCfg_t iwdg_cfg;
 
@@ -16,15 +14,6 @@ void IwdgInit(void)
     iwdg_cfg.iwdg_win_en = 0;
 
     IwdgCfg(IWDG2, &iwdg_cfg);
-}
-
-static void PrintSubMenu(void)
-{
-    PRINT("\r\n===== IWDG Test =====\r\n");
-    PRINT("1. Kick test (kick dog every ~5s)\r\n");
-    PRINT("2. Reset test (stop kicking, reset in ~10s)\r\n");
-    PRINT("0. Back\r\n");
-    PRINT("Select: ");
 }
 
 static void KickTest(void)
@@ -76,39 +65,12 @@ static void ResetTest(void)
     while (1);
 }
 
+static const MenuEntry_t iwdg_menu[] = {
+    { "1", "Kick test (~5s)",              KickTest },
+    { "2", "Reset test (stop kick, ~10s)", ResetTest },
+};
+
 void IwdgTest(void)
 {
-    char buf[8];
-
-    while (1)
-    {
-        IwdgKickDog(IWDG2);
-        PrintSubMenu();
-
-        int pos = 0;
-        char ch;
-        while (pos < (int)sizeof(buf) - 1)
-        {
-            IwdgKickDog(IWDG2);
-            if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-                continue;
-            if (ch == 'S' || ch == 's')
-            {
-                UsartWrite(USART4, (void *)"\r\n", 2);
-                break;
-            }
-            UsartWrite(USART4, &ch, 1);
-            buf[pos++] = ch;
-        }
-        buf[pos] = '\0';
-
-        if (strcmp(buf, "0") == 0)
-            break;
-        else if (strcmp(buf, "1") == 0)
-            KickTest();
-        else if (strcmp(buf, "2") == 0)
-            ResetTest();
-        else
-            PRINT("Invalid selection.\r\n");
-    }
+    RunSubMenu("IWDG Test", iwdg_menu, sizeof(iwdg_menu) / sizeof(iwdg_menu[0]));
 }

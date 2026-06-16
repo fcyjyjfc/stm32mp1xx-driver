@@ -6,8 +6,7 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
-
-#define PRINT(s)  UsartWrite(USART4, (void *)(s), strlen(s))
+#include "test_common.h"
 
 static volatile uint32_t tim6_irq_cnt = 0;          /* TIM6 中断计数 */
 
@@ -63,52 +62,6 @@ void Tim6IrqInit(void)
     GpioMode(GPIO_Z, 6, GPIO_MODER_OUTPUT);         /* GPIOZ6 推挽输出 */
     GpioOtype(GPIO_Z, 6, GPIO_OTYPE_PUSH_PULL);
     GpioOutLow(GPIO_Z, 6);
-}
-
-
-static int ReadLine(char *buf, int max_len)
-{
-    int pos = 0;
-    char ch;
-
-    while (pos < max_len - 1)
-    {
-        IwdgKickDog(IWDG2);
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 0)
-            continue;
-
-        if (ch == 'S' || ch == 's')
-        {
-            UsartWrite(USART4, (void *)"\r\n", 2);
-            break;
-        }
-
-        UsartWrite(USART4, &ch, 1);
-        buf[pos++] = ch;
-    }
-
-    buf[pos] = '\0';
-    return pos;
-}
-
-
-static void NumToStr(char *buf, uint32_t val)
-{
-    char rev[12];
-    int i = 0;
-
-    do
-    {
-        rev[i++] = '0' + val % 10;
-        val /= 10;
-    }
-    while (val);
-
-    while (i > 0)
-    {
-        *buf++ = rev[--i];
-    }
-    *buf = '\0';
 }
 
 
