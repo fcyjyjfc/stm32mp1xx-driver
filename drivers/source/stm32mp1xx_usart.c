@@ -194,3 +194,123 @@ uint8_t UsartReadAll(volatile UsartRegs_t *const usart_reg)
 }
 
 
+/*
+ * 从环形缓冲区取一段连续数据启动 DMA 传输。
+ * 回绕时只取 tail 到末尾的部分, TC 中断里会再次 Kick 取剩余部分。
+ */
+static void UsartDmaKick(UsartDmaCtx_t *ctx)
+{
+    if (ctx->tx_busy || ctx->tx_head == ctx->tx_tail)
+        return;
+
+    ctx->tx_busy = 1;
+
+    uint32_t tail = ctx->tx_tail;
+    uint32_t head = ctx->tx_head;
+    uint32_t len;
+
+    /* 取 tail 到 head 或 tail 到缓冲区末尾, 取较短的连续段 */
+    if (head > tail)
+        len = head - tail;
+    else
+        len = ctx->tx_size - tail;
+
+    ctx->tx_dma_len = len;
+    ctx->dma_cfg.dma_mem0_addr = (uint32_t)&ctx->tx_buf[tail];
+    ctx->dma_cfg.dma_ndtr      = len;
+    DmaCfg(ctx->dma, &ctx->dma_cfg);   /* 配置并使能 DMA Stream */
+
+    ctx->usart->CR3 |= (1u << 7);      /* DMAT=1, 开启 USART DMA 发送请求 */
+}
+
+
+/*
+ * 一次性初始化: 绑定 USART/DMA/环形缓冲区, 准备 DMA 配置模板, 路由 DMAMUX。
+ * 不启动传输, 首次 UsartDmaSend 时才触发 DMA。
+ */
+void UsartDmaTxInit(UsartDmaCtx_t *ctx, volatile UsartRegs_t *usart,
+                    volatile DmaRegs_t *dma, uint32_t stream,
+                    DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size)
+{
+    ctx->usart      = usart;
+    ctx->dma        = dma;
+    ctx->stream     = stream;
+    ctx->tx_buf     = buf;
+    ctx->tx_size    = size;
+    ctx->tx_head    = 0;
+    ctx->tx_tail    = 0;
+    ctx->tx_dma_len = 0;
+    ctx->tx_busy    = 0;
+
+    /* 确保 DMA Stream 处于已知状态 */
+    DmaDisable(dma, stream);
+    DmaClearTcif(dma, stream);
+
+    /* DMA 配置模板: M→P, 8bit, MINC, TCIE, 直接模式; M0AR/NDTR 由 Kick 填入 */
+    ctx->dma_cfg              = DMA_CFG_DEFAULT;
+    ctx->dma_cfg.dma_stream_num  = stream;
+    ctx->dma_cfg.dma_dir         = DMA_DIR_MEM_2_PER;
+    ctx->dma_cfg.dma_psize       = DMA_DATA_SIZE_BIT8;
+    ctx->dma_cfg.dma_msize       = DMA_DATA_SIZE_BIT8;
+    ctx->dma_cfg.dma_memaddr_incr = 1;
+    ctx->dma_cfg.dma_peraddr_incr = 0;
+    ctx->dma_cfg.dma_per_addr    = (uint32_t)&usart->TDR;
+    ctx->dma_cfg.dma_tcie        = 1;
+
+    /* DMA1 Stream N → DMAMUX ch N, DMA2 Stream N → DMAMUX ch N+8 */
+    uint32_t dmamux_ch = (dma == DMA2) ? stream + 8 : stream;
+    DmaMuxRoute(DMAMUX1, dmamux_ch, req_id);
+}
+
+
+/*
+ * 非阻塞发送: 数据拷入环形缓冲区, DMA 空闲时自动启动。
+ * 返回实际入队字节数, 缓冲区满时截断。
+ */
+int UsartDmaSend(UsartDmaCtx_t *ctx, const uint8_t *data, uint32_t len)
+{
+    uint32_t head = ctx->tx_head;
+    uint32_t tail = ctx->tx_tail;
+    uint32_t free;
+
+    /* 保留 1 字节不用, 使 head==tail 唯一表示"空" */
+    if (head >= tail)
+        free = ctx->tx_size - 1 - (head - tail);
+    else
+        free = tail - head - 1;
+
+    if (len > free)
+        len = free;
+
+    for (uint32_t i = 0; i < len; i++)
+    {
+        ctx->tx_buf[head] = data[i];
+        head++;
+        if (head >= ctx->tx_size)
+            head = 0;
+    }
+    ctx->tx_head = head;
+
+    UsartDmaKick(ctx);
+    return (int)len;
+}
+
+
+/*
+ * DMA 传输完成中断回调, 由用户在 GIC ISR 中调用。
+ * 推进 tail, 缓冲区有剩余数据则续传, 否则关闭 DMAT。
+ */
+void UsartDmaTxIsr(UsartDmaCtx_t *ctx)
+{
+    DmaClearTcif(ctx->dma, ctx->stream);
+
+    ctx->tx_tail = (ctx->tx_tail + ctx->tx_dma_len) % ctx->tx_size;
+    ctx->tx_busy = 0;
+
+    if (ctx->tx_head != ctx->tx_tail)
+        UsartDmaKick(ctx);                  /* 还有数据, 续传 */
+    else
+        ctx->usart->CR3 &= ~(1u << 7);     /* 缓冲区空, 关 DMAT */
+}
+
+

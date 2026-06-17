@@ -114,6 +114,25 @@ void DmaCfg(volatile DmaRegs_t *const dma, const DmaCfg_t *const cfg)
 }
 
 
+void DmaClearTcif(volatile DmaRegs_t *dma, uint32_t stream)
+{
+    uint32_t s = stream % 4;
+    uint32_t shift = (s / 2) * 16 + (s % 2) * 6;
+    uint32_t mask = (1u << 5) << shift;
+    if (stream < 4)
+        dma->LIFCR = mask;
+    else
+        dma->HIFCR = mask;
+}
+
+
+void DmaDisable(volatile DmaRegs_t *dma, uint32_t stream)
+{
+    dma->STREAM[stream].CR &= ~1u;
+    while (dma->STREAM[stream].CR & 1u);
+}
+
+
 void DmaMuxSyncDisable(volatile DmaMuxRegs_t *mux, uint32_t ch)
 {
     mux->CR[ch] &= ~((1u << 16) | (1u << 9));  /* 清 SE 和 EGE */

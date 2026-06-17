@@ -82,4 +82,36 @@ extern uint32_t UsartReadOne(volatile UsartRegs_t *const usart_reg, uint8_t *dat
 extern uint8_t UsartReadAll(volatile UsartRegs_t *const usart_reg);
 
 
+#include "stm32mp1xx_dma.h"
+
+/*
+ * USART DMA 发送上下文
+ * 内部维护环形缓冲区，DMA 从中取连续段搬运到 TDR。
+ * 缓冲区最多存 tx_size-1 字节（留 1 字节区分满/空）。
+ */
+typedef struct {
+    volatile UsartRegs_t *usart;       // 绑定的 USART 实例
+    volatile DmaRegs_t   *dma;         // 绑定的 DMA 控制器
+    uint32_t              stream;      // DMA Stream 编号 0~7
+    DmaCfg_t              dma_cfg;     // DMA 配置模板, M0AR/NDTR 每次 Kick 时更新
+    uint8_t              *tx_buf;      // 环形缓冲区首地址
+    uint32_t              tx_size;     // 环形缓冲区总大小
+    volatile uint32_t     tx_head;     // 写指针, 由 UsartDmaSend 推进
+    volatile uint32_t     tx_tail;     // 读指针, 由 DMA TC 中断推进
+    volatile uint32_t     tx_dma_len;  // 当前 DMA 传输长度, 用于 TC 中断推进 tail
+    volatile int          tx_busy;     // DMA 正在传输标志
+} UsartDmaCtx_t;
+
+/* 一次性初始化: 绑定 USART/DMA/缓冲区, 路由 DMAMUX, 不启动传输 */
+void UsartDmaTxInit(UsartDmaCtx_t *ctx, volatile UsartRegs_t *usart,
+                    volatile DmaRegs_t *dma, uint32_t stream,
+                    DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size);
+
+/* 非阻塞发送: 数据拷入环形缓冲, DMA 空闲时自动启动, 返回实际入队字节数 */
+int  UsartDmaSend(UsartDmaCtx_t *ctx, const uint8_t *data, uint32_t len);
+
+/* DMA TC 中断回调: 注册到 GIC, 在 ISR 中调用 */
+void UsartDmaTxIsr(UsartDmaCtx_t *ctx);
+
+
 #endif

@@ -331,6 +331,8 @@ extern volatile DmaRegs_t *const DMA1;
 extern volatile DmaMuxRegs_t *const DMAMUX1;
 
 extern void DmaCfg(volatile DmaRegs_t *const dma, const DmaCfg_t *const cfg);
+extern void DmaClearTcif(volatile DmaRegs_t *dma, uint32_t stream);
+extern void DmaDisable(volatile DmaRegs_t *dma, uint32_t stream);
 
 extern void DmaMuxSyncDisable(volatile DmaMuxRegs_t *mux, uint32_t ch);
 extern void DmaMuxSyncEnable(volatile DmaMuxRegs_t *mux, uint32_t ch,
