@@ -56,8 +56,6 @@ void DmaTest(void)
     /* 通过 DMA 发送 HELLO WORLD */
     const char *msg = "HELLO WORLD\r\n";
     UsartDmaSend(&uart4_dma_ctx, (const uint8_t *)msg, strlen(msg));
-
-    /* 等 DMA 发完, 之后才能用轮询 PRINT */
     WaitDmaTxDone();
 
     PRINT("DMA TX done. Press any key to exit.\r\n");

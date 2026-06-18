@@ -218,6 +218,7 @@ static void UsartDmaKick(UsartDmaCtx_t *ctx)
     ctx->tx_dma_len = len;
     ctx->dma_cfg.dma_mem0_addr = (uint32_t)&ctx->tx_buf[tail];
     ctx->dma_cfg.dma_ndtr      = len;
+
     DmaCfg(ctx->dma, &ctx->dma_cfg);   /* 配置并使能 DMA Stream */
 
     ctx->usart->CR3 |= (1u << 7);      /* DMAT=1, 开启 USART DMA 发送请求 */

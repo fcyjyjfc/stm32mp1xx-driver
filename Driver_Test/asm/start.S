@@ -27,9 +27,31 @@ reset:
   mrs   r0,cpsr 
   bic  r0,r0,#0x1f 
   orr  r0,r0,#0xd3 
-  msr  cpsr,r0        //  Enable svc mode of cpu 
+  msr  cpsr,r0        //  Enable svc mode of cpu
 
-init_stack: 
+  // Clean + Invalidate entire L1 D-Cache (32KB, 4-way, 64B line, 128 sets)
+  mov  r0, #0                      // way = 0
+1:
+  mov  r1, #0                      // set = 0
+2:
+  orr  r2, r0, r1, lsl #6         // val = way[31:30] | set[12:6]
+  mcr  p15, 0, r2, c7, c14, 2     // DCCISW: clean + invalidate
+  add  r1, r1, #1
+  cmp  r1, #128
+  blt  2b
+  add  r0, r0, #0x40000000        // next way (1 << 30)
+  cmp  r0, #0
+  bne  1b
+  mcr  p15, 0, r0, c7, c10, 4     // DSB
+
+  // Disable D-Cache
+  mrc  p15, 0, r0, c1, c0, 0
+  bic  r0, r0, #4
+  mcr  p15, 0, r0, c1, c0, 0
+  mcr  p15, 0, r0, c7, c10, 4     // DSB
+  mcr  p15, 0, r0, c7, c5, 4      // ISB
+
+init_stack:
   ldr  r0,stacktop         /*get stack top pointer*/ 
 
  /********svc mode stack********/ 
@@ -51,9 +73,9 @@ init_stack:
   msr  cpsr,#0xdb 
   mov  sp,r0 
   sub  r0,#0 
-   /*** sys mode and usr mode stack ***/ 
-  msr  cpsr,#0x10 
-  mov  sp,r0             /*1024 byte  for user mode of stack*/ 
+   /*** system mode stack (privileged, same regs as usr) ***/
+  msr  cpsr,#0x1F
+  mov  sp,r0
 
 
  bl main 
