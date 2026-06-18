@@ -127,8 +127,7 @@ static void IrqTest_ExtiFalling(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -205,8 +204,7 @@ static void IrqTest_ExtiBoth(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -318,8 +316,7 @@ static void IrqTest_Preempt(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 

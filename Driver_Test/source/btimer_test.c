@@ -116,7 +116,6 @@ void BtimerTest(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         // 检查 UIF（SR bit0）
         if (TIM6->SR & 1)
@@ -137,7 +136,8 @@ void BtimerTest(void)
             }
             out[pos++] = '\r';
             out[pos++] = '\n';
-            UsartWrite(USART4, (void *)out, pos);
+            out[pos] = '\0';
+            PRINT(out);
 
             // 翻转 LED
             GpioToggle(GPIO_Z, 6);
@@ -161,14 +161,15 @@ void BtimerTest(void)
 			}
 			out[pos++] = '\r';
 			out[pos++] = '\n';
-			UsartWrite(USART4, (void *)out, pos);
+			out[pos] = '\0';
+			PRINT(out);
 
 			// 翻转 LED
 			GpioToggle(GPIO_Z, 7);
 		}
 
         // 检查串口是否有输入
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
         {
             PRINT("\r\n");
             break;

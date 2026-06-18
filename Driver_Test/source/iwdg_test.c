@@ -43,8 +43,7 @@ static void KickTest(void)
         volatile int d;
         for (d = 0; d < 12000000; d++);
 
-        char ch;
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 1)
+        if (FramePoll(0))
         {
             PRINT("Kick test stopped.\r\n");
             break;

@@ -13,11 +13,13 @@
 extern void UsartInit(void);
 extern void I2cInit(void);
 extern void IwdgInit(void);
+extern void TestCommonInit(void);
 
 
 int main(void)
 {
     UsartInit();
+    TestCommonInit();
     I2cInit();
     IwdgInit();
 

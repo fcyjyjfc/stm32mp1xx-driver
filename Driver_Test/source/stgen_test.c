@@ -61,8 +61,7 @@ void StgenTest(void)
         PRINT(buf);
         PRINT("\r\n");
 
-        char ch;
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 1)
+        if (FramePoll(0))
         {
             PRINT("aborted.\r\n");
             break;

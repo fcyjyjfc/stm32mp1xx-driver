@@ -153,7 +153,8 @@ static void I2cSensorTest(void)
     s = " %\r\n";
     while (*s) buf[pos++] = *s++;
 
-    UsartWrite(USART4, (void *)buf, pos);
+    buf[pos] = '\0';
+    PRINT(buf);
 }
 
 // ==================== >255-Byte Write / Read Test ====================

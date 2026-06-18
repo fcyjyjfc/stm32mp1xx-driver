@@ -114,4 +114,32 @@ int  UsartDmaSend(UsartDmaCtx_t *ctx, const uint8_t *data, uint32_t len);
 void UsartDmaTxIsr(UsartDmaCtx_t *ctx);
 
 
+/*
+ * USART DMA 接收上下文
+ * DMA 以循环模式持续写入环形缓冲区, 应用层轮询 NDTR 计算写入位置。
+ */
+typedef struct {
+    volatile UsartRegs_t *usart;
+    volatile DmaRegs_t   *dma;
+    uint32_t              stream;
+    uint8_t              *rx_buf;
+    uint32_t              rx_size;
+    uint32_t              rx_rd;
+} UsartDmaRxCtx_t;
+
+/* 初始化: 配置 DMA 循环接收, 路由 DMAMUX, 立即启动 */
+void UsartDmaRxInit(UsartDmaRxCtx_t *ctx, volatile UsartRegs_t *usart,
+                    volatile DmaRegs_t *dma, uint32_t stream,
+                    DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size);
+
+/* 查询可读字节数 */
+uint32_t UsartDmaRxAvail(UsartDmaRxCtx_t *ctx);
+
+/* 读取一个字节, 返回 1=成功, 0=无数据 */
+int  UsartDmaRxReadOne(UsartDmaRxCtx_t *ctx, uint8_t *byte);
+
+/* 停止 DMA 接收, 恢复轮询模式 */
+void UsartDmaRxStop(UsartDmaRxCtx_t *ctx);
+
+
 #endif

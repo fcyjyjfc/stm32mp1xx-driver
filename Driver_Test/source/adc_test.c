@@ -81,7 +81,6 @@ static void TestSingleSeq(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -97,7 +96,7 @@ static void TestSingleSeq(void)
             PRINT("--- EOS ---\r\n");
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -136,7 +135,6 @@ static void TestContinuous(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -152,7 +150,7 @@ static void TestContinuous(void)
             PRINT("--- EOS ---\r\n");
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -190,7 +188,6 @@ static void TestSingleSw(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -206,7 +203,7 @@ static void TestSingleSw(void)
             break;
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -248,7 +245,6 @@ static void TestDiscontinuous(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -263,7 +259,8 @@ static void TestDiscontinuous(void)
             while (buf[p]) p++;
             buf[p++] = '\r';
             buf[p++] = '\n';
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
 
             ch_pos++;
         }
@@ -280,10 +277,11 @@ static void TestDiscontinuous(void)
             while (buf[p]) p++;
             buf[p++] = '\r';
             buf[p++] = '\n';
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -325,7 +323,6 @@ static void TestOvrBlock(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOS))
         {
@@ -340,7 +337,7 @@ static void TestOvrBlock(void)
             break;
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -378,7 +375,6 @@ static void TestContinuousAutoDelay(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -394,7 +390,7 @@ static void TestContinuousAutoDelay(void)
             PRINT("--- EOS ---\r\n");
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -471,7 +467,6 @@ static void TestInjected(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -507,22 +502,17 @@ static void TestInjected(void)
 
 
             while (*s) buf[p++] = *s++;
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
             PRINT("*********************************************************\r\n\r\n\r\n\r\n");
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
     GicdDisableInt(GIC_EXTI0);
     ExtiDisableInt(1, 0);
-    __asm__ volatile(
-        "mrs r0, cpsr\n\t"
-        "orr r0, r0, #0x80\n\t"
-        "msr cpsr, r0\n\t"
-        :: : "r0"
-    );
     AdcStop(ADC_IDX2);
     AdcDisable(ADC_IDX2);
     AdcSetOverSample(ADC_IDX2, 0, 0, 0, 0);
@@ -572,7 +562,6 @@ static void TestAutoInject(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -605,10 +594,11 @@ static void TestAutoInject(void)
             while (buf[p]) p++;
             s = " mV]\r\n";
             while (*s) buf[p++] = *s++;
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -666,7 +656,6 @@ static void TestAwd1(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
         {
@@ -692,7 +681,7 @@ static void TestAwd1(void)
             PRINT("*** AWD2: voltage OUT OF RANGE (1.2V~1.8V) ***\r\n");
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 
@@ -765,7 +754,8 @@ static void TestDual(void)
         while (dbg[dp]) dp++;
         ds = "\r\n";
         while (*ds) dbg[dp++] = *ds++;
-        UsartWrite(USART4, (void *)dbg, dp);
+        dbg[dp] = '\0';
+        PRINT(dbg);
     }
 
     PRINT("--- Test 10: Dual REG_SIMULT ADC1 ch1(ext) + ADC2 VREFINT TIM6 trig ---\r\n");
@@ -773,7 +763,6 @@ static void TestDual(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         /* 等待两个 ADC 都完成转换 */
         if (AdcGetFlag(ADC_IDX1, ADC_FLAG_EOC) && AdcGetFlag(ADC_IDX2, ADC_FLAG_EOC))
@@ -803,10 +792,11 @@ static void TestDual(void)
             while (buf[p]) p++;
             s = " mV)\r\n";
             while (*s) buf[p++] = *s++;
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
         }
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
     }
 

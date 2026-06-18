@@ -315,3 +315,80 @@ void UsartDmaTxIsr(UsartDmaCtx_t *ctx)
 }
 
 
+/* ========== DMA 循环接收 ========== */
+
+
+void UsartDmaRxInit(UsartDmaRxCtx_t *ctx, volatile UsartRegs_t *usart,
+                    volatile DmaRegs_t *dma, uint32_t stream,
+                    DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size)
+{
+    ctx->usart   = usart;
+    ctx->dma     = dma;
+    ctx->stream  = stream;
+    ctx->rx_buf  = buf;
+    ctx->rx_size = size;
+    ctx->rx_rd   = 0;
+
+    DmaDisable(dma, stream);
+    DmaClearTcif(dma, stream);
+
+    DmaCfg_t cfg          = DMA_CFG_DEFAULT;
+    cfg.dma_stream_num    = stream;
+    cfg.dma_dir           = DMA_DIR_PER_2_MEM;
+    cfg.dma_psize         = DMA_DATA_SIZE_BIT8;
+    cfg.dma_msize         = DMA_DATA_SIZE_BIT8;
+    cfg.dma_memaddr_incr  = 1;
+    cfg.dma_peraddr_incr  = 0;
+    cfg.dma_per_addr      = (uint32_t)&usart->RDR;
+    cfg.dma_mem0_addr     = (uint32_t)buf;
+    cfg.dma_ndtr          = size;
+    cfg.dma_circual_buf   = 1;
+
+    uint32_t dmamux_ch = (dma == DMA2) ? stream + 8 : stream;
+    DmaMuxRoute(DMAMUX1, dmamux_ch, req_id);
+
+    usart->ICR = (1u << 3);        /* 清 ORE */
+    (void)usart->RDR;              /* 排空残留数据 */
+
+    DmaCfg(dma, &cfg);             /* 配置并启动 DMA */
+    usart->CR3 |= (1u << 6);       /* DMAR=1, 使能 USART DMA 接收 */
+}
+
+
+uint32_t UsartDmaRxAvail(UsartDmaRxCtx_t *ctx)
+{
+    uint32_t ndtr = ctx->dma->STREAM[ctx->stream].NDTR;
+    uint32_t wr = ctx->rx_size - ndtr;
+    if (wr >= ctx->rx_size)
+        wr = 0;
+    if (wr >= ctx->rx_rd)
+        return wr - ctx->rx_rd;
+    return ctx->rx_size - ctx->rx_rd + wr;
+}
+
+
+int UsartDmaRxReadOne(UsartDmaRxCtx_t *ctx, uint8_t *byte)
+{
+    uint32_t ndtr = ctx->dma->STREAM[ctx->stream].NDTR;
+    uint32_t wr = ctx->rx_size - ndtr;
+    if (wr >= ctx->rx_size)
+        wr = 0;
+    if (wr == ctx->rx_rd)
+        return 0;
+    *byte = ctx->rx_buf[ctx->rx_rd];
+    ctx->rx_rd++;
+    if (ctx->rx_rd >= ctx->rx_size)
+        ctx->rx_rd = 0;
+    return 1;
+}
+
+
+void UsartDmaRxStop(UsartDmaRxCtx_t *ctx)
+{
+    ctx->usart->CR3 &= ~(1u << 6);     /* DMAR=0 */
+    DmaDisable(ctx->dma, ctx->stream);
+    ctx->usart->ICR = (1u << 3);        /* 清 ORE */
+    (void)ctx->usart->RDR;              /* 排空, 恢复轮询模式 */
+}
+
+

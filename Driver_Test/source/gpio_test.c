@@ -1,7 +1,5 @@
-#include <string.h>
 #include "stm32mp1xx_gpio.h"
-#include "stm32mp1xx_usart.h"
-#include "stm32mp1xx_iwdg.h"
+#include "test_common.h"
 
 static void GpioInit(void)
 {
@@ -29,7 +27,7 @@ static void GpioInit(void)
 void GpioTest(void)
 {
     const char msg[] = "GPIO: Z5=LED(toggle on A0 press), Z6/Z7=LED(blink), any key to exit\r\n";
-    UsartWrite(USART4, (void *)msg, strlen(msg));
+    PRINT(msg);
 
     GpioInit();
 
@@ -59,8 +57,7 @@ void GpioTest(void)
         state = !state;
 
         // check for keypress to exit
-        char ch;
-        if (UsartReadOne(USART4, (uint8_t *)&ch) == 1)
+        if (FramePoll(0))
             break;
 
         // delay
@@ -76,7 +73,7 @@ void GpioTest(void)
 
         if (press == 1)
 		{
-			UsartWrite(USART4, (void *)stat, strlen(stat));
+			PRINT(stat);
 			GpioToggle(GPIO_Z, 5);
 			press = 0;
 		}

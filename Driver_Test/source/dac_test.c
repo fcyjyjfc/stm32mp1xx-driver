@@ -73,24 +73,27 @@ static void TestBasicOutput(void)
         int p = 0;
         NumToStr(buf, vals[i]);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)"DAC write: ", 11);
-        UsartWrite(USART4, (void *)buf, p);
-        UsartWrite(USART4, (void *)"  ADC read: ", 12);
+        PRINT("DAC write: ");
+        buf[p] = '\0';
+        PRINT(buf);
+        PRINT("  ADC read: ");
 
         p = 0;
         NumToStr(buf, adc_val);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)buf, p);
+        buf[p] = '\0';
+        PRINT(buf);
 
         /* 估算偏差 */
         int32_t diff = (int32_t)adc_val - (int32_t)vals[i];
         if (diff < 0) diff = -diff;
-        UsartWrite(USART4, (void *)"  diff: ", 8);
+        PRINT("  diff: ");
         p = 0;
         NumToStr(buf, (uint32_t)diff);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)buf, p);
-        UsartWrite(USART4, (void *)"\r\n", 2);
+        buf[p] = '\0';
+        PRINT(buf);
+        PRINT("\r\n");
     }
 
     DacCalibrate(DAC1, 1);
@@ -109,22 +112,25 @@ static void TestBasicOutput(void)
         int p = 0;
         NumToStr(buf, vals[i]);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)"DAC write: ", 11);
-        UsartWrite(USART4, (void *)buf, p);
-        UsartWrite(USART4, (void *)"  ADC read: ", 12);
+        PRINT("DAC write: ");
+        buf[p] = '\0';
+        PRINT(buf);
+        PRINT("  ADC read: ");
         p = 0;
         NumToStr(buf, adc_val);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)buf, p);
+        buf[p] = '\0';
+        PRINT(buf);
 
         int32_t diff = (int32_t)adc_val - (int32_t)vals[i];
         if (diff < 0) diff = -diff;
-        UsartWrite(USART4, (void *)"  diff: ", 8);
+        PRINT("  diff: ");
         p = 0;
         NumToStr(buf, (uint32_t)diff);
         while (buf[p]) p++;
-        UsartWrite(USART4, (void *)buf, p);
-        UsartWrite(USART4, (void *)"\r\n", 2);
+        buf[p] = '\0';
+        PRINT(buf);
+        PRINT("\r\n");
     }
 
     AdcStop(ADC_IDX2);
@@ -206,7 +212,6 @@ static void TestTriangle(void)
     while (step < total)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
         if (TIM6->SR & 1)
         {
@@ -224,16 +229,18 @@ static void TestTriangle(void)
                 int p = 0;
                 NumToStr(buf, step);
                 while (buf[p]) p++;
-                UsartWrite(USART4, (void *)buf, p);
-                UsartWrite(USART4, (void *)"  ", 2);
+                buf[p] = '\0';
+                PRINT(buf);
+                PRINT("  ");
                 p = 0;
                 NumToStr(buf, adc_val);
                 while (buf[p]) p++;
-                UsartWrite(USART4, (void *)buf, p);
-                UsartWrite(USART4, (void *)"\r\n", 2);
+                buf[p] = '\0';
+                PRINT(buf);
+                PRINT("\r\n");
             }
 
-            if (UsartReadOne(USART4, &ch))
+            if (FramePoll(0))
                 break;
         }
     }
@@ -311,9 +318,8 @@ static void TestNoise(void)
     while (1)
     {
         IwdgKickDog(IWDG2);
-        uint8_t ch;
 
-        if (UsartReadOne(USART4, &ch))
+        if (FramePoll(0))
             break;
 
         if (TIM6->SR & 1)
@@ -331,8 +337,9 @@ static void TestNoise(void)
                 int p = 0;
                 NumToStr(buf, adc_val);
                 while (buf[p]) p++;
-                UsartWrite(USART4, (void *)buf, p);
-                UsartWrite(USART4, (void *)" ", 1);
+                buf[p] = '\0';
+                PRINT(buf);
+                PRINT(" ");
             }
         }
     }
@@ -435,7 +442,8 @@ static void TestSampleHold(void)
             while (buf[p]) p++;
             buf[p++] = '\r';
             buf[p++] = '\n';
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
         }
     }
     PRINT("...\r\n");
@@ -459,7 +467,7 @@ static void TestSampleHold(void)
         PRINT("S&H FAIL: range=");
         char dbuf[16];
         NumToStr(dbuf, v_max - v_min);
-        UsartWrite(USART4, (void *)dbuf, strlen(dbuf));
+        PRINT(dbuf);
         PRINT("\r\n");
     }
 
@@ -542,7 +550,8 @@ static void TestDualChannel(void)
         NumToStr(buf + p, pairs[i][1]);
         while (buf[p]) p++;
         buf[p++] = '\r'; buf[p++] = '\n';
-        UsartWrite(USART4, (void *)buf, p);
+        buf[p] = '\0';
+        PRINT(buf);
 
         p = 0;
         buf[p++] = 'R'; buf[p++] = '1'; buf[p++] = ':';
@@ -566,7 +575,8 @@ static void TestDualChannel(void)
         while (buf[p]) p++;
         buf[p++] = ')';
         buf[p++] = '\r'; buf[p++] = '\n';
-        UsartWrite(USART4, (void *)buf, p);
+        buf[p] = '\0';
+        PRINT(buf);
     }
 
     AdcStop(ADC_IDX2);
@@ -693,7 +703,8 @@ static void TestSinCos(void)
             while (buf[p]) p++;
             buf[p++] = '\r';
             buf[p++] = '\n';
-            UsartWrite(USART4, (void *)buf, p);
+            buf[p] = '\0';
+            PRINT(buf);
         }
 
         if (step < STEPS - 1)
