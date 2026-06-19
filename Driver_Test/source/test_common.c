@@ -19,6 +19,12 @@ static void DmaTxIsr(void)
 
 static uint8_t g_rx_ring[256];
 static UsartDmaRxCtx_t g_dma_rx_ctx;
+
+static void DmaRxIsr(void)
+{
+    UsartDmaRxIsr(&g_dma_rx_ctx);
+}
+
 static FrameParser_t g_frame_parser;
 static volatile int g_cmd_ready;
 static Frame_t g_cmd_frame;
@@ -43,7 +49,14 @@ int FramePoll(Frame_t *out)
 {
     uint8_t b;
     while (UsartDmaRxReadOne(&g_dma_rx_ctx, &b))
+    {
+        if (g_dma_rx_ctx.rx_ovf)
+        {
+            g_dma_rx_ctx.rx_ovf = 0;
+            FrameParserInit(&g_frame_parser, OnFrame);
+        }
         FrameParserFeed(&g_frame_parser, b);
+    }
 
     if (g_cmd_ready)
     {
@@ -75,9 +88,17 @@ void TestCommonInit(void)
     GicdInit();
     GiccInit(10, 2);
 
-    /* DMA RX: DMA2 Stream 1, 循环模式 */
+    /* DMA RX: DMA2 Stream 1, 循环模式 + TC 中断计圈 */
     UsartDmaRxInit(&g_dma_rx_ctx, USART4, DMA2, 1,
                    DMAMUX_REQ_UART4_RX, g_rx_ring, sizeof(g_rx_ring));
+
+    GicdSetGroup(GIC_DMA2_STR1);
+    GicdSetPriority(GIC_DMA2_STR1, 5);
+    GicdSetTarget(GIC_DMA2_STR1, 1);
+    GicdSetTrigMode(GIC_DMA2_STR1, 0);
+    GicRegisterIrq(GIC_DMA2_STR1, DmaRxIsr);
+    GicdEnableInt(GIC_DMA2_STR1);
+
     FrameParserInit(&g_frame_parser, OnFrame);
 }
 

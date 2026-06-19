@@ -253,8 +253,8 @@ void UsartDmaTxInit(UsartDmaCtx_t *ctx, volatile UsartRegs_t *usart,
     ctx->dma_cfg.dma_dir         = DMA_DIR_MEM_2_PER;
     ctx->dma_cfg.dma_psize       = DMA_DATA_SIZE_BIT8;
     ctx->dma_cfg.dma_msize       = DMA_DATA_SIZE_BIT8;
-    ctx->dma_cfg.dma_memaddr_incr = 1;
-    ctx->dma_cfg.dma_peraddr_incr = 0;
+    ctx->dma_cfg.dma_memaddr_incr = DMA_ADDR_INCR_MODE_INCR;
+    ctx->dma_cfg.dma_peraddr_incr = DMA_ADDR_INCR_MODE_FIXED;
     ctx->dma_cfg.dma_per_addr    = (uint32_t)&usart->TDR;
     ctx->dma_cfg.dma_tcie        = 1;
 
@@ -322,12 +322,15 @@ void UsartDmaRxInit(UsartDmaRxCtx_t *ctx, volatile UsartRegs_t *usart,
                     volatile DmaRegs_t *dma, uint32_t stream,
                     DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size)
 {
-    ctx->usart   = usart;
-    ctx->dma     = dma;
-    ctx->stream  = stream;
-    ctx->rx_buf  = buf;
-    ctx->rx_size = size;
-    ctx->rx_rd   = 0;
+    ctx->usart      = usart;
+    ctx->dma        = dma;
+    ctx->stream     = stream;
+    ctx->rx_buf     = buf;
+    ctx->rx_size    = size;
+    ctx->rx_rd      = 0;
+    ctx->rx_wr_wrap = 0;
+    ctx->rx_rd_wrap = 0;
+    ctx->rx_ovf     = 0;
 
     DmaDisable(dma, stream);
     DmaClearTcif(dma, stream);
@@ -337,30 +340,53 @@ void UsartDmaRxInit(UsartDmaRxCtx_t *ctx, volatile UsartRegs_t *usart,
     cfg.dma_dir           = DMA_DIR_PER_2_MEM;
     cfg.dma_psize         = DMA_DATA_SIZE_BIT8;
     cfg.dma_msize         = DMA_DATA_SIZE_BIT8;
-    cfg.dma_memaddr_incr  = 1;
-    cfg.dma_peraddr_incr  = 0;
+    cfg.dma_memaddr_incr  = DMA_ADDR_INCR_MODE_INCR;
+    cfg.dma_peraddr_incr  = DMA_ADDR_INCR_MODE_FIXED;
     cfg.dma_per_addr      = (uint32_t)&usart->RDR;
     cfg.dma_mem0_addr     = (uint32_t)buf;
     cfg.dma_ndtr          = size;
     cfg.dma_circual_buf   = 1;
+    cfg.dma_tcie          = 1;          /* TC 中断, 用于计圈 */
 
     uint32_t dmamux_ch = (dma == DMA2) ? stream + 8 : stream;
     DmaMuxRoute(DMAMUX1, dmamux_ch, req_id);
 
-    usart->ICR = (1u << 3);        /* 清 ORE */
-    (void)usart->RDR;              /* 排空残留数据 */
+    DmaCfg(dma, &cfg);                 /* 配置并启动 DMA */
+    usart->CR3 |= (1u << 6);           /* DMAR=1, 使能 USART DMA 接收 */
+    usart->ICR = (1u << 3);            /* 清 ORE */
+    (void)usart->RDR;                  /* 清 RXNE, 保证下一字节产生请求边沿 */
+}
 
-    DmaCfg(dma, &cfg);             /* 配置并启动 DMA */
-    usart->CR3 |= (1u << 6);       /* DMAR=1, 使能 USART DMA 接收 */
+
+void UsartDmaRxIsr(UsartDmaRxCtx_t *ctx)
+{
+    DmaClearTcif(ctx->dma, ctx->stream);
+    ctx->rx_wr_wrap++;
 }
 
 
 uint32_t UsartDmaRxAvail(UsartDmaRxCtx_t *ctx)
 {
-    uint32_t ndtr = ctx->dma->STREAM[ctx->stream].NDTR;
-    uint32_t wr = ctx->rx_size - ndtr;
+    uint32_t wr_wrap, wr_wrap2, ndtr, wr;
+    do {
+        wr_wrap  = ctx->rx_wr_wrap;
+        ndtr     = ctx->dma->STREAM[ctx->stream].NDTR;
+        wr_wrap2 = ctx->rx_wr_wrap;
+    } while (wr_wrap != wr_wrap2);
+
+    wr = ctx->rx_size - ndtr;
     if (wr >= ctx->rx_size)
         wr = 0;
+
+    uint32_t wrap_diff = wr_wrap - ctx->rx_rd_wrap;
+
+    if (wrap_diff == 0)
+        return (wr >= ctx->rx_rd) ? (wr - ctx->rx_rd) : 0;
+
+    if (wrap_diff == 1 && wr <= ctx->rx_rd)
+        return ctx->rx_size - ctx->rx_rd + wr;
+
+    /* 溢出情况: 返回 rx_rd 到 wr 之间的最新数据量 */
     if (wr >= ctx->rx_rd)
         return wr - ctx->rx_rd;
     return ctx->rx_size - ctx->rx_rd + wr;
@@ -369,16 +395,38 @@ uint32_t UsartDmaRxAvail(UsartDmaRxCtx_t *ctx)
 
 int UsartDmaRxReadOne(UsartDmaRxCtx_t *ctx, uint8_t *byte)
 {
-    uint32_t ndtr = ctx->dma->STREAM[ctx->stream].NDTR;
-    uint32_t wr = ctx->rx_size - ndtr;
+    uint32_t wr_wrap, wr_wrap2, ndtr, wr;
+    do {
+        wr_wrap  = ctx->rx_wr_wrap;
+        ndtr     = ctx->dma->STREAM[ctx->stream].NDTR;
+        wr_wrap2 = ctx->rx_wr_wrap;
+    } while (wr_wrap != wr_wrap2);
+
+    wr = ctx->rx_size - ndtr;
     if (wr >= ctx->rx_size)
         wr = 0;
-    if (wr == ctx->rx_rd)
+
+    uint32_t wrap_diff = wr_wrap - ctx->rx_rd_wrap;
+
+    /* 空: 同圈同位置 */
+    if (wrap_diff == 0 && wr == ctx->rx_rd)
         return 0;
+
+    /* 溢出: DMA 越过读指针, 旧数据已被覆盖 */
+    if (wrap_diff > 1 || (wrap_diff == 1 && wr > ctx->rx_rd))
+    {
+        ctx->rx_ovf = 1;
+        ctx->rx_rd_wrap = wr_wrap;
+    }
+
+    /* 读取 (正常 / 满 / 溢出后首字节, 均有效) */
     *byte = ctx->rx_buf[ctx->rx_rd];
     ctx->rx_rd++;
     if (ctx->rx_rd >= ctx->rx_size)
+    {
         ctx->rx_rd = 0;
+        ctx->rx_rd_wrap++;
+    }
     return 1;
 }
 

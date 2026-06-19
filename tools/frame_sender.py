@@ -12,6 +12,7 @@ STM32 Test Frame Sender
     1, 2, 10 ...  -> 发送 CMD_MENU (0x01), DATA = ASCII 编号
     b             -> 发送 CMD_BACK (0x02), 返回上级菜单
     echo 48 69    -> 发送 CMD_ECHO (0x03), DATA = 十六进制字节
+    raw 41 42 43  -> 直接发送裸字节 (不封装帧, 用于测试串口)
     q             -> 退出
 """
 
@@ -32,7 +33,13 @@ def build_frame(cmd, data=b''):
     xor = length
     for b in body:
         xor ^= b
-    return bytes([0xAA, 0x55, length]) + body + bytes([xor])
+    return bytes([0xAA, 0x55, length]) + body + bytes([xor & 0xFF])
+
+
+def send(ser, data):
+    ser.write(data)
+    ser.flush()
+    print(f'  [TX] {data.hex(" ").upper()}')
 
 
 def rx_thread(ser):
@@ -58,7 +65,7 @@ def main():
     t.start()
 
     print(f'[Connected] {args.port} @ {args.baud}')
-    print('[Commands]  <num>=select  b=back  echo <hex>=echo  q=quit')
+    print('[Commands]  <num>=select  b=back  echo <hex>=echo  raw <hex>=raw  q=quit')
     print()
 
     try:
@@ -69,16 +76,23 @@ def main():
             if line.lower() == 'q':
                 break
             elif line.lower() == 'b':
-                ser.write(build_frame(CMD_BACK))
+                send(ser, build_frame(CMD_BACK))
             elif line.lower().startswith('echo '):
                 try:
                     data = bytes.fromhex(line[5:].replace(' ', ''))
                 except ValueError:
                     print('[ERROR] invalid hex')
                     continue
-                ser.write(build_frame(CMD_ECHO, data))
+                send(ser, build_frame(CMD_ECHO, data))
+            elif line.lower().startswith('raw '):
+                try:
+                    data = bytes.fromhex(line[4:].replace(' ', ''))
+                except ValueError:
+                    print('[ERROR] invalid hex')
+                    continue
+                send(ser, data)
             else:
-                ser.write(build_frame(CMD_MENU, line.encode('ascii')))
+                send(ser, build_frame(CMD_MENU, line.encode('ascii')))
     except (KeyboardInterrupt, EOFError):
         pass
     finally:

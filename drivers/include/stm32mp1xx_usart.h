@@ -116,7 +116,8 @@ void UsartDmaTxIsr(UsartDmaCtx_t *ctx);
 
 /*
  * USART DMA 接收上下文
- * DMA 以循环模式持续写入环形缓冲区, 应用层轮询 NDTR 计算写入位置。
+ * DMA 以循环模式持续写入环形缓冲区, TC 中断计圈, 应用层轮询读取。
+ * 当 DMA 越过读指针（溢出）时, 置 rx_ovf 标志, 丢弃被覆盖的旧数据。
  */
 typedef struct {
     volatile UsartRegs_t *usart;
@@ -125,17 +126,23 @@ typedef struct {
     uint8_t              *rx_buf;
     uint32_t              rx_size;
     uint32_t              rx_rd;
+    volatile uint32_t     rx_wr_wrap;   // TC 中断递增, DMA 完成一圈
+    uint32_t              rx_rd_wrap;   // 读指针越过末尾时递增
+    volatile uint8_t      rx_ovf;      // 溢出标志, 应用层检查并清除
 } UsartDmaRxCtx_t;
 
-/* 初始化: 配置 DMA 循环接收, 路由 DMAMUX, 立即启动 */
+/* 初始化: 配置 DMA 循环接收 + TC 中断, 路由 DMAMUX, 立即启动 */
 void UsartDmaRxInit(UsartDmaRxCtx_t *ctx, volatile UsartRegs_t *usart,
                     volatile DmaRegs_t *dma, uint32_t stream,
                     DmaMuxReqId_t req_id, uint8_t *buf, uint32_t size);
 
+/* DMA TC 中断回调: 注册到 GIC, 在 ISR 中调用 */
+void UsartDmaRxIsr(UsartDmaRxCtx_t *ctx);
+
 /* 查询可读字节数 */
 uint32_t UsartDmaRxAvail(UsartDmaRxCtx_t *ctx);
 
-/* 读取一个字节, 返回 1=成功, 0=无数据 */
+/* 读取一个字节, 返回 1=成功/溢出(同时置 rx_ovf), 0=无数据 */
 int  UsartDmaRxReadOne(UsartDmaRxCtx_t *ctx, uint8_t *byte);
 
 /* 停止 DMA 接收, 恢复轮询模式 */

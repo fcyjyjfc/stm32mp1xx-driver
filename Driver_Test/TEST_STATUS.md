@@ -5,10 +5,12 @@
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
 | 初始化配置 | 通过 | 115200/8/N/1，GPIOG11(AF6)=TX, GPIOB2(AF8)=RX |
-| UsartWrite 发送 | 通过 | 字符串、整数格式化输出正常 |
-| UsartReadOne 单字节读取 | 通过 | 轮询接收，串口助手交互正常 |
 | UsartCfg 配置 | 通过 | 波特率、数据位、停止位、校验位配置正确 |
-| 串口菜单交互 | 通过 | TestMenu_Run 循环打印菜单、接收选择、返回正确 |
+| UsartWrite 阻塞发送 | 通过 | 逐字节等待 TXE，字符串输出正常 |
+| UsartReadOne 阻塞单字节读取 | 通过 | 轮询 RXNE，串口助手交互正常 |
+| DMA TX 全局发送 (PrintDma) | 通过 | 环形缓冲 + TC 中断续传，替代 UsartWrite |
+| DMA RX 全局接收 (FramePoll) | 通过 | 循环模式 + 帧协议 (AA 55 LEN CMD DATA XOR)，替代 UsartReadOne |
+| 帧协议菜单交互 | 通过 | CMD_MENU 选择、CMD_BACK 返回、CMD_ECHO 回显，frame_sender.py 配合使用 |
 
 ## GPIO (Z5/Z6/Z7 LED, A0 按键)
 
@@ -128,7 +130,43 @@
 
 ## DMA
 
-- [ ] 代码未写
+### DMA TX（全局，DMA2 Stream 0）
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| UsartDmaTxInit | 通过 | DMA2 Stream 0, DMAMUX ch8→UART4_TX(64), M→P, 8bit, MINC, TCIE |
+| 环形缓冲区 (1024B) | 通过 | head/tail 管理，留 1 字节区分满/空 |
+| UsartDmaSend 非阻塞入队 | 通过 | 拷入环形缓冲，DMA 空闲时自动 Kick |
+| UsartDmaTxIsr (TC 中断) | 通过 | 推进 tail，有剩余续传，否则关 DMAT |
+| PrintDma 自旋重试 | 通过 | 缓冲区满时循环等待，不丢数据 |
+| PrintFlush 等待完成 | 通过 | 阻塞直到 busy=0 且 head==tail |
+| 全局替换 UsartWrite | 通过 | 所有测试文件的 PRINT 宏统一走 DMA TX |
+
+### DMA RX（全局，DMA2 Stream 1）
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| UsartDmaRxInit | 通过 | DMA2 Stream 1, DMAMUX ch9→UART4_RX(63), P→M, 8bit, MINC, CIRC, TCIE |
+| 循环模式 + TC 计圈 | 通过 | TC 中断递增 rx_wr_wrap，配合 NDTR 精确定位写指针 |
+| UsartDmaRxReadOne | 通过 | 原子读 wr_wrap+NDTR，wrap_diff 判断空/正常/满/溢出 |
+| 溢出检测 | 通过 | wrap_diff>1 或 (==1 且 wr>rx_rd) 时置 rx_ovf，sync wrap，仍返回有效字节 |
+| UsartDmaRxStop | 通过 | 清 DMAR，关 DMA Stream，排空 RDR |
+| 帧协议 (AA 55 LEN CMD DATA XOR) | 通过 | 状态机解析：IDLE→HDR2→LEN→BODY→XOR |
+| CMD_MENU (0x01) | 通过 | DATA 作为菜单选项键，替代原 ReadLine 字符输入 |
+| CMD_BACK (0x02) | 通过 | 等同输入 "0"，返回上级菜单 |
+| CMD_ECHO (0x03) | 通过 | 全局自动回显 DATA 的十六进制，用于连通性测试 |
+| FramePoll 非阻塞轮询 | 通过 | 消费 DMA RX 缓冲区，喂帧解析器，溢出时复位解析器 |
+| 全局替换 UsartReadOne | 通过 | 所有测试文件退出循环改为 FramePoll(0) |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| DMA TX 乱码 | D-Cache 使 CPU 写入停留在 cache，DMA 从物理 RAM 读到旧数据 | start.S 全量 clean+invalidate L1 D-Cache 后禁用 |
+| PrintFlush 死锁 | ADC 注入测试退出时 CPSR.I=1 关全局 IRQ，DMA TC 中断无法触发 | 删除 ADC 测试中的全局 IRQ 禁用 |
+| 菜单文本丢失 | 400B 缓冲区不够，PrintDma 满时截断 | 缓冲区扩至 1024B + 自旋重试不丢数据 |
+| DMA RX 间歇失效 | RXNE 在 DMAR 置位前已为 1，DMA 请求为边沿触发无法感知 | 先启动 DMA + 置 DMAR，最后清 RXNE 保证下一字节产生 0→1 边沿 |
+| 环形缓冲满误判空 | 纯 NDTR 轮询无法区分空和绕了 N 圈 | TC 中断计圈 + wrap_diff 判断，精确检测溢出 |
 
 ## BTIMER
 
