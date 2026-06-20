@@ -19,7 +19,7 @@ void MdmaCfg(volatile MdmaRegs_t *mdma, const MdmaCfg_t *cfg)
     ch->TCR = (cfg->bwm    << 31) | (cfg->swrm   << 30) |
               (cfg->trgm   << 28) | (cfg->pam    << 26) |
               (cfg->pke    << 25) | (cfg->tlen   << 18) |
-              (cfg->dburst << 15) | (cfg->sburst << 12) |
+              ((cfg->dburst - cfg->dsize) << 15) | ((cfg->sburst - cfg->ssize) << 12) |
               (cfg->dincos << 10) | (cfg->sincos << 8)  |
               (cfg->dsize  << 6)  | (cfg->ssize  << 4)  |
               (cfg->dinc   << 2)  | (cfg->sinc   << 0);
@@ -111,10 +111,10 @@ void MdmaMemcpyInit(uint32_t ch)
     cfg.dsize   = MDMA_DATA_64BIT;
     cfg.sinc    = MDMA_INC_INCR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 3;    /* 8B 步长 (2^3=8, 匹配 64-bit 宽度) */
-    cfg.dincos  = 3;    /* 8B 步长 */
-    cfg.sburst  = 4;    /* 2^4=16 拍, 16×8B=128B */
-    cfg.dburst  = 4;    /* 2^4=16 拍, 16×8B=128B */
+    cfg.sincos  = MDMA_DATA_64BIT;
+    cfg.dincos  = MDMA_DATA_64BIT;
+    cfg.sburst  = MDMA_BSIZE_128B;
+    cfg.dburst  = MDMA_BSIZE_128B;
     cfg.tlen    = 127;  /* buffer 长度 = 127+1 = 128 字节 */
     cfg.trgm    = MDMA_TRGM_BLOCK;
     cfg.swrm    = 1;    /* 软件触发模式 */

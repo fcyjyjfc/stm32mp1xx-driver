@@ -86,6 +86,18 @@ typedef enum {
 } MdmaPam_t;
 
 
+typedef enum {
+    MDMA_BSIZE_1B   = 0,
+    MDMA_BSIZE_2B   = 1,
+    MDMA_BSIZE_4B   = 2,
+    MDMA_BSIZE_8B   = 3,
+    MDMA_BSIZE_16B  = 4,
+    MDMA_BSIZE_32B  = 5,
+    MDMA_BSIZE_64B  = 6,
+    MDMA_BSIZE_128B = 7
+} MdmaBurstSize_t;
+
+
 /*
  * MDMA 通道配置参数
  *
@@ -136,8 +148,8 @@ typedef struct {
     uint32_t swrm         : 1;      // SWRM 1=软件触发(忽略硬件请求), 0=硬件触发
     uint32_t tsel         : 6;      // TSEL 硬件触发源选择 (swrm=0时有效)
     uint32_t tlen         : 7;      // TLEN buffer传输长度-1, 实际 TLEN+1 字节 (1~128)
-    uint32_t dburst       : 3;      // DBURST 目的burst: 0=single, N=2^N拍
-    uint32_t sburst       : 3;      // SBURST 源burst: 同上
+    uint32_t dburst       : 3;      // DBURST 目的burst size: 用MdmaBurstSize_t, 寄存器节拍=dburst-dsize
+    uint32_t sburst       : 3;      // SBURST 源burst size: 同上
     uint32_t bwm          : 1;      // BWM 目的写bufferable: 0=non-bufferable, 1=bufferable
     uint32_t pam          : 2;      // PAM padding: 0=右对齐补0, 1=右对齐符号扩展, 2=左对齐
     uint32_t dincos       : 2;      // DINCOS 目的增量步长: 0=1B 1=2B 2=4B 3=8B

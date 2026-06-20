@@ -65,10 +65,10 @@ static void TestBlockRepeat(void)
     cfg.dsize   = MDMA_DATA_64BIT;
     cfg.sinc    = MDMA_INC_INCR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 3;    /* 8B stride */
-    cfg.dincos  = 3;    /* 8B stride */
-    cfg.sburst  = 4;    /* 16-beat burst */
-    cfg.dburst  = 4;    /* 16-beat burst */
+    cfg.sincos  = MDMA_DATA_64BIT;
+    cfg.dincos  = MDMA_DATA_64BIT;
+    cfg.sburst  = MDMA_BSIZE_128B;
+    cfg.dburst  = MDMA_BSIZE_128B;
     cfg.tlen    = 127;  /* buffer = 128 bytes */
     cfg.trgm    = MDMA_TRGM_REP_BLOCK;
     cfg.swrm    = 1;
@@ -169,10 +169,10 @@ static void TestLinkedList(void)
     cfg.dsize     = MDMA_DATA_32BIT;
     cfg.sinc      = MDMA_INC_INCR;
     cfg.dinc      = MDMA_INC_INCR;
-    cfg.sincos    = 2;    /* 4B stride */
-    cfg.dincos    = 2;
-    cfg.sburst    = 2;    /* 4-beat burst, 4×4B=16B */
-    cfg.dburst    = 2;
+    cfg.sincos    = MDMA_DATA_32BIT;
+    cfg.dincos    = MDMA_DATA_32BIT;
+    cfg.sburst    = MDMA_BSIZE_16B;
+    cfg.dburst    = MDMA_BSIZE_16B;
     cfg.tlen      = 15;   /* buffer = 16 bytes */
     cfg.trgm      = MDMA_TRGM_CHANNEL;
     cfg.swrm      = 1;
@@ -230,10 +230,10 @@ static void TestEndianExchange(void)
     cfg.dsize   = MDMA_DATA_64BIT;
     cfg.sinc    = MDMA_INC_INCR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 3;    /* 8B stride */
-    cfg.dincos  = 3;    /* 8B stride */
-    cfg.sburst  = 4;    /* 16-beat, 16×8B=128B */
-    cfg.dburst  = 4;
+    cfg.sincos  = MDMA_DATA_64BIT;
+    cfg.dincos  = MDMA_DATA_64BIT;
+    cfg.sburst  = MDMA_BSIZE_128B;
+    cfg.dburst  = MDMA_BSIZE_128B;
     cfg.tlen    = 127;  /* buffer = 128 bytes */
     cfg.trgm    = MDMA_TRGM_BLOCK;
     cfg.swrm    = 1;
@@ -294,10 +294,10 @@ static void TestReverse(void)
     cfg.dsize   = MDMA_DATA_16BIT;
     cfg.sinc    = MDMA_INC_DECR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 1;    /* 2B stride */
-    cfg.dincos  = 1;
-    cfg.sburst  = 4;    /* single: decrement mode does not support burst */
-    cfg.dburst  = 4;    /* 16-beat: increment side can burst */
+    cfg.sincos  = MDMA_DATA_16BIT;
+    cfg.dincos  = MDMA_DATA_16BIT;
+    cfg.sburst  = MDMA_BSIZE_32B;
+    cfg.dburst  = MDMA_BSIZE_32B;
     cfg.tlen    = 31;   /* buffer = 32 bytes (>= dest burst 16×2B) */
     cfg.trgm    = MDMA_TRGM_REP_BLOCK;
     cfg.swrm    = 1;
@@ -373,10 +373,10 @@ static void TestStrideExtract(void)
     cfg.dsize   = MDMA_DATA_16BIT;
     cfg.sinc    = MDMA_INC_INCR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 2;    /* 4B stride: skip one uint16_t */
-    cfg.dincos  = 1;    /* 2B stride: pack contiguous */
-    cfg.sburst  = 0;
-    cfg.dburst  = 0;
+    cfg.sincos  = MDMA_DATA_32BIT;  /* 4B stride: skip one uint16_t */
+    cfg.dincos  = MDMA_DATA_16BIT;
+    cfg.sburst  = MDMA_BSIZE_2B;
+    cfg.dburst  = MDMA_BSIZE_2B;
     cfg.tlen    = 1;    /* buffer = 2 bytes */
     cfg.trgm    = MDMA_TRGM_REP_BLOCK;
     cfg.swrm    = 1;
@@ -443,10 +443,10 @@ static void TestSubRegion(void)
     cfg.dsize   = MDMA_DATA_16BIT;
     cfg.sinc    = MDMA_INC_INCR;
     cfg.dinc    = MDMA_INC_INCR;
-    cfg.sincos  = 1;    /* 2B contiguous */
-    cfg.dincos  = 1;
-    cfg.sburst  = 2;    /* 4-beat, 4×2B=8B */
-    cfg.dburst  = 2;
+    cfg.sincos  = MDMA_DATA_16BIT;
+    cfg.dincos  = MDMA_DATA_16BIT;
+    cfg.sburst  = MDMA_BSIZE_8B;
+    cfg.dburst  = MDMA_BSIZE_8B;
     cfg.tlen    = 7;    /* buffer = 8 bytes */
     cfg.trgm    = MDMA_TRGM_REP_BLOCK;
     cfg.swrm    = 1;
@@ -533,10 +533,10 @@ static void TestTranspose(void)
     cfg.dsize     = MDMA_DATA_32BIT;
     cfg.sinc      = MDMA_INC_INCR;
     cfg.dinc      = MDMA_INC_INCR;
-    cfg.sincos    = 2;
-    cfg.dincos    = 2;
-    cfg.sburst    = 0;
-    cfg.dburst    = 0;
+    cfg.sincos    = MDMA_DATA_32BIT;
+    cfg.dincos    = MDMA_DATA_32BIT;
+    cfg.sburst    = MDMA_BSIZE_4B;
+    cfg.dburst    = MDMA_BSIZE_4B;
     cfg.tlen      = 3;    /* buffer = 4 bytes */
     cfg.trgm      = MDMA_TRGM_CHANNEL;
     cfg.swrm      = 1;
