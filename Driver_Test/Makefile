@@ -51,9 +51,10 @@ start.o: asm/start.S
 all: $(BUILD_DIR) $(OUTPUT_DIR) $(OBJS) start.o
 	@echo "  OBJS = $(OBJS)"
 	@echo "  LD      Linking $(OUTPUT_DIR)/$(NAME).elf"
-	@$(CC) $(OBJS) -T $(NAME).lds -o $(OUTPUT_DIR)/$(NAME).elf -lc -lgcc -nostartfiles
+	@$(CC) $(OBJS) -T $(NAME).lds -o $(OUTPUT_DIR)/$(NAME).elf -lc -lgcc -nostartfiles \
+		-Wl,-Map=$(OUTPUT_DIR)/$(NAME).map,--cref
 	@$(OBJCOPY) -O binary $(OUTPUT_DIR)/$(NAME).elf $(OUTPUT_DIR)/$(NAME).bin
-	@$(NM) $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).map
+	@$(NM) -n $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).sym
 	@$(OBJDUMP) -DS $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).dis
 
 clean:

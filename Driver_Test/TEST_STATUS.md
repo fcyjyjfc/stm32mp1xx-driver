@@ -226,3 +226,24 @@
 |------|------|------|
 | JOVSE=1 + CONT=1 串口刷屏看不到注入 | 常规转换太快，注入结果被淹没 | 降低常规触发频率或存结果验证 |
 | DUAL 组合模式误用导致 ADC1 读值异常 | `ADC_DUAL_REG_SIMULT=0x01` 实际是"常规+注入同步"组合模式 | 修正为 0x06（纯常规同步） |
+
+## MDMA
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| M2M 软件触发 (32KB) | 通过 | MdmaMemcpy 封装，64-bit 数据宽度，16-beat burst，源填 uint16_t 递增 0~16383 |
+| Block repeat (128KB) | 通过 | BNDT=65536, BRC=1 (2×64KB)，64-bit，TRGM=REP_BLOCK，源填 0~65535 |
+| Linked-list + repeat (5KB) | 通过 | 初始配置 1KB + 3 节点（其中 node[2] 用 BRC=1 做 2×1KB），TRGM=CHANNEL，一次触发 |
+| 字节序交换 (4KB, 64-bit) | 通过 | BEX+HEX+WEX 全开，64-bit 全字节反转，常量填充避免 64-bit 乘法 |
+| 反向拷贝 (128KB) | 通过 | SINC=DECR 源递减读 + DINC=INCR 目的递增写，16-bit 数据，block repeat |
+| Stride 抽取 (16×10 奇数列) | 通过 | SINCOS=4B > SSIZE=2B 跳读，SUV=0（步长自然对齐行宽），提取 5 列 |
+| 子区域抽取 (8×8 from 32×32) | 通过 | Block repeat + SUV=48 跳到下一行，DUV=0 目的连续 |
+| 矩阵转置 (128×256 uint32) | 通过 | 128 行用 127 个链表节点，BNDT=4（1 int/block），DUV=508 跨行写列 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| 64-bit 乘法导致 CPU 复位 | uint64_t 乘法调用库函数可能使用未使能的 NEON 指令 | 避免 64-bit 乘法，改用常量赋值 |
+| DINCOS < DSIZE 触发 ASE | 硬件配置校验：DINCOS 必须 >= DSIZE | 确保 DINCOS 与 DSIZE 匹配 |
+| Decrement + burst 误报 ASE | 实为 DINCOS/DSIZE 不匹配，非 burst 方向问题 | 修正 DINCOS 后 burst + decrement 正常工作 |
