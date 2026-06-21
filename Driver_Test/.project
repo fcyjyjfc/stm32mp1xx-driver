@@ -79,4 +79,16 @@
 		<nature>org.eclipse.cdt.managedbuilder.core.managedBuildNature</nature>
 		<nature>org.eclipse.cdt.managedbuilder.core.ScannerConfigNature</nature>
 	</natures>
+	<linkedResources>
+		<link>
+			<name>devices</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/devices</locationURI>
+		</link>
+		<link>
+			<name>drivers</name>
+			<type>2</type>
+			<locationURI>PARENT-1-PROJECT_LOC/drivers</locationURI>
+		</link>
+	</linkedResources>
 </projectDescription>

@@ -247,3 +247,25 @@
 | 64-bit 乘法导致 CPU 复位 | uint64_t 乘法调用库函数可能使用未使能的 NEON 指令 | 避免 64-bit 乘法，改用常量赋值 |
 | DINCOS < DSIZE 触发 ASE | 硬件配置校验：DINCOS 必须 >= DSIZE | 确保 DINCOS 与 DSIZE 匹配 |
 | Decrement + burst 误报 ASE | 实为 DINCOS/DSIZE 不匹配，非 burst 方向问题 | 修正 DINCOS 后 burst + decrement 正常工作 |
+
+## SDMMC (SD 卡)
+
+硬件配置: SDMMC1, ker_ck=HSI(64MHz), PC8~12+PD2 AF12, 4-bit 模式
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| RCC 时钟配置 | 通过 | SDMMC12CKSELR=3(HSI), MP_AHB6ENSETR bit16 |
+| GPIO 配置 | 通过 | PC8=DAT0, PC9=DAT1, PC10=DAT2, PC11=DAT3, PC12=CLK, PD2=CMD, AF12, VERY_HI |
+| SdCardInit 卡识别 | 通过 | CMD0→CMD8→ACMD41→CMD2→CMD3→CMD9→CMD7→ACMD6 全序列 |
+| CID 解析 | 通过 | Samsung SDU1 v1.0, SN=0x14A11A21, 2019/1 |
+| CSD 解析 (容量/速率) | 通过 | 61440MB (64GB), Max Clock 25MHz |
+| 4-bit 总线切换 | 通过 | ACMD6(arg=2) + SdmmcSetBusWidth(4BIT) |
+| Read MBR (Block 0) | 通过 | 签名 55 AA 有效，内容为 Win11 安装镜像引导代码 |
+| Write/Read (Block 2048) | 通过 | 写入 XOR pattern 512 字节，回读校验全部匹配 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| SdmmcReadData/WriteData 卡在 CPSM 轮询 | DCTRL 设置 DTEN=1 会绕过 CPSM 直接启动 DPSM，导致 CPSM 无法发送命令。RM0436: "DTEN must not be used with SD or eMMC cards" | DCTRL 不设 DTEN，由 CMDR 的 CMDTRANS 位在命令响应后自动触发 DPSM |
+| SdmmcWriteData 卡在 BUSYD0END 轮询 | DATAEND 后 DPSM 回到 idle，无法检测 DAT0 从低到高的跳变，BUSYD0END 永远不置位 | 改为轮询 STAR.BUSYD0 电平：=1 表示忙，=0 表示编程完成 |
