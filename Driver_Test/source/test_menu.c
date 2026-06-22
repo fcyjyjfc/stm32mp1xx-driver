@@ -13,6 +13,8 @@ extern void BtimerTest(void);
 extern void IrqTest(void);
 extern void AdcTest(void);
 extern void DacTest(void);
+extern void RngTest(void);
+extern void CrcTest(void);
 
 static const MenuEntry_t g_menu[] = {
     { "1", "GPIO",   GpioTest },
@@ -26,6 +28,8 @@ static const MenuEntry_t g_menu[] = {
     { "9", "IRQ",    IrqTest },
     { "10", "ADC",    AdcTest },
     { "11", "DAC",    DacTest },
+    { "12", "RNG",    RngTest },
+    { "13", "CRC",    CrcTest },
 };
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
