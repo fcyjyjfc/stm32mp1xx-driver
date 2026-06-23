@@ -30,6 +30,7 @@ typedef struct {
     uint32_t capacity_mb;
     uint32_t max_clk_hz;
     uint8_t  is_sdhc;
+    uint8_t  s18a;           /* ACMD41 OCR bit24: 1=卡支持1.8V (UHS-I) */
     /* CID 信息 */
     uint8_t  mfr_id;
     char     oem_id[3];
@@ -42,9 +43,13 @@ typedef struct {
 } SdCard_t;
 
 
-SdCardErr_t SdCardInit(SdCard_t *card);
+SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps);
+SdCardErr_t SdCardSetSpeed(SdCard_t *card, uint32_t target_MBps);
 SdCardErr_t SdCardReadBlocks(SdCard_t *card, uint32_t block, void *buf, uint32_t count);
 SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, uint32_t count);
+
+SdCardErr_t SdCardReadMulti(SdCard_t *card, uint32_t block, void *buf, uint32_t count);
+SdCardErr_t SdCardWriteMulti(SdCard_t *card, uint32_t block, const void *buf, uint32_t count);
 
 
 #endif /* SD_CARD_H_ */

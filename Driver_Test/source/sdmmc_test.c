@@ -4,7 +4,8 @@
 #include "test_common.h"
 
 static SdCard_t g_card;
-static uint8_t g_buf[512] __attribute__((aligned(4)));
+/* 多块测试用大缓冲区: 256 块 × 512B = 128KB */
+static uint8_t g_buf[256 * 512] __attribute__((aligned(4)));
 
 
 /* SDMMC1 GPIO: PC8~PC12(AF12), PD2(AF12), 高速+上拉 */
@@ -50,7 +51,7 @@ static int SdmmcHwInit(void)
     g_card.sdmmc = SDMMC1;
     g_card.ker_ck_hz = 64000000;
 
-    SdCardErr_t err = SdCardInit(&g_card);
+    SdCardErr_t err = SdCardInit(&g_card, 16);
     if (err != SD_OK)
     {
         PRINT("SdCardInit FAILED, err=");
@@ -106,6 +107,10 @@ static int SdmmcHwInit(void)
     PrintDec(dec, (int32_t)(g_card.max_clk_hz / 1000000));
     PRINT(dec);
     PRINT(" MHz\r\n");
+
+    PRINT("  S18A: ");
+    PRINT(g_card.s18a ? "yes (1.8V UHS-I supported)" : "no");
+    PRINT("\r\n");
 
     return 0;
 }
@@ -219,11 +224,94 @@ static void WriteReadTest(void)
 }
 
 
+/* ================================
+ *  3. 多块读写测试 (block 100000, 256 块)
+ *     写连续的 uint16_t 0~65535, 回读校验
+ * ================================ */
+static void MultiBlockTest(void)
+{
+    char dec[16];
+    uint32_t test_block = 100000;
+    uint32_t n_blocks = 256;  /* 65536 个 uint16_t × 2B = 128KB */
+    int i;
+
+    PRINT("\r\n----- Multi-block Write/Read (");
+    PrintDec(dec, (int32_t)n_blocks);
+    PRINT(dec);
+    PRINT(" blocks @ block ");
+    PrintDec(dec, (int32_t)test_block);
+    PRINT(dec);
+    PRINT(") -----\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* 填 pattern: uint16_t 0~65535 */
+    uint16_t *p = (uint16_t *)g_buf;
+    for (i = 0; i < 65536; i++)
+        p[i] = (uint16_t)i;
+
+    PRINT("  Writing ");
+    PrintDec(dec, (int32_t)n_blocks);
+    PRINT(dec);
+    PRINT(" blocks...\r\n");
+    SdCardErr_t err = SdCardWriteMulti(&g_card, test_block, g_buf, n_blocks);
+    if (err != SD_OK)
+    {
+        PRINT("  Write FAILED\r\n");
+        return;
+    }
+    IwdgKickDog(IWDG2);
+
+    memset(g_buf, 0, n_blocks * 512);
+    PRINT("  Reading back...\r\n");
+    err = SdCardReadMulti(&g_card, test_block, g_buf, n_blocks);
+    if (err != SD_OK)
+    {
+        PRINT("  Read FAILED\r\n");
+        return;
+    }
+    IwdgKickDog(IWDG2);
+
+    int errors = 0;
+    for (i = 0; i < 65536; i++)
+    {
+        if (p[i] != (uint16_t)i)
+        {
+            if (errors < 4)
+            {
+                PRINT("  Mismatch @[");
+                PrintDec(dec, i);
+                PRINT(dec);
+                PRINT("]: expect ");
+                PrintHex8((uint8_t)(i >> 8));
+                PrintHex8((uint8_t)i);
+                PRINT(" got ");
+                PrintHex8((uint8_t)(p[i] >> 8));
+                PrintHex8((uint8_t)p[i]);
+                PRINT("\r\n");
+            }
+            errors++;
+        }
+    }
+
+    if (errors == 0)
+        PRINT("  Verify PASSED (65536 values)\r\n");
+    else
+    {
+        PRINT("  Verify FAILED: ");
+        PrintDec(dec, errors);
+        PRINT(dec);
+        PRINT(" errors\r\n");
+    }
+}
+
+
 /* ===== Submenu ===== */
 
 static const MenuEntry_t sdmmc_menu[] = {
-    { "1", "Read MBR",        ReadMbrTest },
-    { "2", "Write/Read Test", WriteReadTest },
+    { "1", "Read MBR",              ReadMbrTest },
+    { "2", "Write/Read Test",       WriteReadTest },
+    { "3", "Multi-block Write/Read",MultiBlockTest },
 };
 
 void SdmmcTest(void)

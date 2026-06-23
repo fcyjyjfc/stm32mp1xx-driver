@@ -106,6 +106,7 @@ typedef struct {
 #define SDMMC_DCTRL_DTDIR       (1U << 1)
 #define SDMMC_DCTRL_DTMODE_Pos  2
 #define SDMMC_DCTRL_DTMODE_Msk  (3U << 2)
+#define SDMMC_DCTRL_SDMODE      (1U << 2)   /* DTMODE=01: SD电压切换模式 */
 #define SDMMC_DCTRL_DBLOCKSIZE_Pos 4
 #define SDMMC_DCTRL_FIFORST     (1U << 13)
 

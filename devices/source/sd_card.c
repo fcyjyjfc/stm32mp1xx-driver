@@ -1,8 +1,9 @@
 /*
  * sd_card.c — SD 卡协议层驱动
  *
- * 初始化序列: CMD0 → CMD8 → ACMD41 → CMD2 → CMD3 → CMD9 → CMD7 → ACMD6
- * 数据读写: CMD17 (单块读) / CMD24 (单块写), 多块时循环调用
+ * 初始化: CMD0 → CMD8 → ACMD41 → CMD2 → CMD3 → CMD9 → CMD7 → ACMD6 → SdCardSetSpeed
+ * SdCardSetSpeed: 根据 target_MBps 计算 CK, >50MHz 时查 S18A 做 1.8V 切换
+ * 数据读写: CMD17/CMD24 (单块), CMD23+CMD18/25 (多块)
  *
  *  Created on: 2025-6-21
  *      Author: gjsbr
@@ -58,8 +59,8 @@ static SdmmcErr_t SendAcmd(volatile SdmmcRegs_t *sdmmc,
 
 /* ---- 公开接口 ---- */
 
-/* 初始化序列见 SD Spec v9.10 Figure 4-2 (Card Initialization Flow) */
-SdCardErr_t SdCardInit(SdCard_t *card)
+/* 初始化: 上电→卡识别→选卡→4-bit→设定目标速率 */
+SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
     uint32_t resp[4];
@@ -100,6 +101,7 @@ SdCardErr_t SdCardInit(SdCard_t *card)
     if (retry == ACMD41_RETRY_MAX)
         return SD_ERR_INIT_TIMEOUT;
     card->is_sdhc = (ocr >> 30) & 1;
+    card->s18a = (ocr >> 24) & 1;     /* S18A: 1=卡支持1.8V (UHS-I) */
 
     /* CMD2: ALL_SEND_CID → 解析卡身份信息
      * CID 位域定义见 SD Spec v9.10 Table 5-2 (Section 5.2)
@@ -161,9 +163,6 @@ SdCardErr_t SdCardInit(SdCard_t *card)
     }
     card->capacity_mb = card->total_blocks / 2048;
 
-    /* 提频到 25MHz */
-    SdmmcSetClock(sdmmc, card->ker_ck_hz, 25000000);
-
     /* CMD7: SELECT_CARD → Transfer State
      * arg=[31:16]=RCA (Table 4-22), 响应 R1b (带 Busy) */
     err = SendCmd(sdmmc, 7, card->rca << 16, SDMMC_RESP_SHORT, resp);
@@ -176,6 +175,70 @@ SdCardErr_t SdCardInit(SdCard_t *card)
         return SD_ERR_IO;
     SdmmcSetBusWidth(sdmmc, SDMMC_BUS_4BIT);
 
+    /* 设定目标速率 (包含时钟提频、UHS-I 电压切换 + 升级速率) */
+    return SdCardSetSpeed(card, target_MBps);
+}
+
+
+/* 设定 SD 卡工作速率 (MB/s), 4-bit 总线下:
+ *   CK (MHz) = target_MBps × 2
+ *   超过 50MHz (即 >25MB/s) 需要 UHS-I 1.8V */
+SdCardErr_t SdCardSetSpeed(SdCard_t *card, uint32_t target_MBps)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t bus_width = 4;
+    uint32_t target_hz;
+
+    if (target_MBps == 0)
+        return SD_OK;
+
+    /* 4-bit: CK = target_MBps × 8 / 4 = target_MBps × 2 (MHz) */
+    target_hz = target_MBps * 8000000 / bus_width;
+
+    /* High Speed 模式上限 CK=50MHz, 超过需 UHS-I 电压切换 */
+    if (target_hz > 50000000)
+    {
+        if (card->s18a)
+        {
+            /* Step1: DTMODE=01 (SD voltage switching mode) */
+            sdmmc->DCTRL = (sdmmc->DCTRL & ~SDMMC_DCTRL_DTMODE_Msk)
+                         | SDMMC_DCTRL_SDMODE;
+
+            /* Step2: CMD11 — 卡收到后拉 DAT0 低, SDMMC 硬件自动等 DAT0 释放 */
+            SdmmcErr_t err = SendCmd(sdmmc, 11, 0x7FFF, SDMMC_RESP_SHORT, NULL);
+            if (err != SDMMC_OK)
+            {
+                sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
+                return SD_ERR_IO;
+            }
+
+            /* Step3: 等 DATAEND (硬件检测到 DAT0 释放), 无数据超时 */
+            uint32_t sta;
+            do {
+                sta = sdmmc->STAR;
+            } while (!(sta & (SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT)));
+
+            if (sta & SDMMC_STA_DTIMEOUT)
+            {
+                sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
+                sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+                return SD_ERR_IO;
+            }
+            sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+
+            /* Step4: TODO — 板级电压切换 3.3V→1.8V (需根据具体硬件实现) */
+            /* 切换后等待 ≥5ms 让电压稳定 */
+
+            /* Step5: 清除 SD mode, 恢复普通数据传输 */
+            sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
+        }
+        else
+        {
+            target_hz = 50000000;  /* 不支UHS-I, 降到 50MHz */
+        }
+    }
+
+    SdmmcSetClock(sdmmc, card->ker_ck_hz, target_hz);
     return SD_OK;
 }
 
@@ -241,4 +304,38 @@ SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, u
             return SD_ERR_IO;
     }
     return SD_OK;
+}
+
+
+/* CMD23 + CMD18 多块读: 预设块数后一次性 DMA 搬完, 卡自动停 */
+SdCardErr_t SdCardReadMulti(SdCard_t *card, uint32_t block, void *buf, uint32_t count)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t addr = card->is_sdhc ? block : block * 512;
+
+    SdmmcErr_t err = SendCmd(sdmmc, 23, count, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return SD_ERR_IO;
+
+    SdmmcCmd_t cmd = { .index = 18, .arg = addr, .resp_type = SDMMC_RESP_SHORT, .cmdtrans = 1 };
+    SdmmcData_t data = { .buf_addr = (uint32_t)buf, .len = count * 512, .block_size_log = 9, .dir_read = 1 };
+    err = SdmmcReadData(sdmmc, &cmd, &data, NULL);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
+}
+
+
+/* CMD23 + CMD25 多块写: 预设块数后一次性搬完, 卡自动停 */
+SdCardErr_t SdCardWriteMulti(SdCard_t *card, uint32_t block, const void *buf, uint32_t count)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t addr = card->is_sdhc ? block : block * 512;
+
+    SdmmcErr_t err = SendCmd(sdmmc, 23, count, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return SD_ERR_IO;
+
+    SdmmcCmd_t cmd = { .index = 25, .arg = addr, .resp_type = SDMMC_RESP_SHORT, .cmdtrans = 1 };
+    SdmmcData_t data = { .buf_addr = (uint32_t)buf, .len = count * 512, .block_size_log = 9, .dir_read = 0 };
+    err = SdmmcWriteData(sdmmc, &cmd, &data, NULL);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
 }

@@ -262,6 +262,7 @@
 | 4-bit 总线切换 | 通过 | ACMD6(arg=2) + SdmmcSetBusWidth(4BIT) |
 | Read MBR (Block 0) | 通过 | 签名 55 AA 有效，内容为 Win11 安装镜像引导代码 |
 | Write/Read (Block 2048) | 通过 | 写入 XOR pattern 512 字节，回读校验全部匹配 |
+| Multi-block Write/Read (CMD23+CMD25+CMD18, 256 blocks @ block 100000) | 待测 | 写入 uint16_t 0~65535 共 128KB, 回读校验全部匹配 |
 
 ### 已知问题/修复记录
 
