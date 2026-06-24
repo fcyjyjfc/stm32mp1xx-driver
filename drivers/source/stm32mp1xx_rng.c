@@ -9,6 +9,9 @@
 #include "stm32mp1xx_rng.h"
 
 
+volatile RngRegs_t *RNG1 = (void *)0;
+
+
 /**
  * @brief 配置并使能 RNG
  * @param rng  RNG 寄存器实例指针

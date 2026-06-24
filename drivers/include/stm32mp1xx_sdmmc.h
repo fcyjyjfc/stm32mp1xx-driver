@@ -72,6 +72,8 @@ typedef struct {
 #define SDMMC_STA_CPSMACT       (1U << 13)
 #define SDMMC_STA_BUSYD0        (1U << 20)
 #define SDMMC_STA_BUSYD0END     (1U << 21)
+#define SDMMC_STA_IDMATE        (1U << 27)
+#define SDMMC_STA_IDMABTC       (1U << 28)
 
 /* ---- ICR 清除位 (与 STAR 对应) ---- */
 #define SDMMC_ICR_ALLFLAGS      0x1FE00FFFU
@@ -114,6 +116,11 @@ typedef struct {
 #define SDMMC_IDMA_IDMAEN       (1U << 0)
 #define SDMMC_IDMA_IDMABMODE    (1U << 1)
 
+/* ---- IDMALAR 位域 ---- */
+#define SDMMC_IDMALAR_ULA       (1U << 31)  /* 0=最后, 1=继续下一节点 */
+#define SDMMC_IDMALAR_ULS       (1U << 30)  /* 0=保持size(2-word), 1=更新size(3-word) */
+#define SDMMC_IDMALAR_ABR       (1U << 29)  /* 0=下一节点未就绪(报错), 1=就绪 */
+
 /* ---- POWER 位域 ---- */
 #define SDMMC_POWER_PWRCTRL_Pos 0
 #define SDMMC_POWER_PWRCTRL_Msk (3U << 0)
@@ -131,6 +138,7 @@ typedef enum {
     SDMMC_ERR_TXUNDERR,
     SDMMC_ERR_RESP_MISMATCH,
     SDMMC_ERR_PARAM,
+    SDMMC_ERR_BUSY,
 } SdmmcErr_t;
 
 typedef enum {
@@ -161,6 +169,16 @@ typedef struct {
     uint8_t         dir_read;
 } SdmmcData_t;
 
+/* IDMA 链表描述符 — 3-word 可变大小模式 (ULS=1)
+ * 12 字节/节点, 直接被硬件加载到 IDMALAR/IDMABASER/IDMABSIZER 三寄存器
+ * buf_size 直接填字节数 (32 倍数, bit[4:0] 保留区自动为 0)
+ * idmalar.IDMALA = 从 IDMABA 到下一描述符的字节偏移 (4 字节对齐) */
+typedef struct {
+    uint32_t idmalar;       /* → IDMALAR: ULA(31)|ULS(30)|ABR(29)|IDMALA[15:2] */
+    uint32_t buf_addr;      /* → IDMABASER (word 对齐) */
+    uint32_t buf_size;      /* → IDMABSIZER (字节, 32 倍数) */
+} SdmmcIdmaDesc_t;
+
 
 /* ===== 函数声明 ===== */
 
@@ -182,6 +200,41 @@ extern SdmmcErr_t SdmmcWriteData(volatile SdmmcRegs_t *sdmmc,
                                  const SdmmcCmd_t *cmd,
                                  const SdmmcData_t *data,
                                  uint32_t resp[4]);
+
+/* IDMA 链表模式读写 (scatter-gather, 描述符数组在内存中) */
+extern SdmmcErr_t SdmmcReadDataLL(volatile SdmmcRegs_t *sdmmc,
+                                   const SdmmcCmd_t *cmd,
+                                   const SdmmcIdmaDesc_t *desc_first,
+                                   uint8_t  block_size_log,
+                                   uint32_t resp[4]);
+
+extern SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
+                                    const SdmmcCmd_t *cmd,
+                                    const SdmmcIdmaDesc_t *desc_first,
+                                    uint8_t  block_size_log,
+                                    uint32_t resp[4]);
+
+
+/* ===== 中断模式 (非阻塞) ===== */
+
+/* 中断上下文: ISR 完成传输后置 1, 前台轮询此标志 */
+extern volatile uint32_t   g_sdmmc1_it_done;
+extern volatile SdmmcErr_t g_sdmmc1_it_result;
+extern volatile uint32_t   g_sdmmc1_btc_cnt;
+
+/* 启动 LL 传输 (不阻塞), ISR 接管后续命令/数据/忙等阶段 */
+void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc,
+                       const SdmmcCmd_t *cmd,
+                       const SdmmcIdmaDesc_t *desc_first,
+                       uint8_t  block_size_log);
+
+void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc,
+                      const SdmmcCmd_t *cmd,
+                      const SdmmcIdmaDesc_t *desc_first,
+                      uint8_t  block_size_log);
+
+/* SDMMC1 中断处理入口, 由 do_irq → vector table 分发 */
+void Sdmmc1IrqHandler(void);
 
 
 #endif /* STM32MP1XX_SDMMC_H_ */

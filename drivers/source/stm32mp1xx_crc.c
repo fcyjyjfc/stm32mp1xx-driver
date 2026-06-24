@@ -9,6 +9,9 @@
 #include "stm32mp1xx_crc.h"
 
 
+volatile CrcRegs_t *const CRC1 = (void *)0;
+
+
 /**
  * @brief 配置 CRC（多项式、初始值、反转、宽度）并复位
  * @param crc  CRC 寄存器实例指针

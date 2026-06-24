@@ -252,6 +252,8 @@
 
 硬件配置: SDMMC1, ker_ck=HSI(64MHz), PC8~12+PD2 AF12, 4-bit 模式
 
+### 基本功能
+
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
 | RCC 时钟配置 | 通过 | SDMMC12CKSELR=3(HSI), MP_AHB6ENSETR bit16 |
@@ -260,13 +262,40 @@
 | CID 解析 | 通过 | Samsung SDU1 v1.0, SN=0x14A11A21, 2019/1 |
 | CSD 解析 (容量/速率) | 通过 | 61440MB (64GB), Max Clock 25MHz |
 | 4-bit 总线切换 | 通过 | ACMD6(arg=2) + SdmmcSetBusWidth(4BIT) |
-| Read MBR (Block 0) | 通过 | 签名 55 AA 有效，内容为 Win11 安装镜像引导代码 |
-| Write/Read (Block 2048) | 通过 | 写入 XOR pattern 512 字节，回读校验全部匹配 |
-| Multi-block Write/Read (CMD23+CMD25+CMD18, 256 blocks @ block 100000) | 待测 | 写入 uint16_t 0~65535 共 128KB, 回读校验全部匹配 |
+| Read MBR (Block 0) | 通过 | 签名 55 AA 有效 |
+| Write/Read (Block 2048) | 通过 | XOR pattern 512 字节，回读校验通过 |
+| Multi-block Write/Read (256 blocks @ block 100000) | 通过 | CMD23+CMD25/CMD18 single buffer, uint16_t 0~65535, 128KB |
+
+### IDMA 链表模式 (阻塞)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| LlMultiBlockTest 链表多块读写 | 通过 | 写5节点(512+512+480+544+512) ULS混用 + 读2节点(1024+1536) 非连续描述符, uint16_t 0~1279 |
+| SdmmcReadDataLL (驱动层) | 通过 | scatter-gather, 3-word 可变大小节点, LlValidate 校验 |
+| SdmmcWriteDataLL (驱动层) | 通过 | 同上, 写后轮询 BUSYD0 |
+
+### 中断模式 (非阻塞)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| LlItMultiBlockTest 单节点中断读写 | 通过 | UL A=0 单 buffer, 512B, 中断写+读, GIC SDMMC1 IRQ 81, uint16_t 0~255 |
+| LlItBtcTest 2节点动态BAR (单缓冲) | **预期失败** | 节点0 BAR=1, 节点1 BAR=0, 验证 IDMATE 行为: 硬件立即停 IDMA→TXUNDERR |
+| LlItBtcMultiTest 8节点双缓冲 | **未通过** | 前2节点 BAR=1, BTC(N)准备节点(N+2), 8×512B=4096B, 需调试 |
+
+### 中断模式 ISR 架构
+
+| 项目 | 说明 |
+|------|------|
+| 状态机 | CMDREND(清单标志)→DATAEND(完成,关MASKR+IDMA) |
+| BUSYD0 策略 | DATAEND 即完成, 不在 ISR 等 Busy; 下次 SdmmcStartLL 入口 if(BUSYD0)→ERR_BUSY |
+| IDMABTC | ISR 递增 g_sdmmc1_btc_cnt, 前台轮询变化→填数据+置 ABR |
+| IDMATE | 无中断使能位(实测 MASKR 无效), 仅 STAR 标志+ICR 清除; ISR 被动检测 |
 
 ### 已知问题/修复记录
 
 | 问题 | 原因 | 修复 |
 |------|------|------|
-| SdmmcReadData/WriteData 卡在 CPSM 轮询 | DCTRL 设置 DTEN=1 会绕过 CPSM 直接启动 DPSM，导致 CPSM 无法发送命令。RM0436: "DTEN must not be used with SD or eMMC cards" | DCTRL 不设 DTEN，由 CMDR 的 CMDTRANS 位在命令响应后自动触发 DPSM |
-| SdmmcWriteData 卡在 BUSYD0END 轮询 | DATAEND 后 DPSM 回到 idle，无法检测 DAT0 从低到高的跳变，BUSYD0END 永远不置位 | 改为轮询 STAR.BUSYD0 电平：=1 表示忙，=0 表示编程完成 |
+| SdmmcReadData/WriteData 卡在 CPSM 轮询 | DCTRL 设置 DTEN=1 绕过 CPSM 直接启动 DPSM, RM0436: "DTEN must not be used with SD or eMMC cards" | DCTRL 不设 DTEN, 由 CMDR CMDTRANS 位触发 DPSM |
+| SdmmcWriteData 卡在 BUSYD0END 轮询 | DATAEND 后 DPSM 回 idle, BUSYD0END 不可达 | 改为轮询 STAR.BUSYD0 电平 |
+| BUSYD0END 中断不可达 | BUSYD0END 仅用于 R1b 命令响应 Busy, 与数据写后的卡编程 Busy 无关 | ISR 在 DATAEND 完成, 下次启动前 if(BUSYD0) 拒绝 |
+| IDMATE 不产生中断 | IDMATE 无中断使能位, 仅标志; ABR=0 时硬件立即停止 IDMA→TXUNDERR/RXOVERR | 双缓冲: 前2节点预置 ABR=1, BTC 准备 N+2 号节点 |

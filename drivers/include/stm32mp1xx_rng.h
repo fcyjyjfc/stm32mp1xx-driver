@@ -44,6 +44,9 @@ typedef struct {
 } RngCfg_t;
 
 
+extern volatile RngRegs_t *RNG1;
+
+
 void RngCfg(volatile RngRegs_t *rng, const RngCfg_t *cfg);
 void RngEnable(volatile RngRegs_t *rng);
 void RngDisable(volatile RngRegs_t *rng);

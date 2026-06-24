@@ -51,5 +51,16 @@ SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, u
 SdCardErr_t SdCardReadMulti(SdCard_t *card, uint32_t block, void *buf, uint32_t count);
 SdCardErr_t SdCardWriteMulti(SdCard_t *card, uint32_t block, const void *buf, uint32_t count);
 
+SdCardErr_t SdCardReadMultiLL(SdCard_t *card, uint32_t block,
+                              const SdmmcIdmaDesc_t *desc, uint8_t block_size_log);
+SdCardErr_t SdCardWriteMultiLL(SdCard_t *card, uint32_t block,
+                               const SdmmcIdmaDesc_t *desc, uint8_t block_size_log);
+
+/* 中断模式: CMD23 用轮询, 数据传输用中断, 返回后前台轮询 g_sdmmc1_it_done */
+void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
+                             const SdmmcIdmaDesc_t *desc, uint8_t block_size_log);
+void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
+                            const SdmmcIdmaDesc_t *desc, uint8_t block_size_log);
+
 
 #endif /* SD_CARD_H_ */

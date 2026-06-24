@@ -49,6 +49,9 @@ typedef struct {
 } CrcCfg_t;
 
 
+extern volatile CrcRegs_t *const CRC1;
+
+
 void CrcCfg(volatile CrcRegs_t *crc, const CrcCfg_t *cfg);
 void CrcReset(volatile CrcRegs_t *crc);
 void CrcFeed8(volatile CrcRegs_t *crc, const uint8_t *data, uint32_t len);
