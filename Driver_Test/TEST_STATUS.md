@@ -279,8 +279,15 @@
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
 | LlItMultiBlockTest 单节点中断读写 | 通过 | UL A=0 单 buffer, 512B, 中断写+读, GIC SDMMC1 IRQ 81, uint16_t 0~255 |
-| LlItBtcTest 2节点动态BAR (单缓冲) | **预期失败** | 节点0 BAR=1, 节点1 BAR=0, 验证 IDMATE 行为: 硬件立即停 IDMA→TXUNDERR |
-| LlItBtcMultiTest 8节点双缓冲 | **未通过** | 前2节点 BAR=1, BTC(N)准备节点(N+2), 8×512B=4096B, 需调试 |
+| LlItBtcTest 2节点动态BAR | **预期失败** | 节点0 BAR=1, 节点1 BAR=0, IDMATE 后自动 RCC 复位+重初始化恢复 |
+| LlItBtcMultiTest 32节点动态BAR | **通过** | 24预填+8动态, 32×4096B=128KB, 降低时钟至8MHz, 记录BTC_start/end, 回读memcmp校验 |
+| LlItPreparedTest 全预准备 | 通过 | 所有节点 ABR=1 预先, 5节点写+2节点读, BTC 仅计数, 中断路径正常 |
+
+### 擦除功能
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| EraseTest 16块写+擦除前8块 | 通过 | 写16块(uint16_t 0~4095) → SdCardErase前8块 → 回读校验后8块保留 + 前8块全0 |
 
 ### 中断模式 ISR 架构
 

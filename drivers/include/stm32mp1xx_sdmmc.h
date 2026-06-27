@@ -126,6 +126,34 @@ typedef struct {
 #define SDMMC_POWER_PWRCTRL_Msk (3U << 0)
 
 
+/* ===== DBLOCKSIZE 块大小枚举 (实际字节数 = 1U << value) ===== */
+typedef enum {
+    SDMMC_BLKSIZ_1B    = 0,
+    SDMMC_BLKSIZ_2B    = 1,
+    SDMMC_BLKSIZ_4B    = 2,
+    SDMMC_BLKSIZ_8B    = 3,
+    SDMMC_BLKSIZ_16B   = 4,
+    SDMMC_BLKSIZ_32B   = 5,
+    SDMMC_BLKSIZ_64B   = 6,
+    SDMMC_BLKSIZ_128B  = 7,
+    SDMMC_BLKSIZ_256B  = 8,
+    SDMMC_BLKSIZ_512B  = 9,
+    SDMMC_BLKSIZ_1KB   = 10,
+    SDMMC_BLKSIZ_2KB   = 11,
+    SDMMC_BLKSIZ_4KB   = 12,
+    SDMMC_BLKSIZ_8KB   = 13,
+    SDMMC_BLKSIZ_16KB  = 14,
+    SDMMC_BLKSIZ_32KB  = 15,
+} SdmmcBlockSize_t;
+
+/* SD 卡固定块大小 (512 字节) — DBLOCKSIZE 对应值 */
+#define SDMMC_BLKSIZ_BYTES(x)  (1U << (x))
+
+/* SDMMC 外设常数 */
+#define SDMMC_INIT_CLK_HZ    400000U     /* 识别模式时钟上限 (Hz) */
+#define SDMMC_BUSY_TIMEOUT   500000000U  /* BUSYD0 轮询循环上限 */
+#define SDMMC_DTIMER_MAX     0xFFFFFFFFU /* DTIMER 最大超时值 */
+
 /* ===== 类型定义 ===== */
 
 typedef enum {
@@ -154,19 +182,37 @@ typedef enum {
     SDMMC_BUS_8BIT = 2,
 } SdmmcBusWidth_t;
 
+/* 传输方向: SdmmcData_t.dir_read 取值 */
+typedef enum {
+    SDMMC_DIR_WRITE = 0, /* 主机→卡 */
+    SDMMC_DIR_READ  = 1, /* 卡→主机 */
+} SdmmcDir_t;
+
+/* cmdtrans: 命令是否后跟数据传输 */
+typedef enum {
+    SDMMC_CMD_NODATA = 0, /* 纯命令 */
+    SDMMC_CMD_DATA   = 1, /* 命令后跟数据传输, 触发 DPSM */
+} SdmmcCmdTrans_t;
+
+/* cmdstop: 是否中止当前传输 */
+typedef enum {
+    SDMMC_CMD_NOSTOP = 0, /* 正常传输 */
+    SDMMC_CMD_STOP   = 1, /* 中止 (CMD12 STOP_TRANSMISSION) */
+} SdmmcCmdStop_t;
+
 typedef struct {
     uint8_t          index;
     uint32_t         arg;
     SdmmcRespType_t  resp_type;
-    uint8_t          cmdtrans;
-    uint8_t          cmdstop;
+    SdmmcCmdTrans_t  cmdtrans;
+    SdmmcCmdStop_t   cmdstop;
 } SdmmcCmd_t;
 
 typedef struct {
-    uint32_t        buf_addr;
-    uint32_t        len;
-    uint8_t         block_size_log;
-    uint8_t         dir_read;
+    uint32_t          buf_addr;
+    uint32_t          len;
+    SdmmcBlockSize_t  block_size_log;
+    SdmmcDir_t        dir_read;
 } SdmmcData_t;
 
 /* IDMA 链表描述符 — 3-word 可变大小模式 (ULS=1)
@@ -205,13 +251,13 @@ extern SdmmcErr_t SdmmcWriteData(volatile SdmmcRegs_t *sdmmc,
 extern SdmmcErr_t SdmmcReadDataLL(volatile SdmmcRegs_t *sdmmc,
                                    const SdmmcCmd_t *cmd,
                                    const SdmmcIdmaDesc_t *desc_first,
-                                   uint8_t  block_size_log,
+                                   SdmmcBlockSize_t  block_size_log,
                                    uint32_t resp[4]);
 
 extern SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
                                     const SdmmcCmd_t *cmd,
                                     const SdmmcIdmaDesc_t *desc_first,
-                                    uint8_t  block_size_log,
+                                    SdmmcBlockSize_t  block_size_log,
                                     uint32_t resp[4]);
 
 
@@ -221,20 +267,60 @@ extern SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
 extern volatile uint32_t   g_sdmmc1_it_done;
 extern volatile SdmmcErr_t g_sdmmc1_it_result;
 extern volatile uint32_t   g_sdmmc1_btc_cnt;
+extern volatile uint32_t   g_sdmmc1_busy0end;
+extern volatile SdmmcRegs_t *g_it_sdmmc;
+
+/* 调试跟踪: ISR/主循环原子写入 1=BTC 2=BAR置1 3=TXUNDERR 4=IDMATE */
+#define SDMMC_DBG_TRACE_SIZE 64
+extern volatile uint32_t g_sdmmc1_dbg_trace[SDMMC_DBG_TRACE_SIZE];
+extern volatile uint32_t g_sdmmc1_dbg_idx;
 
 /* 启动 LL 传输 (不阻塞), ISR 接管后续命令/数据/忙等阶段 */
 void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc,
                        const SdmmcCmd_t *cmd,
                        const SdmmcIdmaDesc_t *desc_first,
-                       uint8_t  block_size_log);
+                       SdmmcBlockSize_t  block_size_log);
 
 void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc,
                       const SdmmcCmd_t *cmd,
                       const SdmmcIdmaDesc_t *desc_first,
-                      uint8_t  block_size_log);
+                      SdmmcBlockSize_t  block_size_log);
 
 /* SDMMC1 中断处理入口, 由 do_irq → vector table 分发 */
 void Sdmmc1IrqHandler(void);
+
+
+/* ===== 寄存器辅助操作 (供上层使用, 避免直接访问寄存器) ===== */
+
+/* 清除 ICR 所有标志位 */
+void SdmmcClearFlags(volatile SdmmcRegs_t *sdmmc);
+
+/* 设置数据超时计数器 (CK 周期数), 用于 R1b 命令等需要延长超时的场景 */
+void SdmmcSetDataTimeout(volatile SdmmcRegs_t *sdmmc, uint32_t timeout);
+
+/* 等待 BUSYD0 释放 (卡忙结束), timeout 为循环次数上限, 返回 SDMMC_OK 或 SDMMC_ERR_BUSY */
+SdmmcErr_t SdmmcWaitBusy(volatile SdmmcRegs_t *sdmmc, uint32_t timeout);
+
+/* 检查 IDMATE (IDMA 传输错误) 标志 */
+static inline int SdmmcCheckIdmate(volatile SdmmcRegs_t *sdmmc)
+{
+    return (sdmmc->STAR & SDMMC_STA_IDMATE) != 0;
+}
+
+/* 设置 DCTRL.DTMODE 字段 (00=普通, 01=SD电压切换) */
+void SdmmcSetDtMode(volatile SdmmcRegs_t *sdmmc, uint32_t mode);
+
+/* 等待 DATAEND (数据阶段完成) 或 DTIMEOUT, 超时返回 SDMMC_ERR_DTIMEOUT */
+SdmmcErr_t SdmmcWaitDataEnd(volatile SdmmcRegs_t *sdmmc);
+
+/* 关闭 IDMA (IDMACTRLR=0) */
+void SdmmcIdmaDisable(volatile SdmmcRegs_t *sdmmc);
+
+/* 屏蔽所有中断 (MASKR=0) */
+void SdmmcIntrMaskAll(volatile SdmmcRegs_t *sdmmc);
+
+/* 脉冲 FIFORST: 复位 FIFO 和数据通路状态机 (DPSM), 用于错误恢复 */
+void SdmmcFifoReset(volatile SdmmcRegs_t *sdmmc);
 
 
 #endif /* STM32MP1XX_SDMMC_H_ */

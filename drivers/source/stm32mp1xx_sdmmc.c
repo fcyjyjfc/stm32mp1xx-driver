@@ -30,10 +30,13 @@ static void DelayMs(uint32_t ms)
 }
 
 
-/*
- * 上电序列 (RM0436 58.6.1):
- *   PWRCTRL: 10(power-cycle) → 00(power-off) → 11(power-on)
- *   每步之间需要延时让供电稳定, 最后配置初始时钟 ≤ 400kHz (识别模式要求)
+/**
+ * @brief SDMMC 上电序列, 配置初始时钟 ≤ 400kHz (RM0436 58.6.1)
+ * @param sdmmc     SDMMC 实例
+ * @param ker_ck_hz 内核时钟频率 (HSI 64MHz)
+ *
+ * PWRCTRL: 10(power-cycle) → 00(power-off) → 11(power-on)
+ * 每步延时让供电稳定. 最后设 CLKDIV 保证 CK ≤ 400kHz.
  */
 void SdmmcPowerOn(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz)
 {
@@ -50,7 +53,7 @@ void SdmmcPowerOn(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz)
     DelayMs(2);
 
     /* 初始时钟: CK = ker_ck / (2 * CLKDIV), 保证 ≤ 400kHz */
-    uint32_t clkdiv = (ker_ck_hz + 2U * 400000U - 1U) / (2U * 400000U);
+    uint32_t clkdiv = (ker_ck_hz + 2U * SDMMC_INIT_CLK_HZ - 1U) / (2U * SDMMC_INIT_CLK_HZ);
     if (clkdiv == 0)
         clkdiv = 1;
 
@@ -59,17 +62,21 @@ void SdmmcPowerOn(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz)
 }
 
 
+/**
+ * @brief SDMMC 关电
+ */
 void SdmmcPowerOff(volatile SdmmcRegs_t *sdmmc)
 {
     sdmmc->POWER &= ~SDMMC_POWER_PWRCTRL_Msk;
 }
 
 
-/*
- * 修改 SDMMC_CK 频率
- * 公式: CK = ker_ck / (2 * CLKDIV), CLKDIV=0 则直通(不支持DDR)
- * 使用向上取整确保 CK ≤ target_hz (SD 规范定义了各模式的时钟上限)
- * 注意: 必须在 CPSM/DPSM 空闲时调用
+/**
+ * @brief 修改 SDMMC_CK 频率
+ * @param target_hz 目标频率, 实际 CK ≤ target_hz (向上取整 CLKDIV)
+ *
+ * CK = ker_ck / (2 * CLKDIV), CLKDIV=0 等效于 1.
+ * 必须在 CPSM/DPSM 空闲时调用.
  */
 void SdmmcSetClock(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz, uint32_t target_hz)
 {
@@ -85,9 +92,9 @@ void SdmmcSetClock(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz, uint32_t tar
 }
 
 
-/*
- * 切换总线宽度, 枚举值直接对应 WIDBUS 字段
- * 4/8-bit 模式同时开启硬件流控 (HWFC_EN), 防止 FIFO 溢出/下溢
+/**
+ * @brief 切换总线宽度, 4/8-bit 同时开启硬件流控 (HWFC_EN) 防止 FIFO 溢出/下溢
+ * @param width SDMMC_BUS_1BIT / _4BIT / _8BIT
  */
 void SdmmcSetBusWidth(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width)
 {
@@ -104,19 +111,18 @@ void SdmmcSetBusWidth(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width)
 }
 
 
-/*
- * 命令阶段 (内部公共函数, 被 SdmmcSendCmd / ReadData / WriteData 复用)
+/**
+ * @brief 命令阶段 (内部公共函数, 被 SendCmd/ReadData/WriteData 复用)
+ * @return SDMMC_OK 或错误码
  *
- * 流程: 清ICR → 写ARG → 组装并写CMDR(触发CPSM) → 轮询STAR → 校验RESPCMDR → 读RESP
+ * 流程: 清ICR → 写ARG → 组装CMDR(触发CPSM) → 轮询STAR → 校验RESPCMDR → 读RESP.
  *
- * 为什么结尾不清 ICR:
- *   ReadData/WriteData 在命令阶段后还要继续轮询 DATAEND,
- *   如果此处清 ICR 会把已置位的数据标志也清掉, 导致后续轮询永远等不到.
- *   由调用者在全部完成后统一清 ICR.
+ * 结尾不清 ICR — 调用者可能还要轮询数据阶段标志 (DATAEND 等),
+ * 过早清除会导致后续永远等不到. 由调用者全部完成后统一清.
  *
- * RESPCMDR 校验:
- *   仅对 SDMMC_RESP_SHORT (R1/R6/R7) 做校验 — 卡回显命令索引, 不匹配说明通信异常.
- *   R2(长响应) 和 R3(OCR) 的 RESPCMDR 固定为 0x3F, 无校验意义.
+ * RESPCMDR 仅对 R1/R6/R7 (SHORT) 校验 — 卡回显命令索引.
+ * R2(长响应) 和 R3(OCR) 固定 0x3F, 不做校验.
+ * R3 无 CRC 字段, 硬件报 CCRCFAIL 不视为错误.
  */
 static SdmmcErr_t SdmmcCmdPhase(volatile SdmmcRegs_t *sdmmc,
                                 const SdmmcCmd_t *cmd,
@@ -178,7 +184,9 @@ static SdmmcErr_t SdmmcCmdPhase(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/* 纯命令: 发命令 + 收响应, 不涉及数据传输 */
+/**
+ * @brief 发送命令 (无数据传输)
+ */
 SdmmcErr_t SdmmcSendCmd(volatile SdmmcRegs_t *sdmmc,
                         const SdmmcCmd_t *cmd,
                         uint32_t resp[4])
@@ -189,22 +197,12 @@ SdmmcErr_t SdmmcSendCmd(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/*
- * 命令 + 读数据 (IDMA single buffer 模式)
+/**
+ * @brief 命令 + 读数据 (IDMA single buffer)
+ * @param data buf_addr 需 4 字节对齐, len 需 2^block_size_log 整数倍
  *
- * 时序 (RM0436 58.6.8):
- *   1. 配 DTIMER/DLENR/IDMA/DCTRL (不设 DTEN! SD/eMMC 禁止手动启动 DPSM)
- *   2. CmdPhase 发命令 (CMDTRANS=1), 响应收到后 CPSM 内部发 DataEnable 触发 DPSM
- *   3. IDMA 自动把 FIFO 数据搬到 buf_addr, 全部完成后置 DATAEND
- *
- * 易错点:
- *   - DTEN=1 会绕过 CPSM 直接启动 DPSM, 导致 CPSM 无法发送命令 (卡住)
- *     RM0436 明确说明: "DTEN must not be used with SD or eMMC cards"
- *
- * 参数约束:
- *   - len 必须是 2^block_size_log 的整数倍
- *   - buf_addr 必须 4 字节对齐 (IDMA 要求 word 对齐)
- *   - cmd->cmdtrans 应为 1
+ * CMDTRANS 触发 DPSM, IDMA 自动搬 FIFO 到 buf_addr.
+ * 不设 DTEN — SD/eMMC 卡禁止手动启动 DPSM (RM0436: "DTEN must not be used with SD or eMMC cards").
  */
 SdmmcErr_t SdmmcReadData(volatile SdmmcRegs_t *sdmmc,
                          const SdmmcCmd_t *cmd,
@@ -218,7 +216,7 @@ SdmmcErr_t SdmmcReadData(volatile SdmmcRegs_t *sdmmc,
     /* 配置数据路径: 超时用最大值, 方向=读(DTDIR=1)
      * 注意: 不设 DTEN — SD 卡数据传输由 CMDTRANS 触发, 不需要手动启动 DPSM
      * (RM0436: DTEN must not be used with SD or eMMC cards) */
-    sdmmc->DTIMER = 0xFFFFFFFFU;
+    sdmmc->DTIMER = SDMMC_DTIMER_MAX;
     sdmmc->DLENR = data->len;
     sdmmc->IDMABASER = data->buf_addr;
     sdmmc->IDMACTRLR = SDMMC_IDMA_IDMAEN;
@@ -255,18 +253,12 @@ SdmmcErr_t SdmmcReadData(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/*
- * 命令 + 写数据 (IDMA single buffer 模式)
+/**
+ * @brief 命令 + 写数据 (IDMA single buffer)
  *
- * 与 ReadData 的区别:
- *   1. DCTRL 方向为写 (DTDIR=0, 不设该位)
- *   2. 数据发完后卡编程 Flash, DAT0 拉低=Busy, 轮询 BUSYD0 位等释放
- *   3. 错误检测: TXUNDERR (FIFO 空了 IDMA 来不及填) 替代 RXOVERR
- *
- * 易错点:
- *   - 不能用 BUSYD0END 等待写完成: DATAEND 后 DPSM 已回 idle, 无法检测跳变
- *     改为直接轮询 STAR.BUSYD0 电平 (=0 表示卡不忙)
- *   - 同 ReadData: 不设 DTEN
+ * 与读的区别: DTDIR=0, 错误检测 TXUNDERR 替代 RXOVERR.
+ * 写后卡内部编程拉低 DAT0 (Busy), 轮询 STAR.BUSYD0 等释放.
+ * DATAEND 后 DPSM 已 idle, 不能用 BUSYD0END 等待 (它需要 DPSM 活跃).
  */
 SdmmcErr_t SdmmcWriteData(volatile SdmmcRegs_t *sdmmc,
                           const SdmmcCmd_t *cmd,
@@ -279,7 +271,7 @@ SdmmcErr_t SdmmcWriteData(volatile SdmmcRegs_t *sdmmc,
 
     /* 配置数据路径: 方向=写(DTDIR=0, 不设 DTDIR 位)
      * 不设 DTEN — 由 CMDTRANS 触发 (RM0436: DTEN must not be used with SD/eMMC) */
-    sdmmc->DTIMER = 0xFFFFFFFFU;
+    sdmmc->DTIMER = SDMMC_DTIMER_MAX;
     sdmmc->DLENR = data->len;
     sdmmc->IDMABASER = data->buf_addr;
     sdmmc->IDMACTRLR = SDMMC_IDMA_IDMAEN;
@@ -333,47 +325,33 @@ SdmmcErr_t SdmmcWriteData(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/*
- * ===== IDMA 链表模式 (scatter-gather, 3-word 可变大小节点) =====
+/* ===== IDMA 链表模式 (scatter-gather, 3-word 可变大小节点) =====
  *
- * 核心原理: 链表的第一个节点 = 寄存器本身 (IDMABASER+IDMABSIZER+IDMALAR)
- * 后续节点 = 描述符数组, 硬件从 IDMABAR + IDMALA 逐次加载
+ * 链表第一个节点由寄存器本身描述, 后续节点从 IDMABAR + IDMALA 加载.
  *
  * 节点格式 (SdmmcIdmaDesc_t, 12 字节):
  *   idmalar  → IDMALAR: ULA(31)|ULS(30)|ABR(29)|IDMALA[15:2]
  *   buf_addr → IDMABASER (word 对齐)
- *   buf_size → IDMABSIZER (字节数, bit[4:0]保留, 32 倍数天然对齐)
+ *   buf_size → IDMABSIZER (字节, bit[4:0]保留, 32 倍数天然对齐)
  *
- * 处理流程:
- *   1. 寄存器值对应第 1 个 buffer → 传输
- *   2. 检查 IDMALAR.ULA → 0=停止, 1=继续
- *   3. 从 IDMABAR + IDMALA 加载描述符 → 更新 3 个寄存器
- *   4. 新寄存器值对应下一 buffer → 传输
- *   5. 重复 2~4 直到 ULA=0
+ * 流程: 传第1个buffer → 查ULA → 从IDMABAR+IDMALA加载下一节点 → 重复直到ULA=0.
  *
- * 寄存器配置:
- *   IDMABMODE=1        — 启用链表模式
- *   IDMABAR=desc_first — 描述符表基地址
- *   IDMABASER=desc[0].buf_addr — 第 1 个 buffer 地址
- *   IDMABSIZER=desc[0].buf_size — 第 1 个 buffer 大小
- *   IDMALAR=desc[0].idmalar — ULA=1, ULS=1, ABR=1, IDMALA=12
- *
- * 典型用法 (3 个 buffer 的读):
- *   static SdmmcIdmaDesc_t desc[3] __attribute__((aligned(4)));
- *   desc[0].idmalar = IDMA_ULA|IDMA_ULS|IDMA_ABR|12; // IDMALA→desc[1]
- *   desc[0].buf_addr = (uint32_t)buf_a;  desc[0].buf_size = 512;
- *   desc[1].idmalar = IDMA_ULA|IDMA_ULS|IDMA_ABR|24; // IDMALA→desc[2]
- *   desc[1].buf_addr = (uint32_t)buf_b;  desc[1].buf_size = 256;
- *   desc[2].idmalar = IDMA_ULS|IDMA_ABR;              // ULA=0: 最后
- *   desc[2].buf_addr = (uint32_t)buf_c;  desc[2].buf_size = 512;
- *   SdmmcReadDataLL(sdmmc, &cmd, desc, 9, resp);
+ * 典型用法 (3 buffer 读):
+ *   desc[0].idmalar = ULA|ULS|ABR|12;   // IDMALA → desc[1]
+ *   desc[1].idmalar = ULA|ULS|ABR|24;   // IDMALA → desc[2]
+ *   desc[2].idmalar = ULS|ABR;          // ULA=0 最后
  */
 
 
 #define IDMA_MAX_NODES  256   /* 软件硬限, 防死循环; 硬件上限由 IDMALA[13:0] 决定 ≈ 5461 */
 
 
-/* 校验描述符数组, 沿着 IDMALA 链走, 成功返回总字节数, 失败返回 0 */
+/**
+ * @brief  校验 IDMA 描述符链, 返回总字节数
+ * @param  desc       描述符数组首地址
+ * @param  block_size 块大小 (字节)
+ * @return 总字节数 (成功), 0 (失败: word 未对齐 / size 非 32B 倍数 / 环形链 / 超 32MB)
+ */
 static uint32_t LlValidate(const SdmmcIdmaDesc_t *desc, uint32_t block_size)
 {
     const SdmmcIdmaDesc_t *d = desc;
@@ -411,11 +389,17 @@ static uint32_t LlValidate(const SdmmcIdmaDesc_t *desc, uint32_t block_size)
 }
 
 
-/* 命令 + 多段读 (IDMA linked-list) */
+/**
+ * @brief  命令 + 多段读 (IDMA linked-list)
+ * @param  desc_first      描述符链首节点
+ * @param  block_size_log  log2(块大小), SD 卡固定 9 (512B)
+ * @param  resp            命令响应 (4×32-bit, 可为 NULL)
+ * @return SDMMC_OK 或错误码
+ */
 SdmmcErr_t SdmmcReadDataLL(volatile SdmmcRegs_t *sdmmc,
                             const SdmmcCmd_t *cmd,
                             const SdmmcIdmaDesc_t *desc_first,
-                            uint8_t block_size_log,
+                            SdmmcBlockSize_t block_size_log,
                             uint32_t resp[4])
 {
     uint32_t block_size = 1U << block_size_log;
@@ -423,7 +407,7 @@ SdmmcErr_t SdmmcReadDataLL(volatile SdmmcRegs_t *sdmmc,
     if (total_len == 0)
         return SDMMC_ERR_PARAM;
 
-    sdmmc->DTIMER = 0xFFFFFFFFU;                /* 用最大超时, 避免长传输误触发 DTIMEOUT */
+    sdmmc->DTIMER = SDMMC_DTIMER_MAX;                /* 用最大超时, 避免长传输误触发 DTIMEOUT */
     sdmmc->DLENR = total_len;                   /* 总字节数, 必须是 DBLOCKSIZE 整数倍 */
 
     /* 第一个节点 = 寄存器本身 (IDMABASER/IDMABSIZER/IDMALAR)
@@ -469,11 +453,17 @@ SdmmcErr_t SdmmcReadDataLL(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/* 命令 + 多段写 (IDMA linked-list) */
+/**
+ * @brief  命令 + 多段写 (IDMA linked-list)
+ * @param  desc_first      描述符链首节点
+ * @param  block_size_log  log2(块大小), SD 卡固定 9 (512B)
+ * @param  resp            命令响应 (4×32-bit, 可为 NULL)
+ * @return SDMMC_OK 或错误码
+ */
 SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
                              const SdmmcCmd_t *cmd,
                              const SdmmcIdmaDesc_t *desc_first,
-                             uint8_t block_size_log,
+                             SdmmcBlockSize_t block_size_log,
                              uint32_t resp[4])
 {
     uint32_t block_size = 1U << block_size_log;
@@ -481,7 +471,7 @@ SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
     if (total_len == 0)
         return SDMMC_ERR_PARAM;
 
-    sdmmc->DTIMER = 0xFFFFFFFFU;                /* 用最大超时, 避免长传输误触发 DTIMEOUT */
+    sdmmc->DTIMER = SDMMC_DTIMER_MAX;                /* 用最大超时, 避免长传输误触发 DTIMEOUT */
     sdmmc->DLENR = total_len;                   /* 总字节数, 必须是 DBLOCKSIZE 整数倍 */
 
     /* 第一个节点 = 寄存器本身 (IDMABASER/IDMABSIZER/IDMALAR)
@@ -542,29 +532,139 @@ SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-/* ==================================================================
- *  中断模式 (非阻塞)
+/* ===== 寄存器辅助操作 ===== */
+
+/**
+ * @brief 清除 ICR 所有标志位
+ */
+void SdmmcClearFlags(volatile SdmmcRegs_t *sdmmc)
+{
+    sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+}
+
+/**
+ * @brief 设置数据超时计数器 (CK 周期数)
+ * @param timeout DTIMER 值, 通常用 0xFFFFFFFF (最大超时)
  *
- *  状态机: CMD_PEND → DATA_PEND → (写: BUSY_PEND) → DONE
- *  MASKR 一次使能所有相关中断, ISR 按 STA 标志区分当前阶段.
+ * R1b 命令 (如 CMD38 擦除) 没有数据传输, 但硬件用 DTIMER 计时 BUSYD0 超时.
+ * 设在命令发出之前, 防止卡忙期间硬件误报 DTIMEOUT.
+ */
+void SdmmcSetDataTimeout(volatile SdmmcRegs_t *sdmmc, uint32_t timeout)
+{
+    sdmmc->DTIMER = timeout;
+}
+
+/**
+ * @brief 等待 BUSYD0 释放 (卡忙结束)
+ * @param timeout 循环次数上限
+ * @return SDMMC_OK (释放) 或 SDMMC_ERR_BUSY (超时)
  *
- *  写流程: CMDREND → DATAEND → 完成 (卡内部 Busy 由下次启动前的 BUSYD0 检查处理)
- *  读流程: CMDREND → DATAEND → 完成
- * ================================================================== */
+ * 用于 R1b 命令后等卡内部操作完成 (擦除/编程).
+ * 轮询 STAR.BUSYD0, BUSYD0=1 卡忙, BUSYD0=0 卡空闲.
+ */
+SdmmcErr_t SdmmcWaitBusy(volatile SdmmcRegs_t *sdmmc, uint32_t timeout)
+{
+    uint32_t sta;
+    uint32_t to = 0;
+    do {
+        sta = sdmmc->STAR;
+        if (++to > timeout)
+            return SDMMC_ERR_BUSY;
+    } while (sta & SDMMC_STA_BUSYD0);
+    return SDMMC_OK;
+}
+
+/**
+ * @brief 设置 DCTRL.DTMODE 字段
+ * @param mode 00=普通传输, 01=SD电压切换模式
+ */
+void SdmmcSetDtMode(volatile SdmmcRegs_t *sdmmc, uint32_t mode)
+{
+    sdmmc->DCTRL = (sdmmc->DCTRL & ~SDMMC_DCTRL_DTMODE_Msk)
+                 | ((mode << SDMMC_DCTRL_DTMODE_Pos) & SDMMC_DCTRL_DTMODE_Msk);
+}
+
+/**
+ * @brief 等待 DATAEND (数据阶段完成) 或 DTIMEOUT
+ * @return SDMMC_OK (DATAEND) 或 SDMMC_ERR_DTIMEOUT
+ *
+ * 用于 SD 电压切换等非标准数据传输, 轮询 DATAEND/DTIMEOUT.
+ */
+SdmmcErr_t SdmmcWaitDataEnd(volatile SdmmcRegs_t *sdmmc)
+{
+    uint32_t sta;
+    do {
+        sta = sdmmc->STAR;
+    } while (!(sta & (SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT)));
+
+    if (sta & SDMMC_STA_DTIMEOUT)
+        return SDMMC_ERR_DTIMEOUT;
+    return SDMMC_OK;
+}
+
+/**
+ * @brief 关闭 IDMA (IDMACTRLR=0)
+ */
+void SdmmcIdmaDisable(volatile SdmmcRegs_t *sdmmc)
+{
+    sdmmc->IDMACTRLR = 0;
+}
+
+/**
+ * @brief 屏蔽所有中断 (MASKR=0)
+ */
+void SdmmcIntrMaskAll(volatile SdmmcRegs_t *sdmmc)
+{
+    sdmmc->MASKR = 0;
+}
+
+/**
+ * @brief 脉冲 FIFORST: 复位 FIFO 和数据通路状态机 (DPSM)
+ *
+ * 用于 IDMATE 等错误后的恢复, 清除 DPSM 滞留状态.
+ * FIFORST 置位后保持至少 2 CK 周期再清零, NOP 延时即可.
+ */
+void SdmmcFifoReset(volatile SdmmcRegs_t *sdmmc)
+{
+    sdmmc->DCTRL |= SDMMC_DCTRL_FIFORST;
+    __asm__ volatile("nop\n\tnop\n\tnop\n\tnop");
+    sdmmc->DCTRL &= ~SDMMC_DCTRL_FIFORST;
+}
+
+
+/* ===== 中断模式 (非阻塞) =====
+ *
+ * MASKR 一次使能所有中断, ISR 按 STA 标志区分当前阶段.
+ * 写后卡内部编程产生的 BUSYD0 由下次 SdmmcStartLL 入口检查 (不阻塞 ISR).
+ * IDMATE 无中断使能位 (实测), 仅 STAR 标志 + ICR 清除.
+ */
 
 volatile uint32_t   g_sdmmc1_it_done;
 volatile SdmmcErr_t g_sdmmc1_it_result;
 volatile uint32_t   g_sdmmc1_btc_cnt;
 
-static volatile SdmmcRegs_t *g_it_sdmmc;   /* 当前操作的 SDMMC 实例 */
+/* 调试跟踪: IDMABTC ISR→1, 主循环置BAR→2, TXUNDERR ISR→3, IDMATE ISR→4 */
+volatile uint32_t g_sdmmc1_dbg_trace[SDMMC_DBG_TRACE_SIZE];
+volatile uint32_t g_sdmmc1_dbg_idx;
+
+/* BUSYD0END 信号量: ISR 置 1, 前台轮询 */
+volatile uint32_t g_sdmmc1_busy0end;
+
+volatile SdmmcRegs_t *g_it_sdmmc;   /* 当前操作的 SDMMC 实例 */
 static uint8_t                g_it_is_write; /* 1=写, 0=读 */
 
 
-/* 中断模式启动: 寄存器配置与阻塞版相同, 但最后用 MASKR 替代轮询 */
+/**
+ * @brief 启动 IDMA 链表传输 (不阻塞), 后续由 ISR 接管
+ * @param is_write 1=写, 0=读
+ *
+ * 入口检查 BUSYD0 防上次写未完成的卡内部编程冲突.
+ * 寄存器配置同阻塞版 Ll 函数, 最后用 MASKR 替代轮询.
+ */
 static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
                          const SdmmcCmd_t *cmd,
                          const SdmmcIdmaDesc_t *desc_first,
-                         uint8_t  block_size_log,
+                         SdmmcBlockSize_t  block_size_log,
                          uint8_t  is_write)
 {
     uint32_t total_len = LlValidate(desc_first, 1U << block_size_log);
@@ -589,7 +689,7 @@ static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
         return;
     }
 
-    sdmmc->DTIMER    = 0xFFFFFFFFU;
+    sdmmc->DTIMER    = SDMMC_DTIMER_MAX;
     sdmmc->DLENR     = total_len;
     sdmmc->IDMABASER = desc_first->buf_addr;
     sdmmc->IDMABSIZER = desc_first->buf_size;
@@ -606,7 +706,7 @@ static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
     /* IDMATE 无中断 (实测不触发), 仅 STAR 标志 + ICR 清除 */
     uint32_t mask = SDMMC_STA_CMDREND | SDMMC_STA_CTIMEOUT | SDMMC_STA_CCRCFAIL
                   | SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL
-                  | SDMMC_STA_IDMABTC;
+                  | SDMMC_STA_IDMABTC | SDMMC_STA_BUSYD0END;
     if (is_write)
     {
         mask |= SDMMC_STA_TXUNDERR;
@@ -630,26 +730,40 @@ static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
 }
 
 
+/**
+ * @brief 中断模式启动 IDMA 链表写 (CMD23 轮询, CMD25 中断)
+ */
 void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc,
                        const SdmmcCmd_t *cmd,
                        const SdmmcIdmaDesc_t *desc_first,
-                       uint8_t  block_size_log)
+                       SdmmcBlockSize_t  block_size_log)
 {
     SdmmcStartLL(sdmmc, cmd, desc_first, block_size_log, 1);
 }
 
 
+/**
+ * @brief 中断模式启动 IDMA 链表读 (CMD23 轮询, CMD18 中断)
+ */
 void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc,
                       const SdmmcCmd_t *cmd,
                       const SdmmcIdmaDesc_t *desc_first,
-                      uint8_t  block_size_log)
+                      SdmmcBlockSize_t  block_size_log)
 {
     SdmmcStartLL(sdmmc, cmd, desc_first, block_size_log, 0);
 }
 
 
-/* SDMMC1 中断处理入口
- * 由 do_irq 根据 GIC ID 分发至此, 处理命令阶段/数据阶段/Busy 的全部中断事件 */
+/**
+ * @brief SDMMC1 中断处理入口 (由 do_irq 根据 GIC ID 81 分发)
+ *
+ * MASKR 使能全部中断, ISR 一次检查所有标志:
+ *   错误 (CTIMEOUT/CCRCFAIL/DTIMEOUT/DCRCFAIL/TXUNDERR/RXOVERR/IDMATE) → 关 MASKR+IDMA, 设 result 并 done
+ *   CMDREND → 仅清该位, 保留数据阶段标志
+ *   IDMABTC → 递增计数 (前台轮询用)
+ *   BUSYD0END → 置信号量 (前台等)
+ *   DATAEND  → 传输完成, 关 MASKR+IDMA, done
+ */
 void Sdmmc1IrqHandler(void)
 {
     volatile SdmmcRegs_t *sdmmc = g_it_sdmmc;
@@ -702,6 +816,8 @@ void Sdmmc1IrqHandler(void)
     }
     if (sta & SDMMC_STA_TXUNDERR)
     {
+        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 3;
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
@@ -722,6 +838,8 @@ void Sdmmc1IrqHandler(void)
     /* ---- IDMA 链表错误 ---- */
     if (sta & SDMMC_STA_IDMATE)
     {
+        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 4;
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
@@ -730,11 +848,20 @@ void Sdmmc1IrqHandler(void)
         return;
     }
 
-    /* ---- IDMA buffer 传输完成 (链表节点完成, ULA=1的节点) ---- */
+    /* ---- IDMA buffer 传输完成 (所有节点都触发, 含最后一个 ULA=0) ---- */
     if (sta & SDMMC_STA_IDMABTC)
     {
         sdmmc->ICR = SDMMC_STA_IDMABTC;
         g_sdmmc1_btc_cnt++;
+        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 1;
+    }
+
+    /* ---- 卡忙结束 (R1b: CMD38 擦除等), 仅置标志 ---- */
+    if (sta & SDMMC_STA_BUSYD0END)
+    {
+        sdmmc->ICR = SDMMC_STA_BUSYD0END;
+        g_sdmmc1_busy0end = 1;
     }
 
     /* ---- 数据传输完成 ----

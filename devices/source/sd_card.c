@@ -32,8 +32,8 @@ static SdmmcErr_t SendCmd(volatile SdmmcRegs_t *sdmmc,
         .index = index,
         .arg = arg,
         .resp_type = resp_type,
-        .cmdtrans = 0,
-        .cmdstop = 0,
+        .cmdtrans = SDMMC_CMD_NODATA,
+        .cmdstop = SDMMC_CMD_NOSTOP,
     };
     return SdmmcSendCmd(sdmmc, &cmd, resp);
 }
@@ -46,11 +46,11 @@ static SdmmcErr_t SendAcmd(volatile SdmmcRegs_t *sdmmc,
                            uint32_t resp[4])
 {
     uint32_t tmp[4];
-    SdmmcErr_t err = SendCmd(sdmmc, 55, rca << 16, SDMMC_RESP_SHORT, tmp);
+    SdmmcErr_t err = SendCmd(sdmmc, SD_CMD_APP_CMD, rca << 16, SDMMC_RESP_SHORT, tmp);
     if (err != SDMMC_OK)
         return err;
     /* 检查 APP_CMD 位确认卡准备接收 ACMD */
-    if (!(tmp[0] & (1U << 5)))
+    if (!(tmp[0] & SD_R1_APP_CMD))
         return SDMMC_ERR_RESP_MISMATCH;
     return SendCmd(sdmmc, index, arg, resp_type, resp);
 }
@@ -70,18 +70,18 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
     SdmmcPowerOn(sdmmc, card->ker_ck_hz);
 
     /* CMD0: GO_IDLE_STATE */
-    err = SendCmd(sdmmc, 0, 0, SDMMC_RESP_NONE, NULL);
+    err = SendCmd(sdmmc, SD_CMD_GO_IDLE_STATE, 0, SDMMC_RESP_NONE, NULL);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
     /* CMD8: SEND_IF_COND — arg 格式见 SD Spec v9.10 Section 4.3.13
      * [11:8]=VHS(1=2.7~3.6V), [7:0]=check pattern(任选, 惯例0xAA) */
-    err = SendCmd(sdmmc, 8, 0x000001AA, SDMMC_RESP_SHORT, resp);
+    err = SendCmd(sdmmc, SD_CMD_SEND_IF_COND, SD_CMD8_ARG, SDMMC_RESP_SHORT, resp);
     if (err == SDMMC_ERR_CTIMEOUT)
         return SD_ERR_UNUSABLE;  /* SD v1.x 或非SD卡 */
     if (err != SDMMC_OK)
         return SD_ERR_IO;
-    if ((resp[0] & 0xFFF) != 0x1AA)
+    if ((resp[0] & SD_CMD8_RESP_MASK) != SD_CMD8_ARG)
         return SD_ERR_UNUSABLE;
 
     /* ACMD41 循环 — arg/resp 位域见 SD Spec v9.10 Section 5.1 (OCR) + Table 4-41
@@ -92,22 +92,22 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
     uint32_t retry;
     for (retry = 0; retry < ACMD41_RETRY_MAX; retry++)
     {
-        err = SendAcmd(sdmmc, 0, 41, 0x41FF8000, SDMMC_RESP_SHORT_NOCRC, resp);
+        err = SendAcmd(sdmmc, 0, SD_ACMD_SEND_OP_COND, SD_ACMD41_ARG, SDMMC_RESP_SHORT_NOCRC, resp);
         if (err != SDMMC_OK)
             return SD_ERR_IO;
         ocr = resp[0];
-        if (ocr & (1U << 31))
+        if (ocr & SD_OCR_BUSY)
             break;
     }
     if (retry == ACMD41_RETRY_MAX)
         return SD_ERR_INIT_TIMEOUT;
-    card->is_sdhc = (ocr >> 30) & 1;
-    card->s18a = (ocr >> 24) & 1;     /* S18A: 1=卡支持1.8V (UHS-I) */
+    card->is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
+    card->s18a = (ocr & SD_OCR_S18A) ? 1 : 0;
 
     /* CMD2: ALL_SEND_CID → 解析卡身份信息
      * CID 位域定义见 SD Spec v9.10 Table 5-2 (Section 5.2)
      * resp[0..3] = CID[127:96], [95:64], [63:32], [31:0] (RM0436 58.6.3) */
-    err = SendCmd(sdmmc, 2, 0, SDMMC_RESP_LONG, resp);
+    err = SendCmd(sdmmc, SD_CMD_ALL_SEND_CID, 0, SDMMC_RESP_LONG, resp);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
@@ -130,7 +130,7 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
 
     /* CMD3: SEND_RELATIVE_ADDR — R6 格式见 SD Spec v9.10 Section 4.9.5
      * resp[0] 高16位=RCA, 低16位=部分Card Status */
-    err = SendCmd(sdmmc, 3, 0, SDMMC_RESP_SHORT, resp);
+    err = SendCmd(sdmmc, SD_CMD_SET_REL_ADDR, 0, SDMMC_RESP_SHORT, resp);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
     card->rca = resp[0] >> 16;
@@ -139,7 +139,7 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
      * arg=[31:16]=RCA (ac 类命令通用格式, 见 Table 4-22)
      * CSD 位域定义见 SD Spec v9.10 Table 5-3 (V2.0) / Table 5-4 (V1.0)
      * resp[] 映射同 CID: resp[0]=CSD[127:96] ... resp[3]=CSD[31:0] */
-    err = SendCmd(sdmmc, 9, card->rca << 16, SDMMC_RESP_LONG, resp);
+    err = SendCmd(sdmmc, SD_CMD_SEND_CSD, card->rca << 16, SDMMC_RESP_LONG, resp);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
@@ -160,18 +160,18 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
         uint32_t c_size_mult = (resp[2] >> 15) & 0x7;
         uint32_t read_bl_len = (resp[1] >> 16) & 0xF;
         uint32_t block_nr = (c_size + 1) * (1U << (c_size_mult + 2));
-        card->total_blocks = block_nr * (1U << read_bl_len) / 512;
+        card->total_blocks = block_nr * (1U << read_bl_len) / SD_BLOCK_SIZE;
     }
-    card->capacity_mb = card->total_blocks / 2048;
+    card->capacity_mb = card->total_blocks / SD_BLOCKS_PER_MB;
 
     /* CMD7: SELECT_CARD → Transfer State
      * arg=[31:16]=RCA (Table 4-22), 响应 R1b (带 Busy) */
-    err = SendCmd(sdmmc, 7, card->rca << 16, SDMMC_RESP_SHORT, resp);
+    err = SendCmd(sdmmc, SD_CMD_SEL_DESEL_CARD, card->rca << 16, SDMMC_RESP_SHORT, resp);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
     /* ACMD6: SET_BUS_WIDTH — arg: 0=1-bit, 2=4-bit (Table 4-43) */
-    err = SendAcmd(sdmmc, card->rca, 6, 2, SDMMC_RESP_SHORT, resp);
+    err = SendAcmd(sdmmc, card->rca, SD_ACMD_SET_BUS_WIDTH, SD_ACMD6_BUS_4BIT, SDMMC_RESP_SHORT, resp);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
     SdmmcSetBusWidth(sdmmc, SDMMC_BUS_4BIT);
@@ -197,45 +197,39 @@ SdCardErr_t SdCardSetSpeed(SdCard_t *card, uint32_t target_MBps)
     target_hz = target_MBps * 8000000 / bus_width;
 
     /* High Speed 模式上限 CK=50MHz, 超过需 UHS-I 电压切换 */
-    if (target_hz > 50000000)
+    if (target_hz > SD_HS_MAX_CLK_HZ)
     {
         if (card->s18a)
         {
             /* Step1: DTMODE=01 (SD voltage switching mode) */
-            sdmmc->DCTRL = (sdmmc->DCTRL & ~SDMMC_DCTRL_DTMODE_Msk)
-                         | SDMMC_DCTRL_SDMODE;
+            SdmmcSetDtMode(sdmmc, 1);
 
             /* Step2: CMD11 — 卡收到后拉 DAT0 低, SDMMC 硬件自动等 DAT0 释放 */
-            SdmmcErr_t err = SendCmd(sdmmc, 11, 0x7FFF, SDMMC_RESP_SHORT, NULL);
+            SdmmcErr_t err = SendCmd(sdmmc, SD_CMD_VOLTAGE_SWITCH, SD_CMD11_SWITCH_ARG, SDMMC_RESP_SHORT, NULL);
             if (err != SDMMC_OK)
             {
-                sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
+                SdmmcSetDtMode(sdmmc, 0);
                 return SD_ERR_IO;
             }
 
             /* Step3: 等 DATAEND (硬件检测到 DAT0 释放), 无数据超时 */
-            uint32_t sta;
-            do {
-                sta = sdmmc->STAR;
-            } while (!(sta & (SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT)));
-
-            if (sta & SDMMC_STA_DTIMEOUT)
+            err = SdmmcWaitDataEnd(sdmmc);
+            SdmmcClearFlags(sdmmc);
+            if (err != SDMMC_OK)
             {
-                sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
-                sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+                SdmmcSetDtMode(sdmmc, 0);
                 return SD_ERR_IO;
             }
-            sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
 
             /* Step4: TODO — 板级电压切换 3.3V→1.8V (需根据具体硬件实现) */
             /* 切换后等待 ≥5ms 让电压稳定 */
 
             /* Step5: 清除 SD mode, 恢复普通数据传输 */
-            sdmmc->DCTRL &= ~SDMMC_DCTRL_DTMODE_Msk;
+            SdmmcSetDtMode(sdmmc, 0);
         }
         else
         {
-            target_hz = 50000000;  /* 不支UHS-I, 降到 50MHz */
+            target_hz = SD_HS_MAX_CLK_HZ;
         }
     }
 
@@ -252,20 +246,20 @@ SdCardErr_t SdCardReadBlocks(SdCard_t *card, uint32_t block, void *buf, uint32_t
     for (uint32_t i = 0; i < count; i++)
     {
         /* SDHC: arg=块号; SDSC: arg=字节地址 (Section 4.3.14) */
-        uint32_t addr = card->is_sdhc ? (block + i) : (block + i) * 512;
+        uint32_t addr = card->is_sdhc ? (block + i) : (block + i) * SD_BLOCK_SIZE;
 
         SdmmcCmd_t cmd;
-        cmd.index     = 17;                    /* CMD17: READ_SINGLE_BLOCK */
+        cmd.index     = SD_CMD_READ_SINGLE;
         cmd.arg       = addr;                  /* 数据起始地址 */
         cmd.resp_type = SDMMC_RESP_SHORT;      /* R1 响应 */
-        cmd.cmdtrans  = 1;                     /* 命令后跟数据传输, 触发 DPSM */
-        cmd.cmdstop   = 0;
+        cmd.cmdtrans  = SDMMC_CMD_DATA;
+        cmd.cmdstop   = SDMMC_CMD_NOSTOP;
 
         SdmmcData_t data;
-        data.buf_addr      = (uint32_t)((uint8_t *)buf + i * 512);  /* IDMA 目标地址 */
-        data.len           = 512;               /* 单块 = 512 字节 */
-        data.block_size_log = 9;                /* log2(512) = 9 */
-        data.dir_read      = 1;                 /* 卡→主机 */
+        data.buf_addr      = (uint32_t)((uint8_t *)buf + i * SD_BLOCK_SIZE);  /* IDMA 目标地址 */
+        data.len           = SD_BLOCK_SIZE;               /* 单块 = 512 字节 */
+        data.block_size_log = SDMMC_BLKSIZ_512B;                /* log2(512) = 9 */
+        data.dir_read      = SDMMC_DIR_READ;                 /* 卡→主机 */
 
         SdmmcErr_t err = SdmmcReadData(sdmmc, &cmd, &data, NULL);
         if (err != SDMMC_OK)
@@ -282,20 +276,20 @@ SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, u
 
     for (uint32_t i = 0; i < count; i++)
     {
-        uint32_t addr = card->is_sdhc ? (block + i) : (block + i) * 512;
+        uint32_t addr = card->is_sdhc ? (block + i) : (block + i) * SD_BLOCK_SIZE;
 
         SdmmcCmd_t cmd;
-        cmd.index     = 24;                    /* CMD24: WRITE_BLOCK */
+        cmd.index     = SD_CMD_WRITE_SINGLE;
         cmd.arg       = addr;                  /* 数据目标地址 */
         cmd.resp_type = SDMMC_RESP_SHORT;      /* R1 响应 */
-        cmd.cmdtrans  = 1;                     /* 命令后跟数据传输, 触发 DPSM */
-        cmd.cmdstop   = 0;
+        cmd.cmdtrans  = SDMMC_CMD_DATA;
+        cmd.cmdstop   = SDMMC_CMD_NOSTOP;
 
         SdmmcData_t data;
-        data.buf_addr      = (uint32_t)((const uint8_t *)buf + i * 512);  /* IDMA 源地址 */
-        data.len           = 512;               /* 单块 = 512 字节 */
-        data.block_size_log = 9;                /* log2(512) = 9 */
-        data.dir_read      = 0;                 /* 主机→卡 */
+        data.buf_addr      = (uint32_t)((const uint8_t *)buf + i * SD_BLOCK_SIZE);  /* IDMA 源地址 */
+        data.len           = SD_BLOCK_SIZE;               /* 单块 = 512 字节 */
+        data.block_size_log = SDMMC_BLKSIZ_512B;                /* log2(512) = 9 */
+        data.dir_read      = SDMMC_DIR_WRITE;                 /* 主机→卡 */
 
         SdmmcErr_t err = SdmmcWriteData(sdmmc, &cmd, &data, NULL);
         if (err != SDMMC_OK)
@@ -315,25 +309,25 @@ SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, u
 SdCardErr_t SdCardReadMulti(SdCard_t *card, uint32_t block, void *buf, uint32_t count)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
 
     /* CMD23: 预设块数, 后续 CMD18 传完自动停, 不需要 CMD12 中止 */
-    SdmmcErr_t err = SendCmd(sdmmc, 23, count, SDMMC_RESP_SHORT, NULL);
+    SdmmcErr_t err = SendCmd(sdmmc, SD_CMD_SET_BLOCK_COUNT, count, SDMMC_RESP_SHORT, NULL);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
     SdmmcCmd_t cmd;
-    cmd.index     = 18;                    /* CMD18: READ_MULTIPLE_BLOCK */
+    cmd.index     = SD_CMD_READ_MULTI;                    /* CMD18: READ_MULTIPLE_BLOCK */
     cmd.arg       = addr;                  /* 数据起始地址 (或块号) */
     cmd.resp_type = SDMMC_RESP_SHORT;      /* R1 响应 */
-    cmd.cmdtrans  = 1;                     /* 命令后跟数据传输, 触发 DPSM */
-    cmd.cmdstop   = 0;                     /* 卡自动停, 不需要 CMDSTOP */
+    cmd.cmdtrans  = SDMMC_CMD_DATA;
+    cmd.cmdstop   = SDMMC_CMD_NOSTOP;
 
     SdmmcData_t data;
     data.buf_addr      = (uint32_t)buf;    /* IDMA 目标缓冲区 */
-    data.len           = count * 512;      /* 总字节数 */
-    data.block_size_log = 9;               /* log2(512) = 9 */
-    data.dir_read      = 1;                /* 卡→主机 */
+    data.len           = count * SD_BLOCK_SIZE;
+    data.block_size_log = SDMMC_BLKSIZ_512B;
+    data.dir_read      = SDMMC_DIR_READ;
 
     err = SdmmcReadData(sdmmc, &cmd, &data, NULL);
     return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
@@ -349,27 +343,79 @@ SdCardErr_t SdCardReadMulti(SdCard_t *card, uint32_t block, void *buf, uint32_t 
 SdCardErr_t SdCardWriteMulti(SdCard_t *card, uint32_t block, const void *buf, uint32_t count)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
 
     /* CMD23: 预设块数, 后续 CMD25 传完自动停 */
-    SdmmcErr_t err = SendCmd(sdmmc, 23, count, SDMMC_RESP_SHORT, NULL);
+    SdmmcErr_t err = SendCmd(sdmmc, SD_CMD_SET_BLOCK_COUNT, count, SDMMC_RESP_SHORT, NULL);
     if (err != SDMMC_OK)
         return SD_ERR_IO;
 
     SdmmcCmd_t cmd;
-    cmd.index     = 25;                    /* CMD25: WRITE_MULTIPLE_BLOCK */
-    cmd.arg       = addr;                  /* 数据目标地址 (或块号) */
-    cmd.resp_type = SDMMC_RESP_SHORT;      /* R1 响应 */
-    cmd.cmdtrans  = 1;                     /* 命令后跟数据传输, 触发 DPSM */
-    cmd.cmdstop   = 0;                     /* 卡自动停 */
+    cmd.index     = SD_CMD_WRITE_MULTI;
+    cmd.arg       = addr;
+    cmd.resp_type = SDMMC_RESP_SHORT;
+    cmd.cmdtrans  = SDMMC_CMD_DATA;
+    cmd.cmdstop   = SDMMC_CMD_NOSTOP;                     /* 卡自动停 */
 
     SdmmcData_t data;
     data.buf_addr      = (uint32_t)buf;    /* IDMA 源缓冲区 */
-    data.len           = count * 512;      /* 总字节数 */
-    data.block_size_log = 9;               /* log2(512) = 9 */
-    data.dir_read      = 0;                /* 主机→卡 */
+    data.len           = count * SD_BLOCK_SIZE;      /* 总字节数 */
+    data.block_size_log = SDMMC_BLKSIZ_512B;               /* log2(512) = 9 */
+    data.dir_read      = SDMMC_DIR_WRITE;                /* 主机→卡 */
 
     err = SdmmcWriteData(sdmmc, &cmd, &data, NULL);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
+}
+
+
+/* CMD32 + CMD33 + CMD38: 擦除指定块范围 (R1b, 卡拉低 DAT0 表示忙) */
+SdCardErr_t SdCardErase(SdCard_t *card, uint32_t start_block, uint32_t end_block)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t start_addr = card->is_sdhc ? start_block : start_block * SD_BLOCK_SIZE;
+    uint32_t end_addr   = card->is_sdhc ? end_block   : end_block * SD_BLOCK_SIZE;
+    SdmmcErr_t err;
+
+    /* CMD32: ERASE_WR_BLK_START */
+    err = SendCmd(sdmmc, SD_CMD_ERASE_WR_BLK_START, start_addr, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return SD_ERR_IO;
+
+    /* CMD33: ERASE_WR_BLK_END */
+    err = SendCmd(sdmmc, SD_CMD_ERASE_WR_BLK_END, end_addr, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return SD_ERR_IO;
+
+    /* CMD38: ERASE (R1b), 设 DTIMER 防硬件误报 DTIMEOUT */
+    SdmmcSetDataTimeout(sdmmc, 0xFFFFFFFFU);
+    SdmmcClearFlags(sdmmc);
+
+    err = SendCmd(sdmmc, SD_CMD_ERASE, 0, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return SD_ERR_IO;
+
+    /* 等卡内部擦除完成: DAT0 释放 (BUSYD0=0) */
+    err = SdmmcWaitBusy(sdmmc, SDMMC_BUSY_TIMEOUT);
+    SdmmcClearFlags(sdmmc);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
+}
+
+/* 等待写操作后 BUSYD0 释放 (卡内部编程完成) */
+SdCardErr_t SdCardWaitBusy(SdCard_t *card)
+{
+    SdmmcErr_t err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
+}
+
+/* 中止卡正在进行的传输 (CMD12), 使卡回到 Transfer 状态 */
+SdCardErr_t SdCardStopTransfer(SdCard_t *card)
+{
+    SdmmcErr_t err = SdmmcSendCmd(card->sdmmc,
+        &(SdmmcCmd_t){.index=SD_CMD_STOP_TRANSMISSION, .arg=0,
+                      .resp_type=SDMMC_RESP_SHORT,
+                      .cmdtrans=SDMMC_CMD_NODATA,
+                      .cmdstop=SDMMC_CMD_NOSTOP},
+        NULL);
     return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
 }
 
@@ -377,10 +423,10 @@ SdCardErr_t SdCardWriteMulti(SdCard_t *card, uint32_t block, const void *buf, ui
 /* CMD23 + CMD18 多块读, IDMA 链表 scatter-gather
  * 只计算总块数给 CMD23, 不重复校验描述符 (底层 LlValidate 负责) */
 SdCardErr_t SdCardReadMultiLL(SdCard_t *card, uint32_t block,
-                              const SdmmcIdmaDesc_t *desc, uint8_t block_size_log)
+                              const SdmmcIdmaDesc_t *desc, SdmmcBlockSize_t block_size_log)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
     const SdmmcIdmaDesc_t *d = desc;
     uint32_t total = 0;
 
@@ -399,11 +445,21 @@ SdCardErr_t SdCardReadMultiLL(SdCard_t *card, uint32_t block,
     uint32_t n_blocks = total >> block_size_log;
 
     if (SdmmcSendCmd(sdmmc,
-            &(SdmmcCmd_t){23, n_blocks, SDMMC_RESP_SHORT, 0, 0}, NULL) != SDMMC_OK)
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_SET_BLOCK_COUNT,
+	            .arg       = n_blocks,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_NODATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
         return SD_ERR_IO;
 
     SdmmcErr_t err = SdmmcReadDataLL(sdmmc,
-            &(SdmmcCmd_t){18, addr, SDMMC_RESP_SHORT, 1, 0},
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_READ_MULTI,
+	            .arg       = addr,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_DATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP},
             desc, block_size_log, NULL);
     return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
 }
@@ -412,10 +468,10 @@ SdCardErr_t SdCardReadMultiLL(SdCard_t *card, uint32_t block,
 /* CMD23 + CMD25 多块写, IDMA 链表 scatter-gather
  * 只计算总块数给 CMD23, 不重复校验描述符 (底层 LlValidate 负责) */
 SdCardErr_t SdCardWriteMultiLL(SdCard_t *card, uint32_t block,
-                               const SdmmcIdmaDesc_t *desc, uint8_t block_size_log)
+                               const SdmmcIdmaDesc_t *desc, SdmmcBlockSize_t block_size_log)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
     const SdmmcIdmaDesc_t *d = desc;
     uint32_t total = 0;
 
@@ -434,11 +490,21 @@ SdCardErr_t SdCardWriteMultiLL(SdCard_t *card, uint32_t block,
     uint32_t n_blocks = total >> block_size_log;
 
     if (SdmmcSendCmd(sdmmc,
-            &(SdmmcCmd_t){23, n_blocks, SDMMC_RESP_SHORT, 0, 0}, NULL) != SDMMC_OK)
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_SET_BLOCK_COUNT,
+	            .arg       = n_blocks,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_NODATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
         return SD_ERR_IO;
 
     SdmmcErr_t err = SdmmcWriteDataLL(sdmmc,
-            &(SdmmcCmd_t){25, addr, SDMMC_RESP_SHORT, 1, 0},
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_WRITE_MULTI,
+	            .arg       = addr,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_DATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP},
             desc, block_size_log, NULL);
     return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
 }
@@ -446,10 +512,10 @@ SdCardErr_t SdCardWriteMultiLL(SdCard_t *card, uint32_t block,
 
 /* 中断模式多块写: CMD23(轮询) + CMD25(中断, SdmmcStartWriteLL) */
 void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
-                             const SdmmcIdmaDesc_t *desc, uint8_t block_size_log)
+                             const SdmmcIdmaDesc_t *desc, SdmmcBlockSize_t block_size_log)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
     const SdmmcIdmaDesc_t *d = desc;
     uint32_t total = 0;
 
@@ -472,7 +538,12 @@ void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
     uint32_t n_blocks = total >> block_size_log;
 
     if (SdmmcSendCmd(sdmmc,
-            &(SdmmcCmd_t){23, n_blocks, SDMMC_RESP_SHORT, 0, 0}, NULL) != SDMMC_OK)
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_SET_BLOCK_COUNT,
+	            .arg       = n_blocks,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_NODATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
     {
         g_sdmmc1_it_result = SDMMC_ERR_CTIMEOUT;
         g_sdmmc1_it_done = 1;
@@ -480,17 +551,22 @@ void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
     }
 
     SdmmcStartWriteLL(sdmmc,
-            &(SdmmcCmd_t){25, addr, SDMMC_RESP_SHORT, 1, 0},
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_WRITE_MULTI,
+	            .arg       = addr,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_DATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP},
             desc, block_size_log);
 }
 
 
 /* 中断模式多块读: CMD23(轮询) + CMD18(中断, SdmmcStartReadLL) */
 void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
-                            const SdmmcIdmaDesc_t *desc, uint8_t block_size_log)
+                            const SdmmcIdmaDesc_t *desc, SdmmcBlockSize_t block_size_log)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t addr = card->is_sdhc ? block : block * 512;
+    uint32_t addr = card->is_sdhc ? block : block * SD_BLOCK_SIZE;
     const SdmmcIdmaDesc_t *d = desc;
     uint32_t total = 0;
 
@@ -513,7 +589,12 @@ void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
     uint32_t n_blocks = total >> block_size_log;
 
     if (SdmmcSendCmd(sdmmc,
-            &(SdmmcCmd_t){23, n_blocks, SDMMC_RESP_SHORT, 0, 0}, NULL) != SDMMC_OK)
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_SET_BLOCK_COUNT,
+	            .arg       = n_blocks,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_NODATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
     {
         g_sdmmc1_it_result = SDMMC_ERR_CTIMEOUT;
         g_sdmmc1_it_done = 1;
@@ -521,6 +602,11 @@ void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
     }
 
     SdmmcStartReadLL(sdmmc,
-            &(SdmmcCmd_t){18, addr, SDMMC_RESP_SHORT, 1, 0},
+            &(SdmmcCmd_t){
+	            .index     = SD_CMD_READ_MULTI,
+	            .arg       = addr,
+	            .resp_type = SDMMC_RESP_SHORT,
+	            .cmdtrans  = SDMMC_CMD_DATA,
+	            .cmdstop   = SDMMC_CMD_NOSTOP},
             desc, block_size_log);
 }
