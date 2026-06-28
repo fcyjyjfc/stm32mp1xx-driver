@@ -16,6 +16,9 @@
 
 #include "stm32mp1xx_sdmmc.h"
 
+/* 调试: 最后一条命令的 STAR 值 (ICR 清除前) */
+volatile uint32_t g_sdmmc_dbg_last_star;
+
 
 /* 粗略软件延时, 不依赖 STGEN; CA7 跑几百MHz 时约 1ms/次 */
 static void DelayMs(uint32_t ms)
@@ -192,6 +195,7 @@ SdmmcErr_t SdmmcSendCmd(volatile SdmmcRegs_t *sdmmc,
                         uint32_t resp[4])
 {
     SdmmcErr_t err = SdmmcCmdPhase(sdmmc, cmd, resp);
+    g_sdmmc_dbg_last_star = sdmmc->STAR;   /* 调试: CmdPhase 刚结束, ICR 清除前 */
     sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
     return err;
 }

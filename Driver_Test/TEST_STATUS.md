@@ -306,3 +306,50 @@
 | SdmmcWriteData 卡在 BUSYD0END 轮询 | DATAEND 后 DPSM 回 idle, BUSYD0END 不可达 | 改为轮询 STAR.BUSYD0 电平 |
 | BUSYD0END 中断不可达 | BUSYD0END 仅用于 R1b 命令响应 Busy, 与数据写后的卡编程 Busy 无关 | ISR 在 DATAEND 完成, 下次启动前 if(BUSYD0) 拒绝 |
 | IDMATE 不产生中断 | IDMATE 无中断使能位, 仅标志; ABR=0 时硬件立即停止 IDMA→TXUNDERR/RXOVERR | 双缓冲: 前2节点预置 ABR=1, BTC 准备 N+2 号节点 |
+
+## eMMC
+
+硬件配置: SDMMC2, ker_ck=PLL4P(200MHz), PG6+PE3+PB14/15+PB3/4+PA8/9+PE5+PD3 AF9, 8-bit HS 模式
+
+### 基本功能
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| SdmmcPowerOn 上电 | 通过 | POWER cycle→off→on, CLKDIV=251 → CK≈398kHz |
+| EmmcCardIdentify 卡识别 | 通过 | CMD0→CMD1→CMD2→CMD3, 卡进 Stand-by |
+| EmmcCardSelect 选卡 | 通过 | CMD7, 400kHz 1-bit 下完成, 卡进 Transfer |
+| EmmcCardSetClock 切 HS 时序 | 通过 | CMD6 EXT_CSD[185]=1 + SdmmcSetClock 52MHz |
+| EmmcCardSetBusWidth 切 8-bit | 通过 | CMD6 EXT_CSD[183]=2 + SdmmcSetBusWidth 8BIT |
+| EmmcCardGetInfo 读卡信息 | 通过 | CMD9(CSD) + CMD8(EXT_CSD 512B), 解析容量/版本 |
+| CID 解析 | 通过 | 制造商/产品名/版本/序列号/日期打印正常 |
+| EXT_CSD 版本/容量 | 通过 | 容量打印正常, DEVICE_TYPE/HS_TIMING/BUS_WIDTH 显示正确 |
+
+### 单块读写
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| Single Block R/W @ block 15000000 | 通过 | CMD17 读 → CMD24 写 0xA5 → CMD17 回读, memcmp 512B 校验 |
+| Multi Block R/W @ block 15000128 | 通过 | CMD23+CMD25 写 128 块 uint16_t 0~32767 → CMD23+CMD18 回读, memcmp 64KB 校验 |
+
+### 擦除功能
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| EraseTest (16 blocks) | **部分通过** | CMD35+CMD36+CMD38 擦除前 8 块, 读回全 0 — 但后 8 块也被擦除 (eMMC 擦除组粒度 > 8 块, 需按 EXT_CSD ERASE_GRP_SIZE 对齐) |
+
+### 初始化流程
+
+```
+SdmmcPowerOn (400kHz, 1-bit)
+  → EmmcCardIdentify (CMD0→CMD1→CMD2→CMD3, Stand-by)
+  → EmmcCardSelect (CMD7, Transfer)
+  → EmmcCardSetClock (CMD6 HS_TIMING=1, 52MHz)
+  → EmmcCardSetBusWidth (CMD6 BUS_WIDTH=8)
+  → EmmcCardGetInfo (CMD9+CMD8)
+```
+
+### 已知问题
+
+| 问题 | 原因 |
+|------|------|
+| 擦除粒度大于测试范围 | eMMC 擦除以擦除组为单位, 仅 16 块范围落在同一组内, 无法验证保留区 |

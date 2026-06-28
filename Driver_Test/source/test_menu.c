@@ -17,6 +17,7 @@ extern void MdmaTest(void);
 extern void SdmmcTest(void);
 extern void RngTest(void);
 extern void CrcTest(void);
+extern void EmmcTest(void);
 
 static const MenuEntry_t g_menu[] = {
     { "1", "GPIO",   GpioTest },
@@ -34,6 +35,7 @@ static const MenuEntry_t g_menu[] = {
     { "13", "SDMMC",  SdmmcTest },
     { "14", "RNG",    RngTest },
     { "15", "CRC",    CrcTest },
+    { "16", "eMMC",   EmmcTest },
 };
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
