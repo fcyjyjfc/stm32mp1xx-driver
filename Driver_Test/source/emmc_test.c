@@ -120,6 +120,10 @@ static void PrintCardInfo(EmmcCard_t *card)
         PrintDec(dec, e[176]);
         PRINT(dec);
         PRINT(" x 512\r\n");
+        PRINT("  HC_ERASE_GRP_SIZE[224]: ");
+        PrintDec(dec, e[224]);
+        PRINT(dec);
+        PRINT(" x 512KB\r\n");
         PRINT("  CACHE_SIZE[252:249]: ");
         PrintDec(dec, cache_sz);
         PRINT(dec);
@@ -385,138 +389,103 @@ static void MultiBlockTest(void)
 
 
 /* ================================
- *  3. 擦除测试 — 写16块, 擦除前8块, 验证后8块保留
+ *  3. 擦除测试 — 两组区间相隔 1MB (> 擦除组 512KB)
+ *     写两组 16 块 → 擦除 Group A → 验证 Group A 全 0 + Group B 保留
  * ================================ */
 static void EraseTest(void)
 {
     char dec[16];
-    const uint32_t test_block = 15001000;
+    const uint32_t blk_a = 15000000;        /* Group A */
+    const uint32_t blk_b = 15002048;        /* Group B: 1MB 后 */
+    const uint32_t n_blks = 16;
     int i;
 
     PRINT("\r\n----- Erase Test -----\r\n");
     PRINT("  Purpose: verify eMMC erase (CMD35+CMD36+CMD38 R1b)\r\n");
-    PRINT("  Block:   ");
-    PrintDec(dec, test_block);
+    PRINT("  Group A: ");
+    PrintDec(dec, blk_a);
     PRINT(dec);
-    PRINT(" (total 16 blocks)\r\n");
-    PRINT("  Write:   CMD25, 16 blocks, uint16_t 0~4095 (8 KB)\r\n");
-    PRINT("  Erase:   blocks ");
-    PrintDec(dec, test_block);
+    PRINT(" (16 blocks)\r\n");
+    PRINT("  Group B: ");
+    PrintDec(dec, blk_b);
+    PRINT(dec);
+    PRINT(" (16 blocks, 1MB apart)\r\n");
+    PRINT("  Data:    uint16_t 0~4095 (8 KB each group)\r\n");
+    PRINT("  Erase:   blk ");
+    PrintDec(dec, blk_a);
     PRINT(dec);
     PRINT("~");
-    PrintDec(dec, test_block + 7);
+    PrintDec(dec, blk_a + 7);
     PRINT(dec);
-    PRINT(" (first 8)\r\n");
-    PRINT("  Expect:  erased = all 0x00, preserved = original data\r\n");
+    PRINT(" (first 8 of Group A)\r\n");
+    PRINT("  Expect:  Group A = all 0x00, Group B = original data\r\n");
     PRINT("\r\n");
 
     IwdgKickDog(IWDG2);
 
-    /* 填 WR_BUF: uint16_t 0~4095 (16 块 = 8192 字节 = 4096 个 uint16_t) */
+    /* 填 WR_BUF: uint16_t 0~4095 (16 块 = 8192 字节) */
     {
         uint16_t *p = (uint16_t *)WR_BUF;
         for (i = 0; i < 4096; i++)
             p[i] = (uint16_t)i;
     }
 
-    /* CMD23 + CMD25: 写 16 块 */
-    PRINT("  Writing 16 blocks...\r\n");
-    EmmcCardErr_t err = EmmcCardWriteMulti(&g_emmc, test_block, WR_BUF, 16);
-    if (err != EMMC_OK)
-    {
-        PRINT("  Write FAILED\r\n");
-        return;
-    }
+    /* 写 Group A + Group B */
+    PRINT("  Writing Group A...\r\n");
+    EmmcCardErr_t err = EmmcCardWriteMulti(&g_emmc, blk_a, WR_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Write A FAILED\r\n"); return; }
     IwdgKickDog(IWDG2);
 
-    /* 读回校验 */
+    PRINT("  Writing Group B...\r\n");
+    err = EmmcCardWriteMulti(&g_emmc, blk_b, WR_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Write B FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    /* 读回校验两组写入 */
     memset(RD_BUF, 0, 8192);
-    err = EmmcCardReadMulti(&g_emmc, test_block, RD_BUF, 16);
-    if (err != EMMC_OK)
-    {
-        PRINT("  Read FAILED\r\n");
-        return;
-    }
+    err = EmmcCardReadMulti(&g_emmc, blk_a, RD_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Read A FAILED\r\n"); return; }
     IwdgKickDog(IWDG2);
-
-    if (memcmp(WR_BUF, RD_BUF, 8192) == 0)
-        PRINT("  Write verify PASSED\r\n");
-    else
+    if (memcmp(WR_BUF, RD_BUF, 8192) != 0)
     {
-        uint16_t *wp = (uint16_t *)WR_BUF;
-        uint16_t *rp = (uint16_t *)RD_BUF;
-        for (i = 0; i < 4096; i++)
-        {
-            if (wp[i] != rp[i])
-            {
-                PRINT("  Write verify mismatch @");
-                PrintDec(dec, i);
-                PRINT(dec);
-                PRINT("\r\n");
-                break;
-            }
-        }
+        PRINT("  Write A verify FAILED\r\n");
         return;
     }
+    PRINT("  Write A verify PASSED\r\n");
 
-    /* 擦除前 8 块 */
-    PRINT("  Erasing blocks ");
-    PrintDec(dec, test_block);
+    memset(RD_BUF, 0, 8192);
+    err = EmmcCardReadMulti(&g_emmc, blk_b, RD_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Read B FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+    if (memcmp(WR_BUF, RD_BUF, 8192) != 0)
+    {
+        PRINT("  Write B verify FAILED\r\n");
+        return;
+    }
+    PRINT("  Write B verify PASSED\r\n");
+
+    /* 擦除 Group A 前 8 块（整个擦除组被擦除，≥ 512KB） */
+    PRINT("  Erasing Group A blk ");
+    PrintDec(dec, blk_a);
     PRINT(dec);
     PRINT("~");
-    PrintDec(dec, test_block + 7);
+    PrintDec(dec, blk_a + 7);
     PRINT(dec);
     PRINT("...\r\n");
-    err = EmmcCardErase(&g_emmc, test_block, test_block + 7);
-    if (err != EMMC_OK)
-    {
-        PRINT("  Erase FAILED\r\n");
-        return;
-    }
+    err = EmmcCardErase(&g_emmc, blk_a, blk_a + 7);
+    if (err != EMMC_OK) { PRINT("  Erase FAILED\r\n"); return; }
     PRINT("  Erase done\r\n");
     IwdgKickDog(IWDG2);
 
-    /* 重新读回 */
+    /* 读回 Group A → 验证全 0x00 */
     memset(RD_BUF, 0, 8192);
-    err = EmmcCardReadMulti(&g_emmc, test_block, RD_BUF, 16);
-    if (err != EMMC_OK)
-    {
-        PRINT("  Post-erase read FAILED\r\n");
-        return;
-    }
+    err = EmmcCardReadMulti(&g_emmc, blk_a, RD_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Post-erase read A FAILED\r\n"); return; }
     IwdgKickDog(IWDG2);
 
-    /*
-     * 校验策略:
-     *   后 8 块 (8~15) → memcmp 与原始 WR_BUF 对比, 应完全一致
-     *   前 8 块 (0~7)  → eMMC 擦除后读回全 0x00, 逐字节检查
-     */
-
-    /* 校验后 8 块保留不变 */
-    if (memcmp(WR_BUF + 4096, RD_BUF + 4096, 4096) == 0)
-        PRINT("  Preserved blocks (8~15) verify PASSED\r\n");
-    else
-    {
-        uint16_t *wp = (uint16_t *)WR_BUF;
-        uint16_t *rp = (uint16_t *)RD_BUF;
-        for (i = 2048; i < 4096; i++)
-        {
-            if (wp[i] != rp[i])
-            {
-                PRINT("  Preserved mismatch @[");
-                PrintDec(dec, i);
-                PRINT(dec);
-                PRINT("]\r\n");
-                break;
-            }
-        }
-        return;
-    }
-
-    /* 校验前 8 块擦除后全 0x00 */
     {
         int errors = 0;
-        for (i = 0; i < 4096; i++)
+        for (i = 0; i < (int)(n_blks * 512); i++)
         {
             if (RD_BUF[i] != 0x00)
             {
@@ -525,17 +494,152 @@ static void EraseTest(void)
                 errors++;
             }
         }
-
         if (errors == 0)
-            PRINT("  Erased blocks (0~7) verify: all 0x00 PASSED\r\n");
+            PRINT("  Group A erased verify: all 0x00 PASSED\r\n");
         else
         {
-            PRINT("  Erased blocks verify FAILED: ");
+            PRINT("  Group A erased verify FAILED: ");
             PrintDec(dec, errors);
             PRINT(dec);
             PRINT(" non-00 bytes\r\n");
         }
     }
+
+    /* 读回 Group B → 验证保留不变 */
+    memset(RD_BUF, 0, 8192);
+    err = EmmcCardReadMulti(&g_emmc, blk_b, RD_BUF, n_blks);
+    if (err != EMMC_OK) { PRINT("  Post-erase read B FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    if (memcmp(WR_BUF, RD_BUF, 8192) == 0)
+        PRINT("  Group B preserved verify PASSED\r\n");
+    else
+    {
+        uint16_t *wp = (uint16_t *)WR_BUF;
+        uint16_t *rp = (uint16_t *)RD_BUF;
+        for (i = 0; i < 4096; i++)
+        {
+            if (wp[i] != rp[i])
+            {
+                PRINT("  Group B mismatch @[");
+                PrintDec(dec, i);
+                PRINT(dec);
+                PRINT("]\r\n");
+                break;
+            }
+        }
+    }
+}
+
+
+/* ================================
+ *  4. DDR52 模式 — 从 HS 8-bit SDR 切换到 DDR 8-bit
+ *     写单一 block 0xA5 pattern 回读校验
+ * ================================ */
+static void Ddr52Test(void)
+{
+    char dec[16];
+    uint8_t buf[EMMC_BLOCK_SIZE], saved[EMMC_BLOCK_SIZE];
+    const uint32_t test_block = 15000000;
+
+    PRINT("\r\n----- DDR52 Mode Test -----\r\n");
+    PRINT("  Purpose: switch to 8-bit DDR at 52MHz\r\n");
+    PRINT("  Current: HS SDR 8-bit ~50MHz (52 MB/s)\r\n");
+    PRINT("  Target:  HS DDR 8-bit ~50MHz (104 MB/s)\r\n");
+    PRINT("  CMD6:    HS_TIMING=1 + BUS_WIDTH=6 (8-bit DDR)\r\n");
+    PRINT("\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* EmmcCardSetDdrMode: 规范顺序 → HS_TIMING=1, 提频, 设 BUS_WIDTH=6, 主机 DDR 模式 */
+    EmmcCardErr_t err = EmmcCardSetDdrMode(&g_emmc, EMMC_BUS_WIDTH_8BIT_DDR, 52000000);
+    if (err != EMMC_OK)
+    {
+        PRINT("  DDR52 switch FAILED\r\n");
+        return;
+    }
+    PRINT("  DDR52 switch OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* 打印 CLKCR 和 EXT_CSD[183] 调试 */
+    {
+        uint32_t clkcr = g_emmc.sdmmc->CLKCR;
+        PRINT("  CLKCR=0x");
+        PrintHex8((uint8_t)(clkcr >> 24));
+        PrintHex8((uint8_t)(clkcr >> 16));
+        PrintHex8((uint8_t)(clkcr >> 8));
+        PrintHex8((uint8_t)clkcr);
+        PRINT(" (DDR=");
+        PrintDec(dec, (clkcr >> 18) & 1);
+        PRINT(dec);
+        PRINT(" NEG=");
+        PrintDec(dec, (clkcr >> 16) & 1);
+        PRINT(dec);
+        PRINT(" BUSSPEED=");
+        PrintDec(dec, (clkcr >> 19) & 1);
+        PRINT(dec);
+        PRINT(" WID=");
+        PrintDec(dec, (clkcr >> 14) & 3);
+        PRINT(dec);
+        PRINT(")\r\n");
+    }
+
+    /* CMD13 查卡状态 */
+    {
+        EmmcCardStatus_t sts;
+        if (EmmcCardSendStatus(&g_emmc, &sts) == EMMC_OK)
+        {
+            static const char *state_names[] = {
+                "Idle","Ready","Ident","Stby","Tran","Data","Rcv","Pgm",
+                "Dis","Btst","Slp"};
+            PRINT("  Card state: ");
+            if (sts.state < 11) PRINT(state_names[sts.state]);
+            PRINT(" (");
+            PrintDec(dec, sts.state);
+            PRINT(dec);
+            PRINT(")\r\n");
+        }
+        IwdgKickDog(IWDG2);
+    }
+
+    /* 单块写+回读校验验证 DDR 模式可用 */
+    PRINT("  Reading block ");
+    PrintDec(dec, test_block);
+    PRINT(dec);
+    PRINT("...\r\n");
+    err = EmmcCardReadBlocks(&g_emmc, test_block, buf, 1);
+    if (err != EMMC_OK) { PRINT("  Read FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    PRINT("  Writing 0xA5 pattern...\r\n");
+    memset(buf, 0xA5, sizeof(buf));
+    memcpy(saved, buf, sizeof(buf));
+    err = EmmcCardWriteBlocks(&g_emmc, test_block, buf, 1);
+    if (err != EMMC_OK)
+    {
+        PRINT("  Write FAILED\r\n");
+        return;
+    }
+    IwdgKickDog(IWDG2);
+
+    memset(buf, 0, sizeof(buf));
+    PRINT("  Reading back...\r\n");
+    err = EmmcCardReadBlocks(&g_emmc, test_block, buf, 1);
+    if (err != EMMC_OK) { PRINT("  Readback FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    if (memcmp(buf, saved, sizeof(buf)) == 0)
+        PRINT("  DDR52 Verify PASSED\r\n");
+    else
+        PRINT("  DDR52 Verify FAILED\r\n");
+
+    /* 切回 SDR 8-bit, 保持后续测试兼容 */
+    PRINT("  Switching back to SDR 8-bit...\r\n");
+    err = EmmcCardSetBusWidth(&g_emmc, EMMC_BUS_WIDTH_8BIT);
+    if (err != EMMC_OK)
+        PRINT("  SDR restore FAILED\r\n");
+    else
+        PRINT("  SDR restore OK\r\n");
 }
 
 
@@ -543,6 +647,7 @@ static const MenuEntry_t emmc_menu[] = {
     { "1", "Single Block R/W",   SingleBlockTest },
     { "2", "Multi Block R/W",    MultiBlockTest },
     { "3", "Erase Test",         EraseTest },
+    { "4", "DDR52 Mode Test",    Ddr52Test },
 };
 
 

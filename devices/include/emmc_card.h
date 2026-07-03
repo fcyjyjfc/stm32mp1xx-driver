@@ -82,10 +82,18 @@ static inline uint32_t EmmcSwitchArg(EmmcSwitchAccess_t access, uint8_t index, u
 
 
 /* ===== EXT_CSD BUS_WIDTH[183] 值 ===== */
+/*
+ * BUS_WIDTH[183] 值 (Table 145, JESD84-B51):
+ *   0 = 1-bit SDR,  1 = 4-bit SDR,  2 = 8-bit SDR
+ *   5 = 4-bit DDR,  6 = 8-bit DDR
+ * HS_TIMING 必须在设 DDR BUS_WIDTH 前设为 0x1
+ */
 typedef enum {
-    EMMC_BUS_WIDTH_1BIT = 0,  /* 1-bit (上电默认) */
-    EMMC_BUS_WIDTH_4BIT = 1,  /* 4-bit SDR */
-    EMMC_BUS_WIDTH_8BIT = 2,  /* 8-bit SDR */
+    EMMC_BUS_WIDTH_1BIT      = 0,  /* 1-bit SDR (上电默认) */
+    EMMC_BUS_WIDTH_4BIT      = 1,  /* 4-bit SDR */
+    EMMC_BUS_WIDTH_8BIT      = 2,  /* 8-bit SDR */
+    EMMC_BUS_WIDTH_4BIT_DDR  = 5,  /* 4-bit DDR (HS_TIMING=1 前提) */
+    EMMC_BUS_WIDTH_8BIT_DDR  = 6,  /* 8-bit DDR (HS_TIMING=1 前提) */
 } EmmcBusWidth_t;
 
 
@@ -94,6 +102,36 @@ typedef enum {
     EMMC_HS_TIMING_BC = 0,  /* Backward Compatible (上电默认) */
     EMMC_HS_TIMING_HS = 1,  /* High Speed (≤52MHz) */
 } EmmcHsTiming_t;
+
+
+/* ===== 卡详细状态 (EmmcCardReadStatus) ===== */
+typedef struct {
+    /* CMD13 R1 原始值 */
+    uint32_t r1;
+
+    /* 卡状态 */
+    uint8_t  card_state;         /* bits 12:9 */
+    uint8_t  ready_for_data;     /* bit 8 */
+    uint8_t  switch_error;       /* bit 7 */
+    uint8_t  app_cmd;            /* bit 5 */
+
+    /* 主机侧实时配置 (CLKCR) */
+    uint8_t  host_bus_width;     /* 1/4/8 */
+    uint8_t  host_ddr;           /* 0=SDR, 1=DDR */
+    uint8_t  host_bus_speed;     /* BUSSPEED */
+    uint8_t  host_negedge;       /* NEGEDGE */
+    uint8_t  host_hwfc;          /* HWFC_EN */
+    uint8_t  host_selclkrx;      /* SELCLKRX[1:0] */
+    uint16_t host_clkdiv;        /* CLKDIV[9:0] */
+
+    /* 卡侧缓存配置 (上次写入值, BUS_WIDTH/HS_TIMING 为只写不可读回) */
+    uint8_t  cached_bus_width;   /* BUS_WIDTH[183] 缓存 */
+    uint8_t  cached_hs_timing;   /* HS_TIMING[185] 缓存 */
+
+    /* 时钟 (Hz) */
+    uint32_t ker_ck_hz;          /* 内核时钟 */
+    uint32_t sdmmc_ck_hz;        /* SDMMC_CK = ker_ck / (2*CLKDIV) */
+} EmmcCardDetailedStatus_t;
 
 
 /* ---- R1 状态位 ---- */
@@ -160,6 +198,9 @@ EmmcCardErr_t EmmcCardSetBusWidth(EmmcCard_t *card, EmmcBusWidth_t width);
 /* 设置时钟: CMD6 EXT_CSD[185] HS Timing + SdmmcSetClock, target_hz>26MHz 自动切 HS */
 EmmcCardErr_t EmmcCardSetClock(EmmcCard_t *card, uint32_t target_hz);
 
+/* DDR 模式切换: EmmcCardSetClock(HS_TIMING=1) → EmmcCardSetBusWidth(DDR), JESD84 规范顺序 */
+EmmcCardErr_t EmmcCardSetDdrMode(EmmcCard_t *card, EmmcBusWidth_t width, uint32_t target_hz);
+
 /* 获取卡信息: CMD9(CSD) + CMD8(EXT_CSD), 需卡在 Transfer 态 */
 EmmcCardErr_t EmmcCardGetInfo(EmmcCard_t *card);
 
@@ -179,6 +220,9 @@ EmmcCardErr_t EmmcCardWaitBusy(EmmcCard_t *card);
 
 /* 发 CMD13 SEND_STATUS 查询当前设备状态, 自动解析至 EmmcCardStatus_t */
 EmmcCardErr_t EmmcCardSendStatus(EmmcCard_t *card, EmmcCardStatus_t *sts);
+
+/* 读取卡详细状态: CMD13 + CLKCR + 缓存, 一站式获取状态/配置/时钟 */
+EmmcCardErr_t EmmcCardReadStatus(EmmcCard_t *card, EmmcCardDetailedStatus_t *sts);
 
 
 #endif /* EMMC_CARD_H_ */

@@ -233,6 +233,9 @@ extern void SdmmcPowerOff(volatile SdmmcRegs_t *sdmmc);
 extern void SdmmcSetClock(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz, uint32_t target_hz);
 extern void SdmmcSetBusWidth(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width);
 
+/* 一次 CLKCR 写入配置总线宽度 + DDR 模式, 避免 DDR/宽度分别写入的中间态 */
+extern void SdmmcSetBusConfig(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width, int ddr_enable);
+
 extern SdmmcErr_t SdmmcSendCmd(volatile SdmmcRegs_t *sdmmc,
                                const SdmmcCmd_t *cmd,
                                uint32_t resp[4]);
@@ -306,6 +309,14 @@ static inline int SdmmcCheckIdmate(volatile SdmmcRegs_t *sdmmc)
 {
     return (sdmmc->STAR & SDMMC_STA_IDMATE) != 0;
 }
+
+/* 设置 DDR 模式 (CLKCR.DDR), enable=1 使能 DDR, 0 关闭 */
+void SdmmcSetDdrMode(volatile SdmmcRegs_t *sdmmc, int enable);
+
+/* SELCLKRX 取值 (CLKCR bits 20-21): 读数据 RX 时钟源选择 */
+#define SDMMC_CLKCR_SELCLKRX_CK     0U  /* CK (或 NEGEDGE 反向) */
+#define SDMMC_CLKCR_SELCLKRX_INV_CK 1U  /* CK 延迟 */
+#define SDMMC_CLKCR_SELCLKRX_DS     2U  /* DS (data strobe, HS400) */
 
 /* 设置 DCTRL.DTMODE 字段 (00=普通, 01=SD电压切换) */
 void SdmmcSetDtMode(volatile SdmmcRegs_t *sdmmc, uint32_t mode);

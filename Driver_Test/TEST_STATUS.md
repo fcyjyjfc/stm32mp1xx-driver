@@ -335,7 +335,23 @@
 
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
-| EraseTest (16 blocks) | **部分通过** | CMD35+CMD36+CMD38 擦除前 8 块, 读回全 0 — 但后 8 块也被擦除 (eMMC 擦除组粒度 > 8 块, 需按 EXT_CSD ERASE_GRP_SIZE 对齐) |
+| EraseTest @ 2 groups 1MB apart | **通过** | CMD35+CMD36+CMD38 擦除 Group A (block 15000000~15000007), 回读全 0; Group B (block 15002048~15002055) 原数据保留 — 验证擦除组边界正确 |
+
+### DDR52 模式 (8-bit DDR, ~52MHz, 104 MB/s)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| EmmcCardSetDdrMode 切换 | **通过** | 规范顺序: HS_TIMING=1 → BUS_WIDTH=6 (8-bit DDR), SWITCH_ERROR 无, CLKCR DDR=1 BUSSPEED=1 |
+| CMD13 卡状态 | **通过** | 切换后卡在 Transfer (Tran=4), 状态正确 |
+| 单块写 + 回读校验 | **通过** | CMD24 写 0xA5 pattern → CMD17 回读, memcmp 512B 校验通过 (之前 BUS_WIDTH=4 非法值导致 DTIMEOUT, 修正为 6 后正常) |
+| 切回 SDR 8-bit | **通过** | BUS_WIDTH=2 + CLEAR DDR, CLKCR 恢复 SDR 配置 |
+
+### 新增接口
+
+| 函数 | 说明 |
+|------|------|
+| `EmmcCardSetDdrMode(card, width, target_hz)` | 封装 DDR 切换规范顺序: EmmcCardSetClock(HS_TIMING=1) → EmmcCardSetBusWidth(BUS_WIDTH=5/6) |
+| `EmmcCardReadStatus(card, &sts)` | 一站式获取: CMD13 卡状态 + CLKCR 实时配置(位宽/DDR/时钟) + 缓存值 |
 
 ### 初始化流程
 
@@ -350,6 +366,4 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 ### 已知问题
 
-| 问题 | 原因 |
-|------|------|
-| 擦除粒度大于测试范围 | eMMC 擦除以擦除组为单位, 仅 16 块范围落在同一组内, 无法验证保留区 |
+_无_

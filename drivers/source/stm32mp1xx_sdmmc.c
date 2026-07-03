@@ -16,9 +16,6 @@
 
 #include "stm32mp1xx_sdmmc.h"
 
-/* 调试: 最后一条命令的 STAR 值 (ICR 清除前) */
-volatile uint32_t g_sdmmc_dbg_last_star;
-
 
 /* 粗略软件延时, 不依赖 STGEN; CA7 跑几百MHz 时约 1ms/次 */
 static void DelayMs(uint32_t ms)
@@ -96,6 +93,22 @@ void SdmmcSetClock(volatile SdmmcRegs_t *sdmmc, uint32_t ker_ck_hz, uint32_t tar
 
 
 /**
+ * @brief 使能/关闭 DDR 模式 (CLKCR.DDR)
+ * @param enable 1=DDR (双沿采样), 0=SDR (单沿)
+ *
+ * DDR 模式下 CLK 的上升沿和下降沿都传输数据, 吞吐量翻倍.
+ * 必须在 CPSM/DPSM 空闲时切换.
+ */
+void SdmmcSetDdrMode(volatile SdmmcRegs_t *sdmmc, int enable)
+{
+    if (enable)
+        sdmmc->CLKCR |= SDMMC_CLKCR_DDR;
+    else
+        sdmmc->CLKCR &= ~SDMMC_CLKCR_DDR;
+}
+
+
+/**
  * @brief 切换总线宽度, 4/8-bit 同时开启硬件流控 (HWFC_EN) 防止 FIFO 溢出/下溢
  * @param width SDMMC_BUS_1BIT / _4BIT / _8BIT
  */
@@ -110,6 +123,32 @@ void SdmmcSetBusWidth(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width)
     else
         tmp &= ~SDMMC_CLKCR_HWFC_EN;
 
+    sdmmc->CLKCR = tmp;
+}
+
+
+/**
+ * @brief 一次 CLKCR 写入完成总线宽度 + DDR + 高速模式配置, 避免中间态
+ * @param width  SDMMC_BUS_1BIT / _4BIT / _8BIT
+ * @param ddr_enable 0=SDR, 1=DDR
+ *
+ * DDR 模式额外置位 BUSSPEED (高速输出驱动).
+ * NEGEDGE 保持原值不变 (不由本函数管理, 默认 0 即 CK 上升沿驱动).
+ */
+void SdmmcSetBusConfig(volatile SdmmcRegs_t *sdmmc, SdmmcBusWidth_t width, int ddr_enable)
+{
+    uint32_t tmp = sdmmc->CLKCR;
+    tmp &= ~(SDMMC_CLKCR_WIDBUS_Msk | SDMMC_CLKCR_DDR | SDMMC_CLKCR_BUSSPEED);
+    tmp |= ((uint32_t)width << SDMMC_CLKCR_WIDBUS_Pos);
+    if (width >= SDMMC_BUS_4BIT)
+        tmp |= SDMMC_CLKCR_HWFC_EN;
+    else
+        tmp &= ~SDMMC_CLKCR_HWFC_EN;
+    if (ddr_enable)
+    {
+        tmp |= SDMMC_CLKCR_DDR;
+        tmp |= SDMMC_CLKCR_BUSSPEED;   /* 高速输出驱动 */
+    }
     sdmmc->CLKCR = tmp;
 }
 
@@ -195,7 +234,6 @@ SdmmcErr_t SdmmcSendCmd(volatile SdmmcRegs_t *sdmmc,
                         uint32_t resp[4])
 {
     SdmmcErr_t err = SdmmcCmdPhase(sdmmc, cmd, resp);
-    g_sdmmc_dbg_last_star = sdmmc->STAR;   /* 调试: CmdPhase 刚结束, ICR 清除前 */
     sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
     return err;
 }

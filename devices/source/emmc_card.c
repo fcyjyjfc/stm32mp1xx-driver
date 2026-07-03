@@ -182,30 +182,53 @@ EmmcCardErr_t EmmcCardSelect(EmmcCard_t *card)
 
 
 /**
- * @brief 设置总线宽度: CMD6 EXT_CSD[183] + SdmmcSetBusWidth
+ * @brief 设置总线宽度: CMD6 EXT_CSD[183] + SdmmcSetBusWidth + SdmmcSetDdrMode
  *
- * 同时设置卡端 (CMD6 SWITCH) 和主机端 (SDMMC CLKCR.WIDBUS).
- * 顺序上先设置卡端, 卡内部切换完后 D0 拉低表示 busy, 等待释放后再设主机端.
- * 如果先设主机端再设卡端, 主机端切换瞬间总线上可能出现非法电平.
- * @param width EMMC_BUS_WIDTH_1BIT / _4BIT / _8BIT
+ * 同时设置卡端 (CMD6 SWITCH) 和主机端 (SDMMC CLKCR.WIDBUS + DDR).
+ * 顺序: 先卡后主机. DDR 宽度 (4BIT_DDR/8BIT_DDR) 自动映射到基本宽度并使能 CLKCR_DDR.
+ * @param width EMMC_BUS_WIDTH_1BIT / _4BIT / _8BIT / _4BIT_DDR / _8BIT_DDR
  * @return EMMC_OK / EMMC_ERR_IO
  */
 EmmcCardErr_t EmmcCardSetBusWidth(EmmcCard_t *card, EmmcBusWidth_t width)
 {
-    /* CMD6: WRITE_BYTE 模式写 EXT_CSD[183] BUS_WIDTH */
+    uint32_t resp[4];
+
+    /* CMD6: WRITE_BYTE 模式写 EXT_CSD[183] BUS_WIDTH (Table 145: 0/1/2=SDR, 5/6=DDR) */
     SdmmcErr_t err = SendCmd(card->sdmmc, EMMC_CMD_SWITCH,
         EmmcSwitchArg(EMMC_SWITCH_ACCESS_WRITE_BYTE, EMMC_EXT_CSD_BUS_WIDTH, (uint8_t)width),
-        SDMMC_RESP_SHORT, NULL);
+        SDMMC_RESP_SHORT, resp);
     if (err != SDMMC_OK)
         return EMMC_ERR_IO;
 
-    /* CMD6 为 R1b 响应, 卡内部切换期间 D0 拉低, 等待释放 */
+    /* 检查 R1 SWITCH_ERROR 位: bit 7 = 1 表示卡拒绝了该 SWITCH */
+    if (resp[0] & EMMC_R1_SWITCH_ERROR)
+        return EMMC_ERR_IO;
+
+    /* 等待卡内部切换完成 (R1b busy) */
     err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
     if (err != SDMMC_OK)
         return EMMC_ERR_IO;
 
-    /* 主机端 SDMMC 外设匹配卡的宽度 */
-    SdmmcSetBusWidth(card->sdmmc, (SdmmcBusWidth_t)width);
+    /* 映射: DDR 宽度转基本宽度 + DDR 使能 */
+    SdmmcBusWidth_t base_width;
+    int ddr_enable;
+    switch (width) {
+    case EMMC_BUS_WIDTH_4BIT_DDR:
+        base_width = SDMMC_BUS_4BIT;
+        ddr_enable = 1;
+        break;
+    case EMMC_BUS_WIDTH_8BIT_DDR:
+        base_width = SDMMC_BUS_8BIT;
+        ddr_enable = 1;
+        break;
+    default:
+        base_width = (SdmmcBusWidth_t)width;
+        ddr_enable = 0;
+        break;
+    }
+
+    /* 原子化主机端配置: 一次 CLKCR 写入完成宽度 + DDR, 避免中间态 */
+    SdmmcSetBusConfig(card->sdmmc, base_width, ddr_enable);
     return EMMC_OK;
 }
 
@@ -227,10 +250,13 @@ EmmcCardErr_t EmmcCardSetClock(EmmcCard_t *card, uint32_t target_hz)
     uint8_t hs_timing = (target_hz > 26000000) ? EMMC_HS_TIMING_HS : EMMC_HS_TIMING_BC;
 
     /* CMD6: WRITE_BYTE 写 EXT_CSD[185] HS_TIMING */
+    uint32_t resp[4];
     SdmmcErr_t err = SendCmd(card->sdmmc, EMMC_CMD_SWITCH,
         EmmcSwitchArg(EMMC_SWITCH_ACCESS_WRITE_BYTE, EMMC_EXT_CSD_HS_TIMING, hs_timing),
-        SDMMC_RESP_SHORT, NULL);
+        SDMMC_RESP_SHORT, resp);
     if (err != SDMMC_OK)
+        return EMMC_ERR_IO;
+    if (resp[0] & EMMC_R1_SWITCH_ERROR)
         return EMMC_ERR_IO;
 
     /* 等待卡内部时序切换完成 (R1b busy) */
@@ -240,6 +266,38 @@ EmmcCardErr_t EmmcCardSetClock(EmmcCard_t *card, uint32_t target_hz)
 
     /* 主机时钟匹配目标频率: CK = ker_ck / (2 * CLKDIV) */
     SdmmcSetClock(card->sdmmc, card->ker_ck_hz, target_hz);
+    return EMMC_OK;
+}
+
+
+/**
+ * @brief 切换到 DDR 模式 (封装规范要求的完整顺序)
+ *
+ * JESD84-B51 6.6.23 Dual Data Rate mode selection:
+ *   "HS_TIMING must be set to 0x1 before setting BUS_WIDTH
+ *    for dual data rate operation (values 5 or 6)"
+ *
+ * 顺序:
+ *   1. EmmcCardSetClock → HS_TIMING=1 + 提频到 target_hz
+ *   2. EmmcCardSetBusWidth → BUS_WIDTH=5/6 + 主机 CLKCR_DDR=1
+ *
+ * @param card      eMMC 卡结构体
+ * @param width     EMMC_BUS_WIDTH_4BIT_DDR 或 EMMC_BUS_WIDTH_8BIT_DDR
+ * @param target_hz 目标时钟频率 (DDR52 ≤ 52MHz)
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardSetDdrMode(EmmcCard_t *card, EmmcBusWidth_t width, uint32_t target_hz)
+{
+    /* 步骤1: HS_TIMING=1 + 时钟提频 */
+    EmmcCardErr_t err = EmmcCardSetClock(card, target_hz);
+    if (err != EMMC_OK)
+        return err;
+
+    /* 步骤2: BUS_WIDTH 设 DDR 值 (5 或 6), 同时配置主机 DDR 模式 */
+    err = EmmcCardSetBusWidth(card, width);
+    if (err != EMMC_OK)
+        return err;
+
     return EMMC_OK;
 }
 
@@ -523,5 +581,62 @@ EmmcCardErr_t EmmcCardSendStatus(EmmcCard_t *card, EmmcCardStatus_t *sts)
         sts->ake_seq_error   = (r >> 3) & 1;
         sts->wp_violation    = r & 1;
     }
+    return EMMC_OK;
+}
+
+
+/**
+ * @brief 读取卡详细状态 — CMD13 + 主机 CLKCR + 结构体缓存
+ *
+ * 一站式获取:
+ *   - CARD_STATE (CMD13 R1 bits 12:9)
+ *   - 主机侧 CLKCR 实时配置 (位宽/DDR/时钟分频)
+ *   - 卡侧缓存配置 (BUS_WIDTH/HS_TIMING 上次写入值)
+ *   - 实际 SDMMC_CK 频率
+ *
+ * @param[out] sts 详细状态结构体
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardReadStatus(EmmcCard_t *card, EmmcCardDetailedStatus_t *sts)
+{
+    if (!sts)
+        return EMMC_ERR_PARAM;
+
+    /* ---- CMD13: 卡状态 ---- */
+    uint32_t resp[4];
+    SdmmcErr_t err = SendCmd(card->sdmmc, EMMC_CMD_SEND_STATUS,
+                             card->rca << 16, SDMMC_RESP_SHORT, resp);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_IO;
+
+    uint32_t r = resp[0];
+    sts->r1             = r;
+    sts->card_state     = (r >> 9) & 0xF;
+    sts->ready_for_data = (r >> 8) & 1;
+    sts->switch_error   = (r >> 7) & 1;
+    sts->app_cmd        = (r >> 5) & 1;
+
+    /* ---- 主机侧 CLKCR ---- */
+    uint32_t clkcr = card->sdmmc->CLKCR;
+    uint32_t wid   = (clkcr >> SDMMC_CLKCR_WIDBUS_Pos) & 3;
+    static const uint8_t bus_width_map[4] = {1, 4, 8, 8};
+    sts->host_bus_width  = bus_width_map[wid & 3];
+    sts->host_ddr        = (clkcr & SDMMC_CLKCR_DDR) ? 1 : 0;
+    sts->host_bus_speed  = (clkcr & SDMMC_CLKCR_BUSSPEED) ? 1 : 0;
+    sts->host_negedge    = (clkcr & SDMMC_CLKCR_NEGEDGE) ? 1 : 0;
+    sts->host_hwfc       = (clkcr & SDMMC_CLKCR_HWFC_EN) ? 1 : 0;
+    sts->host_selclkrx   = (clkcr >> SDMMC_CLKCR_SELCLKRX_Pos) & 3;
+    sts->host_clkdiv     = clkcr & SDMMC_CLKCR_CLKDIV_Msk;
+
+    /* ---- 卡侧缓存 (BUS_WIDTH/HS_TIMING 为只写不可读回, 只能读缓存的) ---- */
+    sts->cached_bus_width  = card->ext_csd[EMMC_EXT_CSD_BUS_WIDTH];
+    sts->cached_hs_timing  = card->ext_csd[EMMC_EXT_CSD_HS_TIMING];
+
+    /* ---- 时钟 ---- */
+    sts->ker_ck_hz   = card->ker_ck_hz;
+    uint32_t div     = sts->host_clkdiv;
+    if (div == 0) div = 1;
+    sts->sdmmc_ck_hz = card->ker_ck_hz / (2 * div);
+
     return EMMC_OK;
 }
