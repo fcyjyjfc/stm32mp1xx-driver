@@ -1,7 +1,7 @@
 /*
  * emmc_card.c — eMMC 协议层驱动
  *
- * 初始化: CMD0 → CMD1 → CMD2 → CMD3 → CMD9 → CMD7 → CMD8 (EXT_CSD)
+ * 初始化: CMD0 → CMD1 → CMD2 → CMD3 → CMD7 → CMD9/CMD8 (EXT_CSD)
  * 数据读写: CMD17/CMD24 (单块), CMD23+CMD18/25 (多块, 预定义块数)
  *
  *  Created on: 2026-6-27
@@ -327,6 +327,14 @@ EmmcCardErr_t EmmcCardGetInfo(EmmcCard_t *card)
 
     uint8_t ts = resp[0] & 0xFF;
     card->max_clk_hz = speed_unit[ts & 0x7] / 10 * speed_mult[(ts >> 3) & 0xF];
+    /* 保存原始 CSD 响应供调试 */
+    card->csd_resp[0] = resp[0];
+    card->csd_resp[1] = resp[1];
+    card->csd_resp[2] = resp[2];
+    card->csd_resp[3] = resp[3];
+    /* CCC: CSD bits[95:84], 即 resp[1] bits[31:20]
+     * JEDEC JESD84-B51 §7.3.6 — 与 SD CSD v2.0 位置一致 */
+    card->ccc = (resp[1] >> 20) & 0xFFF;
 
     /*
      * CMD8: SEND_EXT_CSD
@@ -357,6 +365,16 @@ EmmcCardErr_t EmmcCardGetInfo(EmmcCard_t *card)
                        | ((uint32_t)card->ext_csd[EMMC_EXT_CSD_SEC_COUNT + 2] << 16)
                        | ((uint32_t)card->ext_csd[EMMC_EXT_CSD_SEC_COUNT + 3] << 24);
     card->capacity_mb = card->total_blocks / EMMC_BLOCKS_PER_MB;
+
+    /* 写保护组大小: WP_GRP_SIZE = HC_ERASE_GRP_SIZE × HC_WP_GRP_SIZE × 512KB */
+    {
+        uint8_t hc_erase_sz = card->ext_csd[EMMC_EXT_CSD_HC_ERASE_GRP_SIZE];
+        uint8_t hc_wp_sz    = card->ext_csd[EMMC_EXT_CSD_HC_WP_GRP_SIZE];
+        if (hc_erase_sz && hc_wp_sz)
+            card->wp_grp_size_blocks = (uint32_t)hc_erase_sz * hc_wp_sz * 1024;
+        else
+            card->wp_grp_size_blocks = 0;
+    }
 
     return EMMC_OK;
 }
@@ -555,6 +573,115 @@ EmmcCardErr_t EmmcCardErase(EmmcCard_t *card, uint32_t start_block, uint32_t end
         return EMMC_ERR_IO;
 
     return EMMC_OK;
+}
+
+
+/**
+ * @brief CMD28 SET_WRITE_PROT — 设置写保护组
+ *
+ * 写保护组由块地址确定, 设备自动选择包含该块的 WP 组.
+ * 设置后该组内所有块被写保护, CMD24/CMD25 会触发 WP_VIOLATION.
+ * @param block 组内的任意块号
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardSetWriteProtect(EmmcCard_t *card, uint32_t block)
+{
+    SdmmcErr_t err = SendCmd(card->sdmmc, EMMC_CMD_SET_WRITE_PROT, block,
+                              SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_IO;
+
+    /* CMD28 是 R1b: 等 DAT0 释放 (内部编程 WP) */
+    err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
+    return (err == SDMMC_OK) ? EMMC_OK : EMMC_ERR_IO;
+}
+
+
+/**
+ * @brief CMD29 CLR_WRITE_PROT — 清除写保护组
+ *
+ * 仅对非永久写保护有效. 永久写保护 (CMD31 类型为 0) 无法清除.
+ * @param block 组内的任意块号
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardClearWriteProtect(EmmcCard_t *card, uint32_t block)
+{
+    SdmmcErr_t err = SendCmd(card->sdmmc, EMMC_CMD_CLR_WRITE_PROT, block,
+                              SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_IO;
+
+    err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
+    return (err == SDMMC_OK) ? EMMC_OK : EMMC_ERR_IO;
+}
+
+
+/**
+ * @brief CMD30 SEND_WRITE_PROT — 读取写保护状态
+ *
+ * 返回 32 字节数据, 每个 bit 代表一个 WP 组的保护状态:
+ *   bit=0: 未保护, bit=1: 已保护
+ * 32 字节共 256 bit, 覆盖包含 block 的 WP 组及其后 255 组.
+ *
+ * @param block 块地址, 设备自动映射到 WP 组
+ * @param[out] wp_status 32 字节缓冲区, 每组 1 bit
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardGetWriteProtect(EmmcCard_t *card, uint32_t block,
+                                       uint8_t wp_status[32])
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+
+    SdmmcCmd_t cmd = {
+        .index     = EMMC_CMD_SEND_WRITE_PROT,
+        .arg       = block,
+        .resp_type = SDMMC_RESP_SHORT,
+        .cmdtrans  = SDMMC_CMD_DATA,
+        .cmdstop   = SDMMC_CMD_NOSTOP,
+    };
+    SdmmcData_t data = {
+        .buf_addr       = (uint32_t)wp_status,
+        .len            = 4,            /* 32 bits = 4 bytes (JESD84-B51 Table 53 Note 2) */
+        .block_size_log = SDMMC_BLKSIZ_4B,
+        .dir_read       = SDMMC_DIR_READ,
+    };
+    SdmmcErr_t err = SdmmcReadData(sdmmc, &cmd, &data, NULL);
+    return (err == SDMMC_OK) ? EMMC_OK : EMMC_ERR_IO;
+}
+
+
+/**
+ * @brief CMD31 SEND_WRITE_PROT_TYPE — 读取写保护类型
+ *
+ * 返回 64 bits (8 字节), 每 2 bits 表示一个 WP 组的保护类型:
+ *   00 = 未保护, 01 = 临时保护, 10 = 上电保护, 11 = 永久保护
+ * 覆盖包含 block 的 WP 组及其后 31 组 (共 32 组).
+ * (JESD84-B51 Table 53 Note 4)
+ *
+ * @param block 块地址, 设备自动映射到 WP 组
+ * @param[out] wp_type 缓冲区 (至少 8 字节), 每组 2 bits
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardGetWriteProtectType(EmmcCard_t *card, uint32_t block,
+                                           uint8_t wp_type[8])
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+
+    SdmmcCmd_t cmd = {
+        .index     = EMMC_CMD_SEND_WRITE_PROT_TYPE,
+        .arg       = block,
+        .resp_type = SDMMC_RESP_SHORT,
+        .cmdtrans  = SDMMC_CMD_DATA,
+        .cmdstop   = SDMMC_CMD_NOSTOP,
+    };
+    SdmmcData_t data = {
+        .buf_addr       = (uint32_t)wp_type,
+        .len            = 8,            /* 64 bits = 8 bytes (JESD84-B51 Table 53 Note 4) */
+        .block_size_log = SDMMC_BLKSIZ_8B,
+        .dir_read       = SDMMC_DIR_READ,
+    };
+    SdmmcErr_t err = SdmmcReadData(sdmmc, &cmd, &data, NULL);
+    return (err == SDMMC_OK) ? EMMC_OK : EMMC_ERR_IO;
 }
 
 

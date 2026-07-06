@@ -43,6 +43,10 @@ typedef enum {
     EMMC_CMD_SET_BLOCK_COUNT  = 23,
     EMMC_CMD_WRITE_SINGLE     = 24,
     EMMC_CMD_WRITE_MULTI      = 25,
+    EMMC_CMD_SET_WRITE_PROT   = 28,  /* CMD28: 设写保护, R1b */
+    EMMC_CMD_CLR_WRITE_PROT   = 29,  /* CMD29: 清写保护, R1b */
+    EMMC_CMD_SEND_WRITE_PROT  = 30,  /* CMD30: 读 WP 状态, R1 + 32B */
+    EMMC_CMD_SEND_WRITE_PROT_TYPE = 31, /* CMD31: 读 WP 类型, R1 + 32B */
     EMMC_CMD_ERASE_GRP_START  = 35,
     EMMC_CMD_ERASE_GRP_END    = 36,
     EMMC_CMD_ERASE            = 38,
@@ -79,6 +83,8 @@ static inline uint32_t EmmcSwitchArg(EmmcSwitchAccess_t access, uint8_t index, u
 #define EMMC_EXT_CSD_HS_TIMING        185   /* HS时序接口 (R/W/E_P) */
 #define EMMC_EXT_CSD_EXT_CSD_REV      192   /* EXT_CSD 版本 (R) */
 #define EMMC_EXT_CSD_SEC_COUNT        212   /* 扇区数 [215:212] (R) */
+#define EMMC_EXT_CSD_HC_WP_GRP_SIZE   221   /* HC 写保护组大小 (R) */
+#define EMMC_EXT_CSD_HC_ERASE_GRP_SIZE 224  /* HC 擦除组大小 (R) */
 
 
 /* ===== EXT_CSD BUS_WIDTH[183] 值 ===== */
@@ -169,6 +175,9 @@ typedef struct {
     uint32_t total_blocks;
     uint32_t capacity_mb;
     uint32_t max_clk_hz;
+    uint32_t wp_grp_size_blocks;    /* 写保护组大小 (块数) */
+    uint16_t ccc;                   /* 命令类支持位图 (CSD bits 83:72) */
+    uint32_t csd_resp[4];           /* 原始 CSD R2 响应, 供调试 */
     /* CID */
     uint8_t  mfr_id;
     char     oem_id[3];
@@ -214,6 +223,21 @@ EmmcCardErr_t EmmcCardWriteMulti(EmmcCard_t *card, uint32_t block, const void *b
 
 /* 擦除: CMD35(ERASE_GRP_START) → CMD36(ERASE_GRP_END) → CMD38(ERASE), R1b */
 EmmcCardErr_t EmmcCardErase(EmmcCard_t *card, uint32_t start_block, uint32_t end_block);
+
+/* 写保护: CMD28 SET_WRITE_PROT / CMD29 CLR_WRITE_PROT, R1b */
+EmmcCardErr_t EmmcCardSetWriteProtect(EmmcCard_t *card, uint32_t block);
+EmmcCardErr_t EmmcCardClearWriteProtect(EmmcCard_t *card, uint32_t block);
+
+/* 读取写保护状态: CMD30 SEND_WRITE_PROT, 返回 32 bits (4 字节, 32 组)
+ *   block: 块地址, 设备返回包含该块的 WP 组及其后 31 组的 bitmap
+ *   JESD84-B51 Table 53 Note 2: 32 bits + 16 bits CRC, 硬件自动处理 CRC */
+EmmcCardErr_t EmmcCardGetWriteProtect(EmmcCard_t *card, uint32_t block, uint8_t wp_status[4]);
+
+/* 读取写保护类型: CMD31 SEND_WRITE_PROT_TYPE, 返回 64 bits (8 字节, 32 组, 每组 2 bits)
+ *   block: 块地址, 设备返回包含该块的 WP 组及其后 31 组的类型
+ *   编码 (JESD84-B51 Table 53 Note 4):
+ *     00=未保护, 01=临时保护, 10=上电保护, 11=永久保护 */
+EmmcCardErr_t EmmcCardGetWriteProtectType(EmmcCard_t *card, uint32_t block, uint8_t wp_type[8]);
 
 /* 等待写操作后 BUSYD0 释放 (设备内部编程完成) */
 EmmcCardErr_t EmmcCardWaitBusy(EmmcCard_t *card);

@@ -353,9 +353,57 @@ CMD38 支持的参数 (Table 11, Table 12):
 
 ### 6.6.15 Write protect management (写保护管理)
 
-- 写保护组 (Write Protect Group) 管理
-- 相关命令: CMD28 (SET_WRITE_PROT), CMD29 (CLR_WRITE_PROT), CMD30 (SEND_WRITE_PROT), CMD31 (SEND_WRITE_PROT_TYPE)
-- 支持临时写保护和永久写保护
+写保护组 (WP-Group) 管理, 相关命令: CMD28~31 (Table 53, Class 6)。
+
+#### CLASS_6_CTRL 模式选择 (EXT_CSD[59])
+
+CMD28~31 的行为由 EXT_CSD[59] CLASS_6_CTRL 控制:
+
+| CLASS_6_CTRL | CMD28 | CMD29 | CMD30 | CMD31 |
+|-------------|-------|-------|-------|-------|
+| **0x00** (默认) | SET_WRITE_PROT | CLR_WRITE_PROT | SEND_WRITE_PROT | SEND_WRITE_PROT_TYPE |
+| **0x01** | 释放 WP-Group | 忽略 (NOP) | 返回释放状态 | 返回 64-bit 全零 |
+
+默认值 0x00 为标准写保护模式。0x01 用于动态容量管理 (释放 WP 组), 使用前需先写 CLASS_6_CTRL, 使用后恢复为 0x00。
+
+#### CMD28/29 — SET/CLR write protect (Table 53)
+
+- **CMD28**: `ac [31:0] data_address → R1b SET_WRITE_PROT`
+  设置指定 WP 组的写保护位。写保护组大小由 CSD (WP_GRP_SIZE) 或 EXT_CSD (HC_WP_GRP_SIZE) 决定。
+- **CMD29**: `ac [31:0] data_address → R1b CLR_WRITE_PROT`
+  清除指定 WP 组的写保护位。仅对临时/上电写保护有效, 对永久保护无效。
+
+两者均为 R1b 响应, 等 DAT0 Busy 释放后才完成。
+
+#### CMD30 — SEND_WRITE_PROT (Table 53 Note 2)
+
+- **CMD30**: `adtc [31:0] data_address → R1 SEND_WRITE_PROT`
+- **数据格式**: 32 bits (4 字节) WP 状态 + 16 bits CRC
+  - 每个 bit 代表一个 WP 组的状态: 0=未保护, 1=已保护
+  - 覆盖 32 个 WP 组, bit 0 (最低位) = 包含 data_address 的组
+  - data_address 超出范围的组 → 对应 bit 为 0
+- **数据长度**: 4 字节 (SDMMC_BLKSIZ_4B)
+
+#### CMD31 — SEND_WRITE_PROT_TYPE (Table 53 Note 4)
+
+- **CMD31**: `adtc [31:0] data_address → R1 SEND_WRITE_PROT_TYPE`
+- **数据格式**: 64 bits (8 字节) WP 类型 + 16 bits CRC
+  - 每 2 bits 表示一个 WP 组的保护类型 (32 组 × 2 bits):
+    - `00` = 未保护
+    - `01` = 临时写保护 (TMP_WRITE_PROTECT)
+    - `10` = 上电写保护 (上电后清除)
+    - `11` = 永久写保护 (PERM_WRITE_PROTECT, 不可清除)
+  - 最低 2 bits = 包含 data_address 的组
+- **数据长度**: 8 字节 (SDMMC_BLKSIZ_8B)
+- **注意**: 实测部分 eMMC 芯片 CMD30/31 数据回读功能未实现 (返回全零), 但 CMD28/29 写保护功能正常。
+
+#### 写保护组大小
+
+WP-Group 大小计算 (HC 设备, ERASE_GROUP_DEF=1):
+
+```
+WP_GRP_SIZE (blocks) = HC_ERASE_GRP_SIZE[224] × HC_WP_GRP_SIZE[221] × 1024
+```
 
 ### 6.6.16 Extended Security Protocols Pass Through Commands
 
@@ -413,7 +461,11 @@ CMD42 + 密码数据块 (需先用 CMD16 设块大小=1 byte):
 
 ### 6.6.23~6.6.24 DDR 模式选择与操作
 
-双沿采样 (DDR), 同频率下带宽翻倍。只在 HS/HS200 基础上启用。**暂不实现。**
+双沿采样 (DDR), 同频率下带宽翻倍。只在 HS/HS200 基础上启用。
+
+**切换顺序 (6.6.23):** HS_TIMING=0x1 → BUS_WIDTH=5/6 (4-bit/8-bit DDR), 主机 DDR 模式。
+**DDR 模式限制:** CMD16/CMD42/CMD19/CMD14/CMD11/CMD20 非法, 块大小固定 512B。
+**已实现: DDR52 (8-bit DDR, 52MHz, 104 MB/s)。**
 
 ### 6.6.25~6.6.40 其余高级特性
 
@@ -804,6 +856,7 @@ R1 响应的 [39:8] 位是 32-bit Device Status。
 | 字段 | 位范围 | 宽度 | 说明 |
 |------|--------|------|------|
 | MID | [127:120] | 8 | 制造商 ID, JEDEC 分配 |
+| [119:114] | Reserved | 6 | — |
 | CBX | [113:112] | 2 | 00=Device, 01=BGA, 10=POP |
 | OID | [111:104] | 8 | OEM/Application ID |
 | PNM | [103:56] | 48 | 产品名称 (ASCII) |
@@ -811,6 +864,53 @@ R1 响应的 [39:8] 位是 32-bit Device Status。
 | PSN | [47:16] | 32 | 序列号 |
 | MDT | [15:8] | 8 | 制造日期 |
 | CRC | [7:1] | 7 | CID CRC7 |
+
+### 7.3 CSD 寄存器 (128-bit, Table 78)
+
+CMD9 (SEND_CSD) 读取, R2 长响应。CSD 提供设备访问时序、支持的命令类、容量等信息。
+
+#### 关键字段 (Table 78-79):
+
+| 字段 | 位范围 | 宽度 | 说明 |
+|------|--------|------|------|
+| CSD_STRUCTURE | [127:126] | 2 | CSD 版本, 01b=v2.0 (HC 设备) |
+| TAAC | [119:112] | 8 | 读访问时间 (Table 81) |
+| NSAC | [111:104] | 8 | 读访问时间因子 (时钟周期数 × 100) |
+| **TRAN_SPEED** | **[103:96]** | **8** | **最大时钟频率 (Table 82)** |
+| **CCC** | **[95:84]** | **12** | **命令类支持位图 (Table 83, 详见 §6.10.3)** |
+| READ_BL_LEN | [83:80] | 4 | 最大读块大小 (2^READ_BL_LEN 字节) |
+| READ_BL_PARTIAL | [79] | 1 | 非对齐读支持 |
+| WRITE_BLK_MISALIGN | [78] | 1 | 写块不对齐支持 |
+| READ_BLK_MISALIGN | [77] | 1 | 读块不对齐支持 |
+| DSR_IMP | [76] | 1 | DSR 寄存器实现 |
+| C_SIZE | [73:62] | 12 | 设备容量 (CSD v1.0) |
+| VDD_R_CURR_MIN | [61:59] | 3 | 读电流最小值 |
+| VDD_W_CURR_MIN | [55:53] | 3 | 写电流最小值 |
+| ERASE_GRP_SIZE | [46:42] | 5 | 擦除组大小 (ERASE_GROUP_DEF=0 时) |
+| ERASE_GRP_MULT | [41:37] | 5 | 擦除组倍数 |
+| WP_GRP_SIZE | [36:32] | 5 | 写保护组大小 |
+| WRITE_BL_LEN | [25:22] | 4 | 最大写块大小 |
+
+**注意**: 对于 HC 设备 (容量 >2GB), 容量通过 EXT_CSD SEC_COUNT[215:212] 获取, CSD 中的 C_SIZE 字段不适用。
+
+**TRAN_SPEED 编码** (Table 82): 低 3 bits = 速率单位, bits [6:3] = 倍率, 查表获得 Hz。
+
+**CCC (Command Classes) 编码** (Table 83):
+
+| Bit | 类 | 命令 |
+|-----|-----|------|
+| 0 | Class 0 (Basic) | CMD0~15, 19 |
+| 1 | Class 1 (Obsolete) | CMD11 |
+| 2 | Class 2 (Block Read) | CMD16~18, 21, 23 |
+| 3 | Class 3 (Obsolete) | CMD20 |
+| 4 | Class 4 (Block Write) | CMD16, 23~27, 49 |
+| 5 | Class 5 (Erase) | CMD35~38 |
+| **6** | **Class 6 (Write Protection)** | **CMD28~31** |
+| 7 | Class 7 (Lock Device) | CMD42 |
+| 8 | Class 8 (Application-specific) | CMD55~56 |
+| 9 | Class 9 (I/O Mode) | CMD39~40 |
+| 10 | Class 10 (Security Protocols) | CMD53~54 |
+| 11 | Class 11 (Command Queuing) | CMD44~48 |
 
 ### 7.4 EXT_CSD 寄存器 (512 字节)
 
@@ -825,6 +925,7 @@ CMD8 读取, CMD6 SWITCH 修改 Modes Segment (字节 0~191)。
 | **192** | **EXT_CSD_REV** | 1 | R | EXT_CSD 版本 |
 | **196** | **DEVICE_TYPE** | 1 | R | 设备支持的速度模式 |
 | [212:215] | **SEC_COUNT** | 4 | R | 扇区数, 容量 = SEC_COUNT x 512B |
+| **59** | **CLASS_6_CTRL** | 1 | R/W | Class 6 命令模式: 0x00=标准 WP, 0x01=释放组 |
 | [162:161] | HPI_MGMT | 1 | R/W | HPI 管理 |
 
 #### HS_TIMING[185] (7.4.65, Table 142-143)

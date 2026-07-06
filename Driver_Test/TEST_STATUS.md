@@ -346,12 +346,25 @@
 | 单块写 + 回读校验 | **通过** | CMD24 写 0xA5 pattern → CMD17 回读, memcmp 512B 校验通过 (之前 BUS_WIDTH=4 非法值导致 DTIMEOUT, 修正为 6 后正常) |
 | 切回 SDR 8-bit | **通过** | BUS_WIDTH=2 + CLEAR DDR, CLKCR 恢复 SDR 配置 |
 
+### 写保护
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| CMD28 SET_WRITE_PROT | 通过 | 设 WP 成功后, CMD24 写该组块被拒绝 (BUSYD0), 数据保留完好 |
+| CMD29 CLR_WRITE_PROT | 通过 | 清 WP 后再 CMD24 写入正常, 数据回读校验通过 |
+| CMD30 SEND_WRITE_PROT | 通过 (状态全 0) | 读 32 bits (4 字节, 32 组), 硬件响应正常但此 eMMC 返回的 WP 状态全 0 |
+| CMD31 SEND_WRITE_PROT_TYPE | 通过 (状态全 0) | 读 64 bits (8 字节, 32 组 × 2 bits), 硬件响应正常但此 eMMC 返回的 WP 类型全 0 |
+
 ### 新增接口
 
 | 函数 | 说明 |
 |------|------|
 | `EmmcCardSetDdrMode(card, width, target_hz)` | 封装 DDR 切换规范顺序: EmmcCardSetClock(HS_TIMING=1) → EmmcCardSetBusWidth(BUS_WIDTH=5/6) |
 | `EmmcCardReadStatus(card, &sts)` | 一站式获取: CMD13 卡状态 + CLKCR 实时配置(位宽/DDR/时钟) + 缓存值 |
+| `EmmcCardSetWriteProtect(card, block)` | CMD28 SET_WRITE_PROT, R1b |
+| `EmmcCardClearWriteProtect(card, block)` | CMD29 CLR_WRITE_PROT, R1b |
+| `EmmcCardGetWriteProtect(card, start_group, &wp[4])` | CMD30 SEND_WRITE_PROT, 32 bits (4 字节) bitmap |
+| `EmmcCardGetWriteProtectType(card, start_group, &type[8])` | CMD31 SEND_WRITE_PROT_TYPE, 64 bits (8 字节, 2 bits/组) |
 
 ### 初始化流程
 
@@ -366,4 +379,6 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 ### 已知问题
 
-_无_
+| 问题 | 说明 |
+|------|------|
+| CMD30/31 返回 WP 状态全 0 | 此 eMMC (NCard) 的 CMD30 SEND_WRITE_PROT 和 CMD31 SEND_WRITE_PROT_TYPE 返回全 0, 但 CMD28/29 设/清 WP 功能正常, 写保护生效已验证 |

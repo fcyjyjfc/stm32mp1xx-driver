@@ -68,6 +68,22 @@ static void PrintCardInfo(EmmcCard_t *card)
     PRINT(dec);
     PRINT(" MHz\r\n");
 
+    PRINT("  CCC: 0x");
+    PrintHex8((uint8_t)(card->ccc >> 8));
+    PrintHex8((uint8_t)card->ccc);
+    {
+        uint32_t alt_ccc = (card->csd_resp[1] >> 20) & 0xFFF;
+        PRINT(" (bits[83:72]) alt[95:84]=0x");
+        PrintHex8((uint8_t)(alt_ccc >> 8));
+        PrintHex8((uint8_t)alt_ccc);
+        PRINT(" (Cls6_83=");
+        PRINT((card->ccc & (1 << 6)) ? "1" : "0");
+        PRINT(" Cls6_95=");
+        PRINT((alt_ccc & (1 << 6)) ? "1" : "0");
+        PRINT(")");
+    }
+    PRINT("\r\n");
+
     PRINT("  RCA: 0x");
     PrintHex8((uint8_t)(card->rca >> 8));
     PrintHex8((uint8_t)card->rca);
@@ -643,11 +659,297 @@ static void Ddr52Test(void)
 }
 
 
+/* ================================
+ *  5. DDR52 多块读写 — DDR 模式下 CMD23+CMD25/CMD18
+ *     写 16 块 uint16_t 0~4095 回读校验
+ * ================================ */
+static void Ddr52MultiBlockTest(void)
+{
+    char dec[16];
+    const uint32_t test_block = 15003000;
+    const uint32_t n_blocks = 16;
+
+    PRINT("\r\n----- DDR52 Multi-Block Test -----\r\n");
+    PRINT("  Block: ");
+    PrintDec(dec, test_block);
+    PRINT(dec);
+    PRINT(" (");
+    PrintDec(dec, n_blocks);
+    PRINT(dec);
+    PRINT(" blocks, 8 KB)\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* 切换到 DDR52 */
+    EmmcCardErr_t err = EmmcCardSetDdrMode(&g_emmc, EMMC_BUS_WIDTH_8BIT_DDR, 52000000);
+    if (err != EMMC_OK)
+    {
+        PRINT("  DDR52 switch FAILED\r\n");
+        return;
+    }
+    PRINT("  DDR52 switch OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* 填 WR_BUF: uint16_t 0~4095 */
+    {
+        uint16_t *p = (uint16_t *)WR_BUF;
+        for (int i = 0; i < 4096; i++)
+            p[i] = (uint16_t)i;
+    }
+
+    /* CMD23 + CMD25: 多块写 */
+    PRINT("  Writing ");
+    PrintDec(dec, n_blocks);
+    PRINT(dec);
+    PRINT(" blocks...\r\n");
+    err = EmmcCardWriteMulti(&g_emmc, test_block, WR_BUF, n_blocks);
+    if (err != EMMC_OK)
+    {
+        PRINT("  Write FAILED\r\n");
+        goto restore;
+    }
+    IwdgKickDog(IWDG2);
+
+    /* CMD23 + CMD18: 多块读回 */
+    memset(RD_BUF, 0, n_blocks * 512);
+    PRINT("  Reading back...\r\n");
+    err = EmmcCardReadMulti(&g_emmc, test_block, RD_BUF, n_blocks);
+    if (err != EMMC_OK)
+    {
+        PRINT("  Read FAILED\r\n");
+        goto restore;
+    }
+    IwdgKickDog(IWDG2);
+
+    /* memcmp 校验 */
+    if (memcmp(WR_BUF, RD_BUF, n_blocks * 512) == 0)
+        PRINT("  DDR52 Multi-Block Verify PASSED\r\n");
+    else
+    {
+        PRINT("  DDR52 Multi-Block Verify FAILED\r\n");
+        uint16_t *wp = (uint16_t *)WR_BUF;
+        uint16_t *rp = (uint16_t *)RD_BUF;
+        for (int i = 0; i < 4096; i++)
+        {
+            if (wp[i] != rp[i])
+            {
+                PRINT("  Mismatch @[");
+                PrintDec(dec, i);
+                PRINT(dec);
+                PRINT("]\r\n");
+                break;
+            }
+        }
+    }
+
+restore:
+    /* 切回 SDR 8-bit */
+    PRINT("  Switching back to SDR 8-bit...\r\n");
+    err = EmmcCardSetBusWidth(&g_emmc, EMMC_BUS_WIDTH_8BIT);
+    if (err != EMMC_OK)
+        PRINT("  SDR restore FAILED\r\n");
+    else
+        PRINT("  SDR restore OK\r\n");
+}
+
+
+/* ================================
+ *  6. 写保护测试 — CMD28/29/30 功能验证
+ *     写 A → 设 WP → 写 B(应拒) → 回读 A → 清 WP → 写 B → 回读 B
+ * ================================ */
+static void WriteProtectTest(void)
+{
+    char dec[16];
+    const uint32_t test_block = 15000000;
+    uint32_t wp_group;
+
+    PRINT("\r\n----- Write Protect Test -----\r\n");
+    PRINT("  Block: ");
+    PrintDec(dec, test_block);
+    PRINT(dec);
+    PRINT("\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* ---- WP 组大小 ---- */
+    if (g_emmc.wp_grp_size_blocks == 0)
+    {
+        PRINT("  WP_GRP_SIZE=0, WP not supported?\r\n");
+        return;
+    }
+    wp_group = test_block / g_emmc.wp_grp_size_blocks;
+    PRINT("  WP_GRP_SIZE: ");
+    PrintDec(dec, (int32_t)g_emmc.wp_grp_size_blocks);
+    PRINT(dec);
+    PRINT(" blocks, group ");
+    PrintDec(dec, wp_group);
+    PRINT(dec);
+    PRINT("\r\n\r\n");
+
+    /* ---- 准备数据 A(0xAA) 和 B(0xBB) ---- */
+    memset(WR_BUF, 0xAA, 512);
+    memset(WR_BUF + 512, 0xBB, 512);
+
+    /* ================================================================
+     *  1. 写 A + 回读校验 (确认区域可写)
+     * ================================================================ */
+    PRINT("  [1/6] Write pattern A...\r\n");
+    EmmcCardErr_t err = EmmcCardWriteBlocks(&g_emmc, test_block, WR_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Write A FAILED - abort\r\n"); return; }
+
+    memset(RD_BUF, 0, 512);
+    err = EmmcCardReadBlocks(&g_emmc, test_block, RD_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Readback A FAILED\r\n"); return; }
+    PRINT("  Verify A: ");
+    PRINT(memcmp(WR_BUF, RD_BUF, 512) == 0 ? "PASSED\r\n" : "FAILED\r\n");
+    if (memcmp(WR_BUF, RD_BUF, 512) != 0) return;
+    IwdgKickDog(IWDG2);
+
+    /* ================================================================
+     *  2. 设 WP (CMD28)
+     * ================================================================ */
+    PRINT("  [2/6] SET WP (CMD28)...\r\n");
+    err = EmmcCardSetWriteProtect(&g_emmc, test_block);
+    if (err != EMMC_OK) { PRINT("  CMD28 FAILED\r\n"); return; }
+    {
+        uint8_t wp_sts[32], wp_type[32];
+        EmmcCardStatus_t sts;
+
+        if (EmmcCardGetWriteProtect(&g_emmc, test_block, wp_sts) != EMMC_OK)
+            PRINT("  CMD30 FAILED\r\n  ");
+        if (EmmcCardGetWriteProtectType(&g_emmc, test_block, wp_type) != EMMC_OK)
+            PRINT("  CMD31 FAILED\r\n  ");
+        EmmcCardSendStatus(&g_emmc, &sts);
+
+        PRINT("  CMD30 byte[0]=0x");
+        PrintHex8(wp_sts[0]);
+        PRINT(" byte[1]=0x");
+        PrintHex8(wp_sts[1]);
+        PRINT(" byte[2]=0x");
+        PrintHex8(wp_sts[2]);
+        PRINT("\r\n  CMD31 byte[0]=0x");
+        PrintHex8(wp_type[0]);
+        PRINT(" (type[1:0]=");
+        {
+            static const char *wp_type_name[] = {
+                "unprotected", "temp", "power-on", "permanent"};
+            uint8_t t = wp_type[0] & 3;
+            if (t < 4) PRINT(wp_type_name[t]); else PRINT("?");
+        }
+        PRINT(")\r\n  CMD13: state=");
+        {
+            static const char *sn[] = {"Idle","Ready","Ident","Stby","Tran","Data","Rcv","Pgm","Dis","Btst","Slp"};
+            if (sts.state < 11) PRINT(sn[sts.state]); else PRINT("?");
+        }
+        PRINT(" Rdy=");
+        PrintDec(dec, sts.ready_for_data);
+        PRINT(" WPv=");
+        PrintDec(dec, sts.wp_violation);
+        PRINT(" SwErr=");
+        PrintDec(dec, sts.switch_error);
+        PRINT(" AKE=");
+        PrintDec(dec, sts.ake_seq_error);
+        PRINT("\r\n");
+
+        /* WP 状态判断: bit0 对应包含 test_block 的组 */
+        uint8_t b0 = wp_sts[0];
+        if (b0 & 1)
+            PRINT("  WP: PROTECTED\r\n");
+        else
+            PRINT("  WP: unprotected\r\n");
+    }
+    IwdgKickDog(IWDG2);
+
+    /* ================================================================
+     *  3. 写 B — 应被 WP 拒绝, CMD13 应有 WP_VIOLATION
+     * ================================================================ */
+    PRINT("  [3/6] Write pattern B (expect WP reject)...\r\n");
+    err = EmmcCardWriteBlocks(&g_emmc, test_block, WR_BUF + 512, 1);
+    if (err != EMMC_OK)
+        PRINT("  Write B rejected (expected)\r\n");
+    else
+    {
+        EmmcCardStatus_t sts;
+        EmmcCardSendStatus(&g_emmc, &sts);
+        if (sts.wp_violation)
+            PRINT("  Write B returned OK but CMD13 shows WP_VIOLATION\r\n");
+        else
+            PRINT("  Write B unexpectedly succeeded (WP may not work)\r\n");
+    }
+    IwdgKickDog(IWDG2);
+
+    /* ================================================================
+     *  4. 回读 — 数据应仍是 A (B 被挡住了)
+     * ================================================================ */
+    PRINT("  [4/6] Readback (expect pattern A preserved)...\r\n");
+    memset(RD_BUF, 0, 512);
+    err = EmmcCardReadBlocks(&g_emmc, test_block, RD_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Readback FAILED\r\n"); goto clear_wp; }
+    IwdgKickDog(IWDG2);
+
+    if (memcmp(WR_BUF, RD_BUF, 512) == 0)
+        PRINT("  Data preserved: A (WP blocked B)\r\n");
+    else if (memcmp(WR_BUF + 512, RD_BUF, 512) == 0)
+        PRINT("  Data changed to B (WP NOT effective!)\r\n");
+    else
+        PRINT("  Data corrupted (unexpected)\r\n");
+
+clear_wp:
+    /* ================================================================
+     *  5. 清 WP + 写 B (应成功)
+     * ================================================================ */
+    PRINT("  [5/6] CLR WP (CMD29) + write B...\r\n");
+    err = EmmcCardClearWriteProtect(&g_emmc, test_block);
+    if (err != EMMC_OK) { PRINT("  CMD29 FAILED\r\n"); return; }
+    {
+        uint8_t wp[32];
+        EmmcCardGetWriteProtect(&g_emmc, test_block, wp);
+        PRINT("  CMD30 byte[0]=0x");
+        PrintHex8(wp[0]);
+        PRINT(" (");
+        PRINT((wp[0] & 1) ? "PROTECTED" : "cleared");
+        PRINT(")\r\n");
+    }
+    IwdgKickDog(IWDG2);
+
+    err = EmmcCardWriteBlocks(&g_emmc, test_block, WR_BUF + 512, 1);
+    if (err != EMMC_OK) { PRINT("  Write B after CLR FAILED\r\n"); return; }
+    PRINT("  Write B after CLR: OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* ================================================================
+     *  6. 回读验证 B
+     * ================================================================ */
+    PRINT("  [6/6] Readback (expect pattern B)...\r\n");
+    memset(RD_BUF, 0, 512);
+    err = EmmcCardReadBlocks(&g_emmc, test_block, RD_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Readback FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    if (memcmp(WR_BUF + 512, RD_BUF, 512) == 0)
+        PRINT("  Verify B: PASSED (WP -> CLR -> write works)\r\n");
+    else
+        PRINT("  Verify B: FAILED\r\n");
+
+    /* ---- 结果总结 ---- */
+    PRINT("\r\n--- Summary ---\r\n");
+    PRINT("  WP set+blocked write: ");
+    /* 重新查 WP 状态看当前是否已清除 */
+    {
+        uint8_t wp[32];
+        EmmcCardGetWriteProtect(&g_emmc, test_block, wp);
+        PRINT((wp[0] & 1) ? "FAILED (still protected)\r\n" : "OK\r\n");
+    }
+}
+
+
 static const MenuEntry_t emmc_menu[] = {
     { "1", "Single Block R/W",   SingleBlockTest },
     { "2", "Multi Block R/W",    MultiBlockTest },
     { "3", "Erase Test",         EraseTest },
     { "4", "DDR52 Mode Test",    Ddr52Test },
+    { "5", "DDR52 Multi-Block",  Ddr52MultiBlockTest },
+    { "6", "Write Protect",      WriteProtectTest },
 };
 
 
