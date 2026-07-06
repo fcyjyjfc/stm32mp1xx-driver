@@ -4,7 +4,7 @@
 #include "stm32mp1xx_i2c.h"
 #include "at24cxx.h"
 #include "si7006.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static const char essay[] =
     "Embedded systems development on bare-metal ARM processors requires careful "

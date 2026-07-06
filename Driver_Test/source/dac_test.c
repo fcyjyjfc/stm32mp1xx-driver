@@ -6,7 +6,7 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
-#include "test_common.h"
+#include "common_test.h"
 
 /* ========================================================================
  *  DAC 写值后用 ADC2 内部通道回读验证

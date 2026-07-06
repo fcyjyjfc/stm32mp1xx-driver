@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "common_test.h"
 
 
 void DmaTest(void)

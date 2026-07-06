@@ -1,4 +1,4 @@
-#include "test_common.h"
+#include "common_test.h"
 #include "stm32mp1xx_mdma.h"
 #include "stm32mp1xx_rcc.h"
 

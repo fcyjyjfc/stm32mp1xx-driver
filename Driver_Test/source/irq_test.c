@@ -5,7 +5,7 @@
 #include "stm32mp1xx_gic.h"
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_rcc.h"
-#include "test_common.h"
+#include "common_test.h"
 /*
  * ========== 子菜单函数声明 ==========
  */

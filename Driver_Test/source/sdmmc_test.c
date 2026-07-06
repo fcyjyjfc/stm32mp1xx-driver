@@ -2,7 +2,7 @@
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_rcc.h"
 #include "sd_card.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static SdCard_t g_card;
 /* 多块测试用大缓冲区: 256 块 × 512B = 128KB */

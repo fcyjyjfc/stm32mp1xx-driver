@@ -1,5 +1,5 @@
 #include "stm32mp1xx_gpio.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static void GpioInit(void)
 {

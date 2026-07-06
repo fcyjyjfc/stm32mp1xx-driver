@@ -6,7 +6,7 @@
  */
 
 #include "stm32mp1xx_iwdg.h"
-#include "test_menu.h"
+#include "menu_test.h"
 #include "stm32mp1xx_usart.h"
 #include <string.h>
 

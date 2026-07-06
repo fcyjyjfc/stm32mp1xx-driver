@@ -6,7 +6,7 @@
 #include "stm32mp1xx_usart.h"
 #include "stm32mp1xx_iwdg.h"
 #include "stm32mp1xx_rcc.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static volatile uint32_t tim6_irq_cnt = 0;          /* TIM6 中断计数 */
 

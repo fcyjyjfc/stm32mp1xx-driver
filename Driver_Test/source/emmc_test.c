@@ -10,7 +10,7 @@
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_rcc.h"
 #include "emmc_card.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static EmmcCard_t g_emmc;
 /* 多块测试用缓冲区: 128 块 × 512B × 2 (写+读) = 128KB */

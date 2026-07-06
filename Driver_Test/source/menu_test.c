@@ -1,6 +1,6 @@
 #include <string.h>
-#include "test_menu.h"
-#include "test_common.h"
+#include "menu_test.h"
+#include "common_test.h"
 
 extern void GpioTest(void);
 extern void SpiTest(void);

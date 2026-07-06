@@ -1,5 +1,5 @@
-#ifndef TEST_COMMON_H_
-#define TEST_COMMON_H_
+#ifndef COMMON_TEST_H_
+#define COMMON_TEST_H_
 
 #include <string.h>
 #include <stdint.h>
@@ -28,4 +28,4 @@ typedef struct {
 
 void RunSubMenu(const char *title, const MenuEntry_t *items, int count);
 
-#endif /* TEST_COMMON_H_ */
+#endif /* COMMON_TEST_H_ */

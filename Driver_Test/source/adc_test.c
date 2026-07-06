@@ -8,7 +8,7 @@
 #include "stm32mp1xx_exti.h"
 #include "stm32mp1xx_gic.h"
 #include "stm32mp1xx_gpio.h"
-#include "test_common.h"
+#include "common_test.h"
 
 /* 内部通道（仅 ADC2）*/
 static const uint32_t g_chans[] = {

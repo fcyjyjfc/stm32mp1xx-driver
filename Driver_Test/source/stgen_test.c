@@ -1,7 +1,7 @@
 #include <string.h>
 #include "stm32mp1xx_stgen.h"
 #include "stm32mp1xx_rcc.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static inline uint64_t CpuTimRead(void)
 {

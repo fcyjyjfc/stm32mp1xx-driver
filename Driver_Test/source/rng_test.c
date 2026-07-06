@@ -1,6 +1,6 @@
 #include <string.h>
 #include "stm32mp1xx_rng.h"
-#include "test_common.h"
+#include "common_test.h"
 
 
 static void TestBasicRead(void)

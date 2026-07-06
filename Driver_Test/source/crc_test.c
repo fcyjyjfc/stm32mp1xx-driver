@@ -1,6 +1,6 @@
 #include <string.h>
 #include "stm32mp1xx_crc.h"
-#include "test_common.h"
+#include "common_test.h"
 
 
 /* CRC-32 (Ethernet) 已知值测试向量 */

@@ -4,7 +4,7 @@
 #include "stm32mp1xx_rcc.h"
 #include "w25qxx.h"
 #include "m74hc595.h"
-#include "test_common.h"
+#include "common_test.h"
 
 static SpiCfg_t Spi4Cfg;
 
