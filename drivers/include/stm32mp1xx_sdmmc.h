@@ -206,6 +206,7 @@ typedef struct {
     SdmmcRespType_t  resp_type;
     SdmmcCmdTrans_t  cmdtrans;
     SdmmcCmdStop_t   cmdstop;
+    uint8_t          waitpend;   /* 置位后 CPSM 等 DAT0 忙释放再设 CMDREND (R1b 命令) */
 } SdmmcCmd_t;
 
 typedef struct {

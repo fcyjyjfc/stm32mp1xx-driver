@@ -355,12 +355,25 @@
 | CMD30 SEND_WRITE_PROT | 通过 (状态全 0) | 读 32 bits (4 字节, 32 组), 硬件响应正常但此 eMMC 返回的 WP 状态全 0 |
 | CMD31 SEND_WRITE_PROT_TYPE | 通过 (状态全 0) | 读 64 bits (8 字节, 32 组 × 2 bits), 硬件响应正常但此 eMMC 返回的 WP 类型全 0 |
 
+### Sleep/Awake
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| CMD5 Sleep (Standby → Slp) | 通过 | Sleep 前 Tran, 后 Slp(10), CMD13 验证状态切换正确 |
+| CMD5 Awake (Slp → Standby → Tran) | 通过 | Awake 后回到 Tran(4), 状态恢复 |
+| Read during sleep (状态检查) | 通过 | 状态检查拒绝 (WRONG_STATE), DPSM 不受影响 |
+| R/W after wake | 通过 | 唤醒后 CMD24 写 + CMD17 回读, memcmp 512B 校验通过 |
+| CMD5 参数 | bit15=1 进入 Sleep, bit15=0 唤醒 (符合 JESD84-B51 规范) |
+
 ### 新增接口
 
 | 函数 | 说明 |
 |------|------|
 | `EmmcCardSetDdrMode(card, width, target_hz)` | 封装 DDR 切换规范顺序: EmmcCardSetClock(HS_TIMING=1) → EmmcCardSetBusWidth(BUS_WIDTH=5/6) |
 | `EmmcCardReadStatus(card, &sts)` | 一站式获取: CMD13 卡状态 + CLKCR 实时配置(位宽/DDR/时钟) + 缓存值 |
+| `EmmcCardSleep(card)` | CMD5 Sleep (Standby→Slp), R1b, 含 CMD7 deselect + WaitBusy |
+| `EmmcCardAwake(card)` | CMD5 Awake (Slp→Standby→Tran), R1b, 含 WaitBusy + CMD7 select |
+| `EmmcCardSendStatus(card, &sts)` | CMD13 SEND_STATUS, 自动解析 R1 到 EmmcCardStatus_t |
 | `EmmcCardSetWriteProtect(card, block)` | CMD28 SET_WRITE_PROT, R1b |
 | `EmmcCardClearWriteProtect(card, block)` | CMD29 CLR_WRITE_PROT, R1b |
 | `EmmcCardGetWriteProtect(card, start_group, &wp[4])` | CMD30 SEND_WRITE_PROT, 32 bits (4 字节) bitmap |
@@ -382,3 +395,4 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 问题 | 说明 |
 |------|------|
 | CMD30/31 返回 WP 状态全 0 | 此 eMMC (NCard) 的 CMD30 SEND_WRITE_PROT 和 CMD31 SEND_WRITE_PROT_TYPE 返回全 0, 但 CMD28/29 设/清 WP 功能正常, 写保护生效已验证 |
+| Sleep 期间误读写后 DPSM 挂死无法恢复 | Sleep 态下发 CMDTRANS 命令 (CMD17/18/24/25) 会触发 DPSM, 即使命令 CTIMEOUT, DPSM 仍滞留活跃态 (DPSMACT=1), FIFORST 复位无效, 后续所有命令失败。当前通过读写前状态检查预防, 恢复方法尚未找到 |

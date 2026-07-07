@@ -61,6 +61,11 @@ typedef enum {
 #define EMMC_CMD1_ARG         (EMMC_OCR_ACCESS_MODE | EMMC_OCR_VDD_27_36V)  /* 0x40FF8000 */
 
 
+/* ---- CMD5: SLEEP_AWAKE, arg [31:16]=RCA, [15]=Sleep/Awake ---- */
+#define EMMC_CMD5_SLEEP  (1U << 15)  /* arg bit15=1: 进入 Sleep */
+#define EMMC_CMD5_AWAKE  0U           /* arg bit15=0: 唤醒 */
+
+
 /* ===== CMD6 SWITCH 参数 ===== */
 
 /* CMD6 Access Mode: bits[25:24] */
@@ -110,13 +115,29 @@ typedef enum {
 } EmmcHsTiming_t;
 
 
+/* ===== eMMC 卡状态 (R1 bits 12:9) ===== */
+typedef enum {
+    EMMC_STATE_IDLE  = 0,
+    EMMC_STATE_READY = 1,
+    EMMC_STATE_IDENT = 2,
+    EMMC_STATE_STBY  = 3,
+    EMMC_STATE_TRAN  = 4,  /* Transfer: 正常读写 */
+    EMMC_STATE_DATA  = 5,
+    EMMC_STATE_RCV   = 6,
+    EMMC_STATE_PRG   = 7,
+    EMMC_STATE_DIS   = 8,
+    EMMC_STATE_BTST  = 9,
+    EMMC_STATE_SLP   = 10, /* Sleep: 低功耗 */
+} EmmcCardState_t;
+
+
 /* ===== 卡详细状态 (EmmcCardReadStatus) ===== */
 typedef struct {
     /* CMD13 R1 原始值 */
     uint32_t r1;
 
     /* 卡状态 */
-    uint8_t  card_state;         /* bits 12:9 */
+    EmmcCardState_t  card_state;         /* bits 12:9 */
     uint8_t  ready_for_data;     /* bit 8 */
     uint8_t  switch_error;       /* bit 7 */
     uint8_t  app_cmd;            /* bit 5 */
@@ -147,13 +168,13 @@ typedef struct {
 
 /* ---- CMD13 返回的状态 (R1) 解析 ---- */
 typedef struct {
-    uint32_t raw;              /* 原始 R1 状态值 */
-    uint8_t  state;            /* bits 12:9 — 卡状态 */
-    uint8_t  ready_for_data;   /* bit 8 */
-    uint8_t  switch_error;     /* bit 7 */
-    uint8_t  app_cmd;          /* bit 5 */
-    uint8_t  ake_seq_error;    /* bit 3 */
-    uint8_t  wp_violation;     /* bit 0 */
+    uint32_t          raw;            /* 原始 R1 状态值 */
+    EmmcCardState_t   state;          /* bits 12:9 — 卡状态 */
+    uint8_t           ready_for_data; /* bit 8 */
+    uint8_t           switch_error;   /* bit 7 */
+    uint8_t           app_cmd;        /* bit 5 */
+    uint8_t           ake_seq_error;  /* bit 3 */
+    uint8_t           wp_violation;   /* bit 0 */
 } EmmcCardStatus_t;
 
 
@@ -164,6 +185,13 @@ typedef enum {
     EMMC_ERR_INIT_TIMEOUT,
     EMMC_ERR_IO,
     EMMC_ERR_PARAM,
+    EMMC_ERR_WRONG_STATE,  /* 卡不在期望的状态 (如 Sleep 时调用读写) */
+    EMMC_ERR_SLEEP_CMD7,   /* CMD7 deselect 失败 */
+    EMMC_ERR_SLEEP_CMD5,   /* CMD5 sleep 失败 */
+    EMMC_ERR_SLEEP_BUSY,   /* Sleep DAT0 busy 超时 */
+    EMMC_ERR_AWAKE_CMD5,   /* CMD5 awake 失败 */
+    EMMC_ERR_AWAKE_BUSY,   /* Awake DAT0 busy 超时 */
+    EMMC_ERR_AWAKE_CMD7,   /* CMD7 reselect 失败 */
 } EmmcCardErr_t;
 
 
@@ -241,6 +269,10 @@ EmmcCardErr_t EmmcCardGetWriteProtectType(EmmcCard_t *card, uint32_t block, uint
 
 /* 等待写操作后 BUSYD0 释放 (设备内部编程完成) */
 EmmcCardErr_t EmmcCardWaitBusy(EmmcCard_t *card);
+
+/* Sleep/Awake: CMD5, R1b. Sleep 前卡需在 Transfer 态, 唤醒后回到 Transfer 态 */
+EmmcCardErr_t EmmcCardSleep(EmmcCard_t *card);
+EmmcCardErr_t EmmcCardAwake(EmmcCard_t *card);
 
 /* 发 CMD13 SEND_STATUS 查询当前设备状态, 自动解析至 EmmcCardStatus_t */
 EmmcCardErr_t EmmcCardSendStatus(EmmcCard_t *card, EmmcCardStatus_t *sts);

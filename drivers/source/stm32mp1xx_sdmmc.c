@@ -181,6 +181,8 @@ static SdmmcErr_t SdmmcCmdPhase(volatile SdmmcRegs_t *sdmmc,
         cmdr |= SDMMC_CMDR_CMDTRANS;  /* 通知 DPSM: 命令完成后开始数据传输 */
     if (cmd->cmdstop)
         cmdr |= SDMMC_CMDR_CMDSTOP;   /* 通知 DPSM: 中止当前数据传输 (CMD12) */
+    if (cmd->waitpend)
+        cmdr |= SDMMC_CMDR_WAITPEND;  /* R1b: 等 DAT0 忙释放后再置 CMDREND */
 
     sdmmc->CMDR = cmdr;
 

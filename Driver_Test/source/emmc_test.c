@@ -76,7 +76,9 @@ static void PrintCardInfo(EmmcCard_t *card)
         PRINT(" (bits[83:72]) alt[95:84]=0x");
         PrintHex8((uint8_t)(alt_ccc >> 8));
         PrintHex8((uint8_t)alt_ccc);
-        PRINT(" (Cls6_83=");
+        PRINT(" (Cls5_83=");
+        PRINT((card->ccc & (1 << 5)) ? "1" : "0");
+        PRINT(" Cls6_83=");
         PRINT((card->ccc & (1 << 6)) ? "1" : "0");
         PRINT(" Cls6_95=");
         PRINT((alt_ccc & (1 << 6)) ? "1" : "0");
@@ -943,6 +945,137 @@ clear_wp:
 }
 
 
+/* ================================
+ *  7. Sleep/Awake 测试
+ * ================================ */
+static void SleepAwakeTest(void)
+{
+    char dec[16];
+    EmmcCardStatus_t sts;
+
+    PRINT("\r\n----- Sleep/Awake Test -----\r\n");
+    PRINT("  S_A_TIMEOUT[216]=0x");
+    PrintHex8(g_emmc.ext_csd[216]);
+    PRINT(" S_C_VCC[220]=0x");
+    PrintHex8(g_emmc.ext_csd[220]);
+    PRINT(" CLASS_6_CTRL[59]=0x");
+    PrintHex8(g_emmc.ext_csd[59]);
+    PRINT("\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* 记录 sleep 前状态 */
+    EmmcCardSendStatus(&g_emmc, &sts);
+    PRINT("  State before sleep: ");
+    {
+        static const char *sn[] = {"Idle","Ready","Ident","Stby","Tran","Data","Rcv","Pgm","Dis","Btst","Slp"};
+        PRINT((sts.state < 11) ? sn[sts.state] : "?");
+    }
+    PRINT("\r\n");
+
+    /* Sleep */
+    PRINT("  Sleep...\r\n");
+    EmmcCardErr_t err = EmmcCardSleep(&g_emmc);
+    if (err != EMMC_OK)
+    {
+        static const char *err_names[] = {
+            [EMMC_ERR_SLEEP_CMD7] = "CMD7 deselect",
+            [EMMC_ERR_SLEEP_CMD5] = "CMD5 sleep",
+            [EMMC_ERR_SLEEP_BUSY] = "DAT0 busy timeout",
+        };
+        uint32_t star = g_emmc.sdmmc->STAR;
+        uint32_t respcmd = g_emmc.sdmmc->RESPCMDR;
+        uint32_t resp1 = g_emmc.sdmmc->RESP1R;
+        PRINT("  Sleep FAILED: ");
+        if (err >= EMMC_ERR_SLEEP_CMD7 && err <= EMMC_ERR_SLEEP_BUSY)
+            PRINT(err_names[err]);
+        else
+            { PRINT("unknown("); PrintDec(dec, err); PRINT(dec); PRINT(")"); }
+        PRINT(" STAR=0x");
+        PrintHex32(dec, star);
+        PRINT(dec);
+        if (star & (1U << 3))  PRINT(" CTIMEOUT");
+        if (star & (1U << 10)) PRINT(" CCRCFAIL");
+        if (star & (1U << 5))  PRINT(" CMDREND");
+        PRINT(" RESPCMDR=0x");
+        PrintHex32(dec, respcmd);
+        PRINT(dec);
+        PRINT(" RESP1R=0x");
+        PrintHex32(dec, resp1);
+        PRINT(dec);
+        PRINT("\r\n");
+        return;
+    }
+    PRINT("  Sleep OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* Sleep 中 CMD13 应返回 Sleep 态 */
+    EmmcCardSendStatus(&g_emmc, &sts);
+    PRINT("  State after sleep: ");
+    {
+        static const char *sn[] = {"Idle","Ready","Ident","Stby","Tran","Data","Rcv","Pgm","Dis","Btst","Slp"};
+        PRINT((sts.state < 11) ? sn[sts.state] : "?");
+    }
+    PRINT("\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* Sleep 中试读块, 应被状态检查拒绝 (EMMC_ERR_WRONG_STATE) */
+    {
+        EmmcCardErr_t rerr = EmmcCardReadBlocks(&g_emmc, 0, (void *)WR_BUF, 1);
+        if (rerr == EMMC_ERR_WRONG_STATE)
+        {
+            PRINT("  Read during sleep: WRONG_STATE (expected)\r\n");
+        }
+        else
+        {
+            PRINT("  Read during sleep: unexpected err=");
+            PrintDec(dec, (int32_t)rerr);
+            PRINT(dec);
+            PRINT("\r\n");
+        }
+    }
+    IwdgKickDog(IWDG2);
+
+    /* Awake */
+    PRINT("  Awake...\r\n");
+    err = EmmcCardAwake(&g_emmc);
+    if (err != EMMC_OK) { PRINT("  Awake FAILED\r\n"); return; }
+    PRINT("  Awake OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* 唤醒后应回到 Transfer 态, 验证可读写 */
+    EmmcCardSendStatus(&g_emmc, &sts);
+    PRINT("  State after wake: ");
+    {
+        static const char *sn[] = {"Idle","Ready","Ident","Stby","Tran","Data","Rcv","Pgm","Dis","Btst","Slp"};
+        PRINT((sts.state < 11) ? sn[sts.state] : "?");
+    }
+    PRINT(" (expect Tran)\r\n");
+
+    if (sts.state != EMMC_STATE_TRAN)
+    {
+        PRINT("  State != Tran, skip R/W verify\r\n");
+        return;
+    }
+
+    /* 唤醒后验证读写: 单块写 + 回读 */
+    PRINT("  Verify R/W after wake...\r\n");
+    memset(WR_BUF, 0xAA, 512);
+    err = EmmcCardWriteBlocks(&g_emmc, 15000000, WR_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Write FAILED\r\n"); return; }
+    IwdgKickDog(IWDG2);
+
+    memset(RD_BUF, 0, 512);
+    err = EmmcCardReadBlocks(&g_emmc, 15000000, RD_BUF, 1);
+    if (err != EMMC_OK) { PRINT("  Read FAILED\r\n"); return; }
+
+    if (memcmp(WR_BUF, RD_BUF, 512) == 0)
+        PRINT("  R/W Verify PASSED\r\n");
+    else
+        PRINT("  R/W Verify FAILED\r\n");
+}
+
+
 static const MenuEntry_t emmc_menu[] = {
     { "1", "Single Block R/W",   SingleBlockTest },
     { "2", "Multi Block R/W",    MultiBlockTest },
@@ -950,6 +1083,7 @@ static const MenuEntry_t emmc_menu[] = {
     { "4", "DDR52 Mode Test",    Ddr52Test },
     { "5", "DDR52 Multi-Block",  Ddr52MultiBlockTest },
     { "6", "Write Protect",      WriteProtectTest },
+    { "7", "Sleep/Awake",        SleepAwakeTest },
 };
 
 

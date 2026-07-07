@@ -14,8 +14,6 @@
 /* 调试用: 导出 CMD1 过程中的 OCR 响应和 RESPCMDR */
 volatile uint32_t g_emmc_dbg_ocr;
 volatile uint32_t g_emmc_dbg_respcmd;
-/* g_sdmmc_dbg_last_star 来自 stm32mp1xx_sdmmc.c */
-extern volatile uint32_t g_sdmmc_dbg_last_star;
 
 
 /* TRAN_SPEED 解码表 (MMC Spec v5.1 Table 7-7 / SD Spec Table 5-6 同编码) */
@@ -51,7 +49,6 @@ static SdmmcErr_t SendCmd(volatile SdmmcRegs_t *sdmmc,
     };
     return SdmmcSendCmd(sdmmc, &cmd, resp);
 }
-
 
 /* ---- 公开接口 ---- */
 
@@ -381,6 +378,79 @@ EmmcCardErr_t EmmcCardGetInfo(EmmcCard_t *card)
 
 
 /**
+ * @brief CMD5 SLEEP — 让 eMMC 进入低功耗睡眠状态
+ *
+ * 状态表: Tran → CMD5(Sleep) → Slp. 唤醒后回到 Standby, 需 CMD7 选回.
+ * Sleep 后只响应 CMD0(复位) 和 CMD5(唤醒).
+ * 唤醒后所有配置(总线宽度/HS 时序/DDR/擦除组等)保持不变.
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardSleep(EmmcCard_t *card)
+{
+    SdmmcErr_t err;
+    uint32_t resp[4] = {0};
+
+    /* CMD7: 取消选择 (arg=0, RESP_NONE), Transfer → Standby */
+    SdmmcCmd_t cmd7desel = { .index = EMMC_CMD_SEL_DESEL_CARD, .arg = 0,
+                             .resp_type = SDMMC_RESP_NONE,
+                             .cmdtrans = SDMMC_CMD_NODATA, .cmdstop = SDMMC_CMD_NOSTOP };
+    (void)SdmmcSendCmd(card->sdmmc, &cmd7desel, NULL);
+
+    /* CMD5(R1b): Standby → Sleep, arg=RCA<<16 | bit15=1 (规范) */
+    SdmmcCmd_t cmd5 = { .index = EMMC_CMD_SLEEP_AWAKE,
+                        .arg = (card->rca << 16) | (1U << 15),
+                        .resp_type = SDMMC_RESP_SHORT,
+                        .cmdtrans = SDMMC_CMD_NODATA, .cmdstop = SDMMC_CMD_NOSTOP };
+    err = SdmmcSendCmd(card->sdmmc, &cmd5, resp);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_SLEEP_CMD5;
+
+    err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_SLEEP_BUSY;
+
+    return EMMC_OK;
+}
+
+
+/**
+ * @brief CMD5 AWAKE — 唤醒 eMMC, 恢复到 Transfer 态
+ *
+ * CMD5(bit15=1, Sleep→Standby) → CMD7(select, Standby→Transfer).
+ * 唤醒后配置不变, 无需重新初始化.
+ * @return EMMC_OK / EMMC_ERR_IO
+ */
+EmmcCardErr_t EmmcCardAwake(EmmcCard_t *card)
+{
+    uint32_t resp[4] = {0};
+
+    /* CMD5(R1b): Sleep → Standby, arg=RCA<<16 | bit15=0 (规范 Awake) */
+    SdmmcCmd_t cmd5 = { .index = EMMC_CMD_SLEEP_AWAKE,
+                        .arg = (card->rca << 16) | 0U,
+                        .resp_type = SDMMC_RESP_SHORT,
+                        .cmdtrans = SDMMC_CMD_NODATA, .cmdstop = SDMMC_CMD_NOSTOP };
+    SdmmcErr_t err = SdmmcSendCmd(card->sdmmc, &cmd5, resp);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_AWAKE_CMD5;
+
+    err = SdmmcWaitBusy(card->sdmmc, SDMMC_BUSY_TIMEOUT);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_AWAKE_BUSY;
+
+    /* CMD7: 重新选择, Standby → Transfer */
+    SdmmcCmd_t cmd7sel = { .index = EMMC_CMD_SEL_DESEL_CARD,
+                           .arg = card->rca << 16,
+                           .resp_type = SDMMC_RESP_SHORT,
+                           .cmdtrans = SDMMC_CMD_NODATA, .cmdstop = SDMMC_CMD_NOSTOP };
+    err = SdmmcSendCmd(card->sdmmc, &cmd7sel, NULL);
+    if (err != SDMMC_OK)
+        return EMMC_ERR_AWAKE_CMD7;
+
+    return EMMC_OK;
+}
+
+
+/**
  * @brief 等待写操作后 BUSYD0 释放 (设备内部编程完成)
  * @return EMMC_OK / EMMC_ERR_IO
  */
@@ -405,6 +475,11 @@ EmmcCardErr_t EmmcCardWaitBusy(EmmcCard_t *card)
 EmmcCardErr_t EmmcCardReadBlocks(EmmcCard_t *card, uint32_t block, void *buf, uint32_t count)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+
+    {   EmmcCardStatus_t _s;
+        if (EmmcCardSendStatus(card, &_s) != EMMC_OK || _s.state != EMMC_STATE_TRAN)
+            return EMMC_ERR_WRONG_STATE;
+    }
 
     for (uint32_t i = 0; i < count; i++)
     {
@@ -436,6 +511,11 @@ EmmcCardErr_t EmmcCardReadBlocks(EmmcCard_t *card, uint32_t block, void *buf, ui
 EmmcCardErr_t EmmcCardWriteBlocks(EmmcCard_t *card, uint32_t block, const void *buf, uint32_t count)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+
+    {   EmmcCardStatus_t _s;
+        if (EmmcCardSendStatus(card, &_s) != EMMC_OK || _s.state != EMMC_STATE_TRAN)
+            return EMMC_ERR_WRONG_STATE;
+    }
 
     for (uint32_t i = 0; i < count; i++)
     {
@@ -474,6 +554,11 @@ EmmcCardErr_t EmmcCardReadMulti(EmmcCard_t *card, uint32_t block, void *buf, uin
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
 
+    {   EmmcCardStatus_t _s;
+        if (EmmcCardSendStatus(card, &_s) != EMMC_OK || _s.state != EMMC_STATE_TRAN)
+            return EMMC_ERR_WRONG_STATE;
+    }
+
     /* CMD23: 预设定块数, 传输完成后自动终止 */
     SdmmcErr_t err = SendCmd(sdmmc, EMMC_CMD_SET_BLOCK_COUNT, count,
                              SDMMC_RESP_SHORT, NULL);
@@ -509,6 +594,11 @@ EmmcCardErr_t EmmcCardReadMulti(EmmcCard_t *card, uint32_t block, void *buf, uin
 EmmcCardErr_t EmmcCardWriteMulti(EmmcCard_t *card, uint32_t block, const void *buf, uint32_t count)
 {
     volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+
+    {   EmmcCardStatus_t _s;
+        if (EmmcCardSendStatus(card, &_s) != EMMC_OK || _s.state != EMMC_STATE_TRAN)
+            return EMMC_ERR_WRONG_STATE;
+    }
 
     /* CMD23: 预设定块数 */
     SdmmcErr_t err = SendCmd(sdmmc, EMMC_CMD_SET_BLOCK_COUNT, count,
