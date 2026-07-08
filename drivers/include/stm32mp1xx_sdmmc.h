@@ -265,33 +265,37 @@ extern SdmmcErr_t SdmmcWriteDataLL(volatile SdmmcRegs_t *sdmmc,
                                     uint32_t resp[4]);
 
 
-/* ===== 中断模式 (非阻塞) ===== */
+/* ===== 中断模式 (非阻塞) — 每个 SDMMC 实例独立状态 ===== */
 
-/* 中断上下文: ISR 完成传输后置 1, 前台轮询此标志 */
-extern volatile uint32_t   g_sdmmc1_it_done;
-extern volatile SdmmcErr_t g_sdmmc1_it_result;
-extern volatile uint32_t   g_sdmmc1_btc_cnt;
-extern volatile uint32_t   g_sdmmc1_busy0end;
-extern volatile SdmmcRegs_t *g_it_sdmmc;
+#define SDMMC_DBG_TRACE_SIZE  64
 
-/* 调试跟踪: ISR/主循环原子写入 1=BTC 2=BAR置1 3=TXUNDERR 4=IDMATE */
-#define SDMMC_DBG_TRACE_SIZE 64
-extern volatile uint32_t g_sdmmc1_dbg_trace[SDMMC_DBG_TRACE_SIZE];
-extern volatile uint32_t g_sdmmc1_dbg_idx;
+/* 实例中断状态, 前台轮询字段 it_done / it_result / btc_cnt */
+typedef struct {
+    volatile uint32_t   it_done;
+    volatile SdmmcErr_t it_result;
+    volatile uint32_t   btc_cnt;
+    volatile uint32_t   busy0end;
+    volatile uint32_t   dbg_trace[SDMMC_DBG_TRACE_SIZE];
+    volatile uint32_t   dbg_idx;
+} SdmmcIrqState_t;
 
-/* 启动 LL 传输 (不阻塞), ISR 接管后续命令/数据/忙等阶段 */
-void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc,
+extern SdmmcIrqState_t g_sdmmc1_irq;
+extern SdmmcIrqState_t g_sdmmc2_irq;
+
+/* 启动 LL 传输 (不阻塞), irq 指向对应实例的 SdmmcIrqState_t, ISR 接管后续 */
+void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
                        const SdmmcCmd_t *cmd,
                        const SdmmcIdmaDesc_t *desc_first,
                        SdmmcBlockSize_t  block_size_log);
 
-void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc,
+void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
                       const SdmmcCmd_t *cmd,
                       const SdmmcIdmaDesc_t *desc_first,
                       SdmmcBlockSize_t  block_size_log);
 
-/* SDMMC1 中断处理入口, 由 do_irq → vector table 分发 */
+/* SDMMC1 / SDMMC2 独立中断入口, 编译时绑定, 由 do_irq → vector table 分发 */
 void Sdmmc1IrqHandler(void);
+void Sdmmc2IrqHandler(void);
 
 
 /* ===== 寄存器辅助操作 (供上层使用, 避免直接访问寄存器) ===== */

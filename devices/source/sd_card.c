@@ -521,8 +521,8 @@ void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
 
     if (!desc)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_PARAM;
-        g_sdmmc1_it_done = 1;
+        g_sdmmc1_irq.it_result = SDMMC_ERR_PARAM;
+        g_sdmmc1_irq.it_done = 1;
         return;
     }
 
@@ -545,12 +545,12 @@ void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
 	            .cmdtrans  = SDMMC_CMD_NODATA,
 	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_CTIMEOUT;
-        g_sdmmc1_it_done = 1;
+        g_sdmmc1_irq.it_result = SDMMC_ERR_CTIMEOUT;
+        g_sdmmc1_irq.it_done = 1;
         return;
     }
 
-    SdmmcStartWriteLL(sdmmc,
+    SdmmcStartWriteLL(sdmmc, &g_sdmmc1_irq,
             &(SdmmcCmd_t){
 	            .index     = SD_CMD_WRITE_MULTI,
 	            .arg       = addr,
@@ -572,8 +572,8 @@ void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
 
     if (!desc)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_PARAM;
-        g_sdmmc1_it_done = 1;
+        g_sdmmc1_irq.it_result = SDMMC_ERR_PARAM;
+        g_sdmmc1_irq.it_done = 1;
         return;
     }
 
@@ -596,12 +596,12 @@ void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,
 	            .cmdtrans  = SDMMC_CMD_NODATA,
 	            .cmdstop   = SDMMC_CMD_NOSTOP}, NULL) != SDMMC_OK)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_CTIMEOUT;
-        g_sdmmc1_it_done = 1;
+        g_sdmmc1_irq.it_result = SDMMC_ERR_CTIMEOUT;
+        g_sdmmc1_irq.it_done = 1;
         return;
     }
 
-    SdmmcStartReadLL(sdmmc,
+    SdmmcStartReadLL(sdmmc, &g_sdmmc1_irq,
             &(SdmmcCmd_t){
 	            .index     = SD_CMD_READ_MULTI,
 	            .arg       = addr,

@@ -249,6 +249,14 @@ EmmcCardErr_t EmmcCardWriteBlocks(EmmcCard_t *card, uint32_t block, const void *
 EmmcCardErr_t EmmcCardReadMulti(EmmcCard_t *card, uint32_t block, void *buf, uint32_t count);
 EmmcCardErr_t EmmcCardWriteMulti(EmmcCard_t *card, uint32_t block, const void *buf, uint32_t count);
 
+/* 中断模式: CMD23 用轮询, 数据传输用中断, 返回后前台轮询 g_sdmmc2_irq.it_done */
+void EmmcCardStartWriteMultiLL(EmmcCard_t *card, uint32_t block,
+                                const SdmmcIdmaDesc_t *desc,
+                                SdmmcBlockSize_t block_size_log);
+void EmmcCardStartReadMultiLL(EmmcCard_t *card, uint32_t block,
+                               const SdmmcIdmaDesc_t *desc,
+                               SdmmcBlockSize_t block_size_log);
+
 /* 擦除: CMD35(ERASE_GRP_START) → CMD36(ERASE_GRP_END) → CMD38(ERASE), R1b */
 EmmcCardErr_t EmmcCardErase(EmmcCard_t *card, uint32_t start_block, uint32_t end_block);
 

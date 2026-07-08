@@ -129,7 +129,7 @@ SdCardErr_t SdCardStopTransfer(SdCard_t *card);
 /* 擦除: CMD32 + CMD33 + CMD38 (R1b), 阻塞等卡忙结束 */
 SdCardErr_t SdCardErase(SdCard_t *card, uint32_t start_block, uint32_t end_block);
 
-/* 中断模式: CMD23 用轮询, 数据传输用中断, 返回后前台轮询 g_sdmmc1_it_done */
+/* 中断模式: CMD23 用轮询, 数据传输用中断, 返回后前台轮询 g_sdmmc1_irq.it_done */
 void SdCardStartWriteMultiLL(SdCard_t *card, uint32_t block,
                              const SdmmcIdmaDesc_t *desc, SdmmcBlockSize_t block_size_log);
 void SdCardStartReadMultiLL(SdCard_t *card, uint32_t block,

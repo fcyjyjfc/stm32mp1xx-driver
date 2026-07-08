@@ -293,9 +293,10 @@
 
 | 项目 | 说明 |
 |------|------|
+| ISR 实例绑定 | Sdmmc1IrqHandler(SDMMC1+g_sdmmc1_irq) / Sdmmc2IrqHandler(SDMMC2+g_sdmmc2_irq), 编译时硬编码, 无全局指针 |
 | 状态机 | CMDREND(清单标志)→DATAEND(完成,关MASKR+IDMA) |
 | BUSYD0 策略 | DATAEND 即完成, 不在 ISR 等 Busy; 下次 SdmmcStartLL 入口 if(BUSYD0)→ERR_BUSY |
-| IDMABTC | ISR 递增 g_sdmmc1_btc_cnt, 前台轮询变化→填数据+置 ABR |
+| IDMABTC | ISR 递增 g_sdmmc[1|2]_irq.btc_cnt, 前台轮询变化→填数据+置 ABR |
 | IDMATE | 无中断使能位(实测 MASKR 无效), 仅 STAR 标志+ICR 清除; ISR 被动检测 |
 
 ### 已知问题/修复记录
@@ -345,6 +346,7 @@
 | CMD13 卡状态 | **通过** | 切换后卡在 Transfer (Tran=4), 状态正确 |
 | 单块写 + 回读校验 | **通过** | CMD24 写 0xA5 pattern → CMD17 回读, memcmp 512B 校验通过 (之前 BUS_WIDTH=4 非法值导致 DTIMEOUT, 修正为 6 后正常) |
 | 切回 SDR 8-bit | **通过** | BUS_WIDTH=2 + CLEAR DDR, CLKCR 恢复 SDR 配置 |
+| DDR52 + 中断 LL 多节点 (8wr+2rd) | **通过** | 8-bit DDR 52MHz 下 CMD23+CMD25/18 中断 LL, 8×4096B 写 + 2×16384B 读非连续 desc, uint16_t 0~16383 全校验 |
 
 ### 写保护
 
@@ -354,6 +356,12 @@
 | CMD29 CLR_WRITE_PROT | 通过 | 清 WP 后再 CMD24 写入正常, 数据回读校验通过 |
 | CMD30 SEND_WRITE_PROT | 通过 (状态全 0) | 读 32 bits (4 字节, 32 组), 硬件响应正常但此 eMMC 返回的 WP 状态全 0 |
 | CMD31 SEND_WRITE_PROT_TYPE | 通过 (状态全 0) | 读 64 bits (8 字节, 32 组 × 2 bits), 硬件响应正常但此 eMMC 返回的 WP 类型全 0 |
+
+### 中断模式 (非阻塞)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| DDR52 + 中断 LL 多节点 | **通过** | 8-bit DDR 52MHz, CMD23 轮询+CMD25/18 中断, 8 节点写+2 节点读非连续 desc, 全 ABR=1 |
 
 ### Sleep/Awake
 

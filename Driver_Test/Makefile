@@ -5,8 +5,8 @@ OUTPUT_DIR = out
 
 CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 				-nostdinc -std=c99 -I../drivers/include -I../devices/include
-CFLAGS += -I"C:/Program Files (x86)/yagarto/arm-none-eabi/include"
-CFLAGS += -I"C:/Program Files (x86)/yagarto/lib/gcc/arm-none-eabi/4.6.2/include"
+CFLAGS += -I"D:/STM32TOOL/yagarto/arm-none-eabi/include"
+CFLAGS += -I"D:/STM32TOOL/yagarto/lib/gcc/arm-none-eabi/4.6.2/include"
 
 CROSS_COMPILE = arm-none-eabi-
 LD	= $(CROSS_COMPILE)ld

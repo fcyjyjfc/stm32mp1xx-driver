@@ -1076,6 +1076,234 @@ static void SleepAwakeTest(void)
 }
 
 
+/* GIC 中断配置: SDMMC2 IRQ 156, priority 5 */
+static void EmmcGicConfig(void)
+{
+    GicdSetGroup(GIC_SDMMC2);
+    GicdSetPriority(GIC_SDMMC2, 5);
+    GicdSetTarget(GIC_SDMMC2, 1);
+    GicdSetTrigMode(GIC_SDMMC2, 0);
+    GicRegisterIrq(GIC_SDMMC2, Sdmmc2IrqHandler);
+    GicdEnableInt(GIC_SDMMC2);
+    GicdInit();
+    GiccInit(10, 2);
+    __asm__ volatile(
+        "mrs r0, cpsr\n\t"
+        "bic r0, r0, #0x80\n\t"
+        "msr cpsr, r0\n\t"
+        :
+        :
+        : "r0"
+    );
+}
+
+static void EmmcGicCleanup(void)
+{
+    GicdDisableInt(GIC_SDMMC2);
+    g_sdmmc2_irq.it_done = 0;
+}
+
+
+/* ================================
+ *  8. DDR52 + 中断 LL 多节点测试
+ *     切 DDR52 → 中断 LL 写 8 节点 → 中断 LL 读 2 节点 → 校验 → 恢复 SDR
+ * ================================ */
+static void Ddr52LlItMultiBlockTest(void)
+{
+    char dec[16];
+    const uint32_t test_block = 15004000;
+    const uint32_t n_wr_nodes  = 8;
+    const uint32_t node_size   = 4096;       /* 8 × 4096 = 32 KB */
+    const uint32_t rd_sizes[2] = {16384, 16384};
+    int i;
+
+    PRINT("\r\n----- DDR52 + Interrupt LL Multi-Node -----\r\n");
+    PRINT("  Purpose: verify DDR52 + ISR + IDMA LL combo\r\n");
+    PRINT("  Mode:    DDR52 (8-bit, 52MHz) | interrupt | IDMA LL\r\n");
+    PRINT("  Block:   ");
+    PrintDec(dec, test_block);
+    PRINT(dec);
+    PRINT("\r\n");
+    PRINT("  Write:   ");
+    PrintDec(dec, n_wr_nodes);
+    PRINT(dec);
+    PRINT(" nodes x 4096B = 32 KB, all ABR=1\r\n");
+    PRINT("  Read:    2 nodes (16384+16384=32 KB), non-contiguous desc\r\n");
+    PRINT("  Data:    uint16_t 0~16383\r\n");
+    PRINT("  Expect:  16384 values match, BTC=8(wr)+2(rd)\r\n");
+    PRINT("\r\n");
+
+    IwdgKickDog(IWDG2);
+
+    /* ---- 切换 DDR52 ---- */
+    PRINT("  Switching to DDR52 (8-bit DDR, 52MHz)...\r\n");
+    EmmcCardErr_t err = EmmcCardSetDdrMode(&g_emmc, EMMC_BUS_WIDTH_8BIT_DDR, 52000000);
+    if (err != EMMC_OK)
+    {
+        PRINT("  DDR52 switch FAILED\r\n");
+        return;
+    }
+    PRINT("  DDR52 switch OK\r\n");
+    IwdgKickDog(IWDG2);
+
+    /* ---- 写缓冲区: 8 节点 × 4096B, 填递增 uint16_t 0~16383 ---- */
+    uint8_t *wr_buf[8];
+    for (i = 0; i < 8; i++)
+        wr_buf[i] = g_buf + i * node_size;
+
+    uint8_t *rd_buf[2];
+    rd_buf[0] = g_buf + 65536;
+    rd_buf[1] = g_buf + 81920;
+
+    uint16_t v = 0;
+    for (i = 0; i < 8; i++)
+    {
+        uint16_t *p = (uint16_t *)wr_buf[i];
+        for (uint32_t j = 0; j < node_size / 2; j++)
+            p[j] = v++;
+    }
+
+    /* ---- 写描述符: 8 节点全 ABR=1, ULS=0 (所有节点相同 size,
+     *      由 SdmmcStartLL 的 IDMABSIZER 寄存器预设, 后续复用) ---- */
+    SdmmcIdmaDesc_t desc_wr[8];
+    for (i = 0; i < 8; i++)
+    {
+        desc_wr[i].buf_addr = (uint32_t)(uintptr_t)wr_buf[i];
+        desc_wr[i].buf_size = node_size;
+        uint32_t idmalar = SDMMC_IDMALAR_ABR;
+        if (i < 7)
+        {
+            idmalar |= SDMMC_IDMALAR_ULA;
+            idmalar |= (uint32_t)((i + 1) * sizeof(SdmmcIdmaDesc_t));
+        }
+        desc_wr[i].idmalar = idmalar;
+    }
+
+    /* ---- 读描述符: pool[2] → pool[7] 非连续, ULS=0 复用前 size ---- */
+    SdmmcIdmaDesc_t desc_rd_pool[10];
+    uint32_t idmala_rd = (7 - 2) * (uint32_t)sizeof(SdmmcIdmaDesc_t);
+
+    desc_rd_pool[2].buf_addr = (uint32_t)(uintptr_t)rd_buf[0];
+    desc_rd_pool[2].buf_size = rd_sizes[0];
+    desc_rd_pool[2].idmalar  = SDMMC_IDMALAR_ABR | SDMMC_IDMALAR_ULA | idmala_rd;
+
+    desc_rd_pool[7].buf_addr = (uint32_t)(uintptr_t)rd_buf[1];
+    desc_rd_pool[7].buf_size = rd_sizes[1];
+    desc_rd_pool[7].idmalar  = SDMMC_IDMALAR_ABR;
+
+    /* ---- GIC 配置 ---- */
+    EmmcGicConfig();
+
+    /* ---- 中断写: CMD23(轮询) + CMD25(中断) ---- */
+    g_sdmmc2_irq.it_done  = 0;
+    g_sdmmc2_irq.btc_cnt = 0;
+    PRINT("  Write via ISR...\r\n");
+    EmmcCardStartWriteMultiLL(&g_emmc, test_block, desc_wr, SDMMC_BLKSIZ_512B);
+
+    while (!g_sdmmc2_irq.it_done)
+        IwdgKickDog(IWDG2);
+
+    PRINT("  Write done, BTC=");
+    PrintDec(dec, (int32_t)g_sdmmc2_irq.btc_cnt);
+    PRINT(dec);
+    PRINT(" (expect 8)\r\n");
+
+    if (g_sdmmc2_irq.it_result != SDMMC_OK)
+    {
+        PRINT("  IT Write FAILED, err=");
+        PrintDec(dec, (int32_t)g_sdmmc2_irq.it_result);
+        PRINT(dec);
+        PRINT("\r\n");
+        goto cleanup;
+    }
+
+    EmmcCardWaitBusy(&g_emmc);
+    IwdgKickDog(IWDG2);
+
+    /* ---- 清读缓冲区 ---- */
+    for (i = 0; i < 2; i++)
+        memset(rd_buf[i], 0, rd_sizes[i]);
+
+    /* ---- 中断读: CMD23(轮询) + CMD18(中断) ---- */
+    g_sdmmc2_irq.it_done  = 0;
+    g_sdmmc2_irq.btc_cnt = 0;
+    PRINT("  Read via ISR...\r\n");
+    EmmcCardStartReadMultiLL(&g_emmc, test_block, &desc_rd_pool[2], SDMMC_BLKSIZ_512B);
+
+    while (!g_sdmmc2_irq.it_done)
+        IwdgKickDog(IWDG2);
+
+    PRINT("  Read done, BTC=");
+    PrintDec(dec, (int32_t)g_sdmmc2_irq.btc_cnt);
+    PRINT(dec);
+    PRINT(" (expect 2)\r\n");
+
+    if (g_sdmmc2_irq.it_result != SDMMC_OK)
+    {
+        PRINT("  IT Read FAILED, err=");
+        PrintDec(dec, (int32_t)g_sdmmc2_irq.it_result);
+        PRINT(dec);
+        PRINT("\r\n");
+        goto cleanup;
+    }
+
+    /* ---- 校验: 跨 2 个读 buffer 比对 uint16_t ---- */
+    {
+        int errors = 0;
+        v = 0;
+        for (i = 0; i < 2; i++)
+        {
+            uint16_t *p = (uint16_t *)rd_buf[i];
+            for (uint32_t j = 0; j < rd_sizes[i] / 2; j++)
+            {
+                if (p[j] != v)
+                {
+                    if (errors < 4)
+                    {
+                        PRINT("  Mismatch: rd_buf[");
+                        PrintDec(dec, i);
+                        PRINT(dec);
+                        PRINT("][");
+                        PrintDec(dec, j);
+                        PRINT(dec);
+                        PRINT("] expect ");
+                        PrintDec(dec, v);
+                        PRINT(dec);
+                        PRINT(" got ");
+                        PrintDec(dec, p[j]);
+                        PRINT(dec);
+                        PRINT("\r\n");
+                    }
+                    errors++;
+                }
+                v++;
+            }
+        }
+
+        if (errors == 0)
+            PRINT("  Verify PASSED (16384 values, DDR52+ISR+LL)\r\n");
+        else
+        {
+            PRINT("  Verify FAILED: ");
+            PrintDec(dec, errors);
+            PRINT(dec);
+            PRINT(" errors\r\n");
+        }
+    }
+
+cleanup:
+    EmmcGicCleanup();
+
+    /* ---- 恢复 SDR 8-bit, 保持后续测试兼容 ---- */
+    PRINT("  Restoring SDR 8-bit...\r\n");
+    err = EmmcCardSetBusWidth(&g_emmc, EMMC_BUS_WIDTH_8BIT);
+    if (err != EMMC_OK)
+        PRINT("  SDR restore FAILED\r\n");
+    else
+        PRINT("  SDR restore OK\r\n");
+}
+
+
 static const MenuEntry_t emmc_menu[] = {
     { "1", "Single Block R/W",   SingleBlockTest },
     { "2", "Multi Block R/W",    MultiBlockTest },
@@ -1084,6 +1312,7 @@ static const MenuEntry_t emmc_menu[] = {
     { "5", "DDR52 Multi-Block",  Ddr52MultiBlockTest },
     { "6", "Write Protect",      WriteProtectTest },
     { "7", "Sleep/Awake",        SleepAwakeTest },
+    { "8", "DDR52+ISR+LL Multi", Ddr52LlItMultiBlockTest },
 };
 
 

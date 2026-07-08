@@ -144,7 +144,7 @@ static void SdmmcGicConfig(void)
 static void SdmmcGicCleanup(void)
 {
     GicdDisableInt(GIC_SDMMC1);
-    g_sdmmc1_it_done = 0;
+    g_sdmmc1_irq.it_done = 0;
 }
 
 /* 测试间扫尾: SDMMC1 外设复位 + 卡重初始化, 确保下一个测试在干净环境中运行 */
@@ -153,8 +153,8 @@ static void SdmmcTestCleanup(void)
     RCC->AHB6RSTSETR = (1U << 16);  /* 断言 SDMMC1 复位 */
     RCC->AHB6RSTCLRR = (1U << 16);  /* 释放复位, 所有寄存器回到默认值 */
     SdCardInit(&g_card, 16);        /* 重新上电 + 卡识别 */
-    g_sdmmc1_it_done = 0;
-    g_sdmmc1_it_result = SDMMC_OK;
+    g_sdmmc1_irq.it_done = 0;
+    g_sdmmc1_irq.it_result = SDMMC_OK;
 }
 
 
@@ -581,14 +581,14 @@ static void LlItMultiBlockTest(void)
     PRINT("  Writing via ISR...\r\n");
     SdCardStartWriteMultiLL(&g_card, test_block, &desc, SDMMC_BLKSIZ_512B);
 
-    while (!g_sdmmc1_it_done)
+    while (!g_sdmmc1_irq.it_done)
         ;
     IwdgKickDog(IWDG2);
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Write FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;
@@ -603,19 +603,19 @@ static void LlItMultiBlockTest(void)
     memset(RD_BUF, 0, buf_size);
     desc.buf_addr = (uint32_t)(uintptr_t)RD_BUF;
 
-    g_sdmmc1_it_done = 0;
-    g_sdmmc1_btc_cnt = 0;
+    g_sdmmc1_irq.it_done = 0;
+    g_sdmmc1_irq.btc_cnt = 0;
     PRINT("  Reading via ISR...\r\n");
     SdCardStartReadMultiLL(&g_card, test_block, &desc, SDMMC_BLKSIZ_512B);
 
-    while (!g_sdmmc1_it_done)
+    while (!g_sdmmc1_irq.it_done)
         ;
     IwdgKickDog(IWDG2);
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Read FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;
@@ -741,7 +741,7 @@ static void LlItBtcTest(void)
         uint32_t last_btc = 0;
         uint32_t timeout = 0;
         uint16_t fill_val = 512;  /* 节点0 填了 0..511, 节点1 从 512 开始 */
-        while (!g_sdmmc1_it_done)
+        while (!g_sdmmc1_irq.it_done)
         {
             /* IDMATE 无中断使能, 前台轮询检测 */
             if (SdmmcCheckIdmate(g_card.sdmmc))
@@ -750,7 +750,7 @@ static void LlItBtcTest(void)
                 SdmmcClearFlags(g_card.sdmmc);
                 goto cleanup;
             }
-            uint32_t cur = g_sdmmc1_btc_cnt;
+            uint32_t cur = g_sdmmc1_irq.btc_cnt;
             if (cur != last_btc)
             {
                 last_btc = cur;
@@ -777,17 +777,17 @@ static void LlItBtcTest(void)
     IwdgKickDog(IWDG2);
 
     PRINT("  Write done, BTC=");
-    PrintDec(dec, (int32_t)g_sdmmc1_btc_cnt);
+    PrintDec(dec, (int32_t)g_sdmmc1_irq.btc_cnt);
     PRINT(dec);
-    if (g_sdmmc1_btc_cnt == 1)
+    if (g_sdmmc1_irq.btc_cnt == 1)
         PRINT(" (OK)\r\n");
     else
         PRINT(" (unexpected)\r\n");
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Write FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;
@@ -802,15 +802,15 @@ static void LlItBtcTest(void)
         memset(rd_buf[i], 0, rd_sizes[i]);
 
     /* ---- 中断读: 读不需要填数据, 前台只置 BAR ---- */
-    g_sdmmc1_it_done = 0;
-    g_sdmmc1_btc_cnt = 0;
+    g_sdmmc1_irq.it_done = 0;
+    g_sdmmc1_irq.btc_cnt = 0;
     PRINT("  Reading 2 nodes via ISR (node1 BAR=0, set on BTC)...\r\n");
     SdCardStartReadMultiLL(&g_card, test_block, &desc_rd_pool[1], SDMMC_BLKSIZ_512B);
 
     {
         uint32_t last_btc = 0;
         uint32_t timeout = 0;
-        while (!g_sdmmc1_it_done)
+        while (!g_sdmmc1_irq.it_done)
         {
             if (SdmmcCheckIdmate(g_card.sdmmc))
             {
@@ -818,7 +818,7 @@ static void LlItBtcTest(void)
                 SdmmcClearFlags(g_card.sdmmc);
                 goto cleanup;
             }
-            uint32_t cur = g_sdmmc1_btc_cnt;
+            uint32_t cur = g_sdmmc1_irq.btc_cnt;
             if (cur != last_btc)
             {
                 last_btc = cur;
@@ -835,17 +835,17 @@ static void LlItBtcTest(void)
     IwdgKickDog(IWDG2);
 
     PRINT("  Read done, BTC=");
-    PrintDec(dec, (int32_t)g_sdmmc1_btc_cnt);
+    PrintDec(dec, (int32_t)g_sdmmc1_irq.btc_cnt);
     PRINT(dec);
-    if (g_sdmmc1_btc_cnt == 1)
+    if (g_sdmmc1_irq.btc_cnt == 1)
         PRINT(" (OK)\r\n");
     else
         PRINT(" (unexpected)\r\n");
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Read FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;
@@ -990,11 +990,10 @@ static void LlItBtcMultiTest(void)
     PRINT("  Clock reduced to 8 MHz\r\n");
 
     /* ---- 中断写 ---- */
-    g_it_sdmmc = g_card.sdmmc;
     SdmmcGicConfig();
-    g_sdmmc1_it_done  = 0;
-    g_sdmmc1_btc_cnt = 0;
-    g_sdmmc1_dbg_idx = 0;
+    g_sdmmc1_irq.it_done  = 0;
+    g_sdmmc1_irq.btc_cnt = 0;
+    g_sdmmc1_irq.dbg_idx = 0;
     PRINT("  Starting ISR write (24 prepared + 8 dynamic)...\r\n");
     SdCardStartWriteMultiLL(&g_card, test_block, desc_wr, SDMMC_BLKSIZ_512B);
 
@@ -1006,14 +1005,14 @@ static void LlItBtcMultiTest(void)
         uint32_t fill_cnt = 0;
         uint32_t rec_btc_start[N_NODES - N_PREPARED];  /* 填充开始时的 BTC */
         uint32_t rec_btc_end[N_NODES - N_PREPARED];    /* BAR 置完时的 BTC */
-        while (!g_sdmmc1_it_done)
+        while (!g_sdmmc1_irq.it_done)
         {
             if (SdmmcCheckIdmate(g_card.sdmmc))
             {
                 SdmmcClearFlags(g_card.sdmmc);
                 break;
             }
-            uint32_t cur = g_sdmmc1_btc_cnt;
+            uint32_t cur = g_sdmmc1_irq.btc_cnt;
             if (cur != last_btc)
             {
                 last_btc = cur;
@@ -1028,11 +1027,11 @@ static void LlItBtcMultiTest(void)
                         p[j] = v++;
                     desc_wr[idx].idmalar |= SDMMC_IDMALAR_ABR;
 
-                    rec_btc_end[fill_cnt] = g_sdmmc1_btc_cnt;  /* BAR后的 BTC */
+                    rec_btc_end[fill_cnt] = g_sdmmc1_irq.btc_cnt;  /* BAR后的 BTC */
                     fill_cnt++;
 
-                    if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
-                        g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 2;
+                    if (g_sdmmc1_irq.dbg_idx < SDMMC_DBG_TRACE_SIZE)
+                        g_sdmmc1_irq.dbg_trace[g_sdmmc1_irq.dbg_idx++] = 2;
                     next_dyn++;
                 }
             }
@@ -1046,13 +1045,13 @@ static void LlItBtcMultiTest(void)
 
         /* 事后统一打印 */
         PRINT("  Write done, BTC=");
-        PrintDec(dec, (int32_t)g_sdmmc1_btc_cnt);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.btc_cnt);
         PRINT(dec);
         PRINT(" (expect ");
         PrintDec(dec, N_NODES);
         PRINT(dec);
         PRINT(") err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
 
@@ -1077,15 +1076,15 @@ static void LlItBtcMultiTest(void)
         }
 
         PRINT("  dbg_trace[0..");
-        PrintDec(dec, (int32_t)g_sdmmc1_dbg_idx);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.dbg_idx);
         PRINT(dec);
         PRINT("]: ");
         {
-            uint32_t dbg_cnt = g_sdmmc1_dbg_idx;
+            uint32_t dbg_cnt = g_sdmmc1_irq.dbg_idx;
             if (dbg_cnt > 64) dbg_cnt = 64;
             for (i = 0; i < (int32_t)dbg_cnt; i++)
             {
-                PrintDec(dec, (int32_t)g_sdmmc1_dbg_trace[i]);
+                PrintDec(dec, (int32_t)g_sdmmc1_irq.dbg_trace[i]);
                 PRINT(dec);
                 PRINT(" ");
             }
@@ -1231,20 +1230,20 @@ static void LlItPreparedTest(void)
     PRINT("  Writing via ISR (all pre-prepared)...\r\n");
     SdCardStartWriteMultiLL(&g_card, test_block, desc_wr, SDMMC_BLKSIZ_512B);
 
-    while (!g_sdmmc1_it_done)
+    while (!g_sdmmc1_irq.it_done)
     {
         IwdgKickDog(IWDG2);
     }
 
     PRINT("  Write done, BTC=");
-    PrintDec(dec, (int32_t)g_sdmmc1_btc_cnt);
+    PrintDec(dec, (int32_t)g_sdmmc1_irq.btc_cnt);
     PRINT(dec);
     PRINT(" (expect 5)\r\n");
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Write FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;
@@ -1257,25 +1256,25 @@ static void LlItPreparedTest(void)
         memset(rd_buf[i], 0, rd_sizes[i]);
 
     /* ---- 中断读 ---- */
-    g_sdmmc1_it_done = 0;
-    g_sdmmc1_btc_cnt = 0;
+    g_sdmmc1_irq.it_done = 0;
+    g_sdmmc1_irq.btc_cnt = 0;
     PRINT("  Reading via ISR (all pre-prepared)...\r\n");
     SdCardStartReadMultiLL(&g_card, test_block, &desc_rd_pool[1], SDMMC_BLKSIZ_512B);
 
-    while (!g_sdmmc1_it_done)
+    while (!g_sdmmc1_irq.it_done)
     {
         IwdgKickDog(IWDG2);
     }
 
     PRINT("  Read done, BTC=");
-    PrintDec(dec, (int32_t)g_sdmmc1_btc_cnt);
+    PrintDec(dec, (int32_t)g_sdmmc1_irq.btc_cnt);
     PRINT(dec);
     PRINT(" (expect 2)\r\n");
 
-    if (g_sdmmc1_it_result != SDMMC_OK)
+    if (g_sdmmc1_irq.it_result != SDMMC_OK)
     {
         PRINT("  IT Read FAILED, err=");
-        PrintDec(dec, (int32_t)g_sdmmc1_it_result);
+        PrintDec(dec, (int32_t)g_sdmmc1_irq.it_result);
         PRINT(dec);
         PRINT("\r\n");
         goto cleanup;

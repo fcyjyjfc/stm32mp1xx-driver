@@ -626,6 +626,94 @@ EmmcCardErr_t EmmcCardWriteMulti(EmmcCard_t *card, uint32_t block, const void *b
 
 
 /**
+ * @brief 中断模式启动 IDMA 链表多块写: CMD23(轮询) + CMD25(中断)
+ */
+void EmmcCardStartWriteMultiLL(EmmcCard_t *card, uint32_t block,
+                                const SdmmcIdmaDesc_t *desc,
+                                SdmmcBlockSize_t block_size_log)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    const SdmmcIdmaDesc_t *d = desc;
+    uint32_t total = 0;
+
+    if (!desc)
+    {
+        g_sdmmc2_irq.it_result = SDMMC_ERR_PARAM;
+        g_sdmmc2_irq.it_done = 1;
+        return;
+    }
+
+    while (1)
+    {
+        total += d->buf_size;
+        if (!(d->idmalar & SDMMC_IDMALAR_ULA))
+            break;
+        d = (const SdmmcIdmaDesc_t *)((const uint8_t *)desc
+               + (d->idmalar & 0x0000FFFCU));
+    }
+
+    uint32_t n_blocks = total >> block_size_log;
+
+    SdmmcCmd_t cmd23 = { .index = EMMC_CMD_SET_BLOCK_COUNT, .arg = n_blocks,
+                          .resp_type = SDMMC_RESP_SHORT };
+    if (SdmmcSendCmd(sdmmc, &cmd23, NULL) != SDMMC_OK)
+    {
+        g_sdmmc2_irq.it_result = SDMMC_ERR_CTIMEOUT;
+        g_sdmmc2_irq.it_done = 1;
+        return;
+    }
+
+    SdmmcCmd_t cmd25 = { .index = EMMC_CMD_WRITE_MULTI, .arg = block,
+                          .resp_type = SDMMC_RESP_SHORT, .cmdtrans = SDMMC_CMD_DATA };
+    SdmmcStartWriteLL(sdmmc, &g_sdmmc2_irq, &cmd25, desc, block_size_log);
+}
+
+
+/**
+ * @brief 中断模式启动 IDMA 链表多块读: CMD23(轮询) + CMD18(中断)
+ */
+void EmmcCardStartReadMultiLL(EmmcCard_t *card, uint32_t block,
+                               const SdmmcIdmaDesc_t *desc,
+                               SdmmcBlockSize_t block_size_log)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    const SdmmcIdmaDesc_t *d = desc;
+    uint32_t total = 0;
+
+    if (!desc)
+    {
+        g_sdmmc2_irq.it_result = SDMMC_ERR_PARAM;
+        g_sdmmc2_irq.it_done = 1;
+        return;
+    }
+
+    while (1)
+    {
+        total += d->buf_size;
+        if (!(d->idmalar & SDMMC_IDMALAR_ULA))
+            break;
+        d = (const SdmmcIdmaDesc_t *)((const uint8_t *)desc
+               + (d->idmalar & 0x0000FFFCU));
+    }
+
+    uint32_t n_blocks = total >> block_size_log;
+
+    SdmmcCmd_t cmd23 = { .index = EMMC_CMD_SET_BLOCK_COUNT, .arg = n_blocks,
+                          .resp_type = SDMMC_RESP_SHORT };
+    if (SdmmcSendCmd(sdmmc, &cmd23, NULL) != SDMMC_OK)
+    {
+        g_sdmmc2_irq.it_result = SDMMC_ERR_CTIMEOUT;
+        g_sdmmc2_irq.it_done = 1;
+        return;
+    }
+
+    SdmmcCmd_t cmd18 = { .index = EMMC_CMD_READ_MULTI, .arg = block,
+                          .resp_type = SDMMC_RESP_SHORT, .cmdtrans = SDMMC_CMD_DATA };
+    SdmmcStartReadLL(sdmmc, &g_sdmmc2_irq, &cmd18, desc, block_size_log);
+}
+
+
+/**
  * @brief 擦除: CMD35(ERASE_GRP_START) → CMD36(ERASE_GRP_END) → CMD38(ERASE)
  *
  * eMMC 擦除是三步操作:

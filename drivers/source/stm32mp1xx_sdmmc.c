@@ -676,36 +676,28 @@ void SdmmcFifoReset(volatile SdmmcRegs_t *sdmmc)
 }
 
 
-/* ===== 中断模式 (非阻塞) =====
+/* ===== 中断模式 (非阻塞) — 每个 SDMMC 实例独立状态 =====
  *
  * MASKR 一次使能所有中断, ISR 按 STA 标志区分当前阶段.
  * 写后卡内部编程产生的 BUSYD0 由下次 SdmmcStartLL 入口检查 (不阻塞 ISR).
  * IDMATE 无中断使能位 (实测), 仅 STAR 标志 + ICR 清除.
  */
 
-volatile uint32_t   g_sdmmc1_it_done;
-volatile SdmmcErr_t g_sdmmc1_it_result;
-volatile uint32_t   g_sdmmc1_btc_cnt;
-
-/* 调试跟踪: IDMABTC ISR→1, 主循环置BAR→2, TXUNDERR ISR→3, IDMATE ISR→4 */
-volatile uint32_t g_sdmmc1_dbg_trace[SDMMC_DBG_TRACE_SIZE];
-volatile uint32_t g_sdmmc1_dbg_idx;
-
-/* BUSYD0END 信号量: ISR 置 1, 前台轮询 */
-volatile uint32_t g_sdmmc1_busy0end;
-
-volatile SdmmcRegs_t *g_it_sdmmc;   /* 当前操作的 SDMMC 实例 */
-static uint8_t                g_it_is_write; /* 1=写, 0=读 */
+/* 两个 SDMMC 实例各自独立的中断状态 — 由 Sdmmc1IrqHandler / Sdmmc2IrqHandler 分别操作 */
+SdmmcIrqState_t g_sdmmc1_irq;
+SdmmcIrqState_t g_sdmmc2_irq;
 
 
 /**
  * @brief 启动 IDMA 链表传输 (不阻塞), 后续由 ISR 接管
  * @param is_write 1=写, 0=读
+ * @param irq      指向本实例的 SdmmcIrqState_t
  *
  * 入口检查 BUSYD0 防上次写未完成的卡内部编程冲突.
  * 寄存器配置同阻塞版 Ll 函数, 最后用 MASKR 替代轮询.
  */
 static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
+                         SdmmcIrqState_t *irq,
                          const SdmmcCmd_t *cmd,
                          const SdmmcIdmaDesc_t *desc_first,
                          SdmmcBlockSize_t  block_size_log,
@@ -714,22 +706,20 @@ static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
     uint32_t total_len = LlValidate(desc_first, 1U << block_size_log);
     if (total_len == 0)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_PARAM;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_PARAM;
+        irq->it_done = 1;
         return;
     }
 
-    g_it_sdmmc    = sdmmc;
-    g_it_is_write = is_write;
-    g_sdmmc1_it_done   = 0;
-    g_sdmmc1_it_result = SDMMC_OK;
-    g_sdmmc1_btc_cnt   = 0;
+    irq->it_done   = 0;
+    irq->it_result = SDMMC_OK;
+    irq->btc_cnt   = 0;
 
     /* 上次写入的卡内部编程可能未完成 (BUSYD0=1), 忙则拒绝而非死等 */
     if (sdmmc->STAR & SDMMC_STA_BUSYD0)
     {
-        g_sdmmc1_it_result = SDMMC_ERR_BUSY;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_BUSY;
+        irq->it_done = 1;
         return;
     }
 
@@ -777,40 +767,39 @@ static void SdmmcStartLL(volatile SdmmcRegs_t *sdmmc,
 /**
  * @brief 中断模式启动 IDMA 链表写 (CMD23 轮询, CMD25 中断)
  */
-void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc,
+void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
                        const SdmmcCmd_t *cmd,
                        const SdmmcIdmaDesc_t *desc_first,
                        SdmmcBlockSize_t  block_size_log)
 {
-    SdmmcStartLL(sdmmc, cmd, desc_first, block_size_log, 1);
+    SdmmcStartLL(sdmmc, irq, cmd, desc_first, block_size_log, 1);
 }
 
 
 /**
  * @brief 中断模式启动 IDMA 链表读 (CMD23 轮询, CMD18 中断)
  */
-void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc,
+void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
                       const SdmmcCmd_t *cmd,
                       const SdmmcIdmaDesc_t *desc_first,
                       SdmmcBlockSize_t  block_size_log)
 {
-    SdmmcStartLL(sdmmc, cmd, desc_first, block_size_log, 0);
+    SdmmcStartLL(sdmmc, irq, cmd, desc_first, block_size_log, 0);
 }
 
 
 /**
- * @brief SDMMC1 中断处理入口 (由 do_irq 根据 GIC ID 81 分发)
+ * @brief ISR 核心处理, 由 Sdmmc1IrqHandler / Sdmmc2IrqHandler 调用
  *
  * MASKR 使能全部中断, ISR 一次检查所有标志:
- *   错误 (CTIMEOUT/CCRCFAIL/DTIMEOUT/DCRCFAIL/TXUNDERR/RXOVERR/IDMATE) → 关 MASKR+IDMA, 设 result 并 done
+ *   错误 → 关 MASKR+IDMA, 设 result 并 done
  *   CMDREND → 仅清该位, 保留数据阶段标志
  *   IDMABTC → 递增计数 (前台轮询用)
  *   BUSYD0END → 置信号量 (前台等)
  *   DATAEND  → 传输完成, 关 MASKR+IDMA, done
  */
-void Sdmmc1IrqHandler(void)
+static void SdmmcIrqHandlerCore(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq)
 {
-    volatile SdmmcRegs_t *sdmmc = g_it_sdmmc;
     uint32_t sta = sdmmc->STAR;
 
     /* ---- 错误: 命令阶段 ---- */
@@ -819,8 +808,8 @@ void Sdmmc1IrqHandler(void)
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_CTIMEOUT;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_CTIMEOUT;
+        irq->it_done = 1;
         return;
     }
     if (sta & SDMMC_STA_CCRCFAIL)
@@ -828,8 +817,8 @@ void Sdmmc1IrqHandler(void)
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_CCRCFAIL;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_CCRCFAIL;
+        irq->it_done = 1;
         return;
     }
 
@@ -845,8 +834,8 @@ void Sdmmc1IrqHandler(void)
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_DTIMEOUT;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_DTIMEOUT;
+        irq->it_done = 1;
         return;
     }
     if (sta & SDMMC_STA_DCRCFAIL)
@@ -854,19 +843,19 @@ void Sdmmc1IrqHandler(void)
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_DCRCFAIL;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_DCRCFAIL;
+        irq->it_done = 1;
         return;
     }
     if (sta & SDMMC_STA_TXUNDERR)
     {
-        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
-            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 3;
+        if (irq->dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            irq->dbg_trace[irq->dbg_idx++] = 3;
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_TXUNDERR;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_TXUNDERR;
+        irq->it_done = 1;
         return;
     }
     if (sta & SDMMC_STA_RXOVERR)
@@ -874,49 +863,65 @@ void Sdmmc1IrqHandler(void)
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_RXOVERR;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_RXOVERR;
+        irq->it_done = 1;
         return;
     }
 
     /* ---- IDMA 链表错误 ---- */
     if (sta & SDMMC_STA_IDMATE)
     {
-        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
-            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 4;
+        if (irq->dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            irq->dbg_trace[irq->dbg_idx++] = 4;
         sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_ERR_PARAM;  /* IDMA 链表错误: ABR=0/保留地址等 */
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_ERR_PARAM;  /* IDMA 链表错误: ABR=0/保留地址等 */
+        irq->it_done = 1;
         return;
     }
 
-    /* ---- IDMA buffer 传输完成 (所有节点都触发, 含最后一个 ULA=0) ---- */
+    /* ---- IDMA buffer 传输完成 ---- */
     if (sta & SDMMC_STA_IDMABTC)
     {
         sdmmc->ICR = SDMMC_STA_IDMABTC;
-        g_sdmmc1_btc_cnt++;
-        if (g_sdmmc1_dbg_idx < SDMMC_DBG_TRACE_SIZE)
-            g_sdmmc1_dbg_trace[g_sdmmc1_dbg_idx++] = 1;
+        irq->btc_cnt++;
+        if (irq->dbg_idx < SDMMC_DBG_TRACE_SIZE)
+            irq->dbg_trace[irq->dbg_idx++] = 1;
     }
 
-    /* ---- 卡忙结束 (R1b: CMD38 擦除等), 仅置标志 ---- */
+    /* ---- 卡忙结束 (R1b) ---- */
     if (sta & SDMMC_STA_BUSYD0END)
     {
         sdmmc->ICR = SDMMC_STA_BUSYD0END;
-        g_sdmmc1_busy0end = 1;
+        irq->busy0end = 1;
     }
 
-    /* ---- 数据传输完成 ----
-     * DATAEND 后 SDMMC 通信已结束. 写操作后卡内部 Flash 编程产生的 BUSYD0
-     * 在下次传输启动前轮询处理, 不在此处等待. */
+    /* ---- 数据传输完成 ---- */
     if (sta & SDMMC_STA_DATAEND)
     {
         sdmmc->ICR = SDMMC_STA_DATAEND;
         sdmmc->MASKR = 0;
         sdmmc->IDMACTRLR = 0;
-        g_sdmmc1_it_result = SDMMC_OK;
-        g_sdmmc1_it_done = 1;
+        irq->it_result = SDMMC_OK;
+        irq->it_done = 1;
     }
+}
+
+
+/**
+ * @brief SDMMC1 中断入口 — 编译时绑定 SDMMC1 寄存器 + g_sdmmc1_irq
+ */
+void Sdmmc1IrqHandler(void)
+{
+    SdmmcIrqHandlerCore(SDMMC1, &g_sdmmc1_irq);
+}
+
+
+/**
+ * @brief SDMMC2 中断入口 — 编译时绑定 SDMMC2 寄存器 + g_sdmmc2_irq
+ */
+void Sdmmc2IrqHandler(void)
+{
+    SdmmcIrqHandlerCore(SDMMC2, &g_sdmmc2_irq);
 }
