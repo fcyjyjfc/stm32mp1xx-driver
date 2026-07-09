@@ -19,6 +19,75 @@ static uint8_t g_buf[128 * 512 * 2] __attribute__((aligned(4)));
 #define RD_BUF  (g_buf + 65536)        /* 读缓冲区 65536..131071 (64 KB) */
 
 
+/* SDMMC2 GPIO: PG6(CMD) + PE3(CK) + PB14/15(D0/D1) + PB3/4(D2/D3)
+ *               + PA8/9(D4/D5) + PE5(D6) + PD3(D7), AF9, 高速+上拉 */
+static void EmmcGpioInit(void)
+{
+    RCC->MP_AHB4ENSETR |= (1U << 0) | (1U << 1) | (1U << 3)
+                        | (1U << 4) | (1U << 6); /* GPIOA,B,D,E,G */
+
+    /* PG6 = CMD */
+    GpioMode(GPIO_G, 6, GPIO_MODER_AF);
+    GpioAf(GPIO_G, 6, 9);
+    GpioOtype(GPIO_G, 6, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_G, 6, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_G, 6, GPIO_PUPDR_PULL_UP);
+
+    /* PE3 = CLK */
+    GpioMode(GPIO_E, 3, GPIO_MODER_AF);
+    GpioAf(GPIO_E, 3, 9);
+    GpioOtype(GPIO_E, 3, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_E, 3, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_E, 3, GPIO_PUPDR_NO);
+
+    /* PB14=D0, PB15=D1, PB3=D2, PB4=D3 */
+    int pins_b[] = {14, 15, 3, 4};
+    for (int i = 0; i < 4; i++)
+    {
+        GpioMode(GPIO_B, pins_b[i], GPIO_MODER_AF);
+        GpioAf(GPIO_B, pins_b[i], 9);
+        GpioOtype(GPIO_B, pins_b[i], GPIO_OTYPE_PUSH_PULL);
+        GpioOspeed(GPIO_B, pins_b[i], GPIO_OSPEED_HI);
+        GpioPullUpDown(GPIO_B, pins_b[i], GPIO_PUPDR_PULL_UP);
+    }
+
+    /* PA8=D4, PA9=D5 */
+    GpioMode(GPIO_A, 8, GPIO_MODER_AF);
+    GpioAf(GPIO_A, 8, 9);
+    GpioOtype(GPIO_A, 8, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_A, 8, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_A, 8, GPIO_PUPDR_PULL_UP);
+
+    GpioMode(GPIO_A, 9, GPIO_MODER_AF);
+    GpioAf(GPIO_A, 9, 9);
+    GpioOtype(GPIO_A, 9, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_A, 9, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_A, 9, GPIO_PUPDR_PULL_UP);
+
+    /* PE5 = D6 */
+    GpioMode(GPIO_E, 5, GPIO_MODER_AF);
+    GpioAf(GPIO_E, 5, 9);
+    GpioOtype(GPIO_E, 5, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_E, 5, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_E, 5, GPIO_PUPDR_PULL_UP);
+
+    /* PD3 = D7 */
+    GpioMode(GPIO_D, 3, GPIO_MODER_AF);
+    GpioAf(GPIO_D, 3, 9);
+    GpioOtype(GPIO_D, 3, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_D, 3, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_D, 3, GPIO_PUPDR_PULL_UP);
+}
+
+static void EmmcClkInit(void)
+{
+    /* ker_ck 选 HSI (64MHz), PLL4P 未使能不可用 */
+    RCC->SDMMC12CKSELR = 2;
+    /* 使能 SDMMC2 (AHB6 bit17) */
+    RCC->MP_AHB6ENSETR = (1U << 17);
+}
+
+
 /** 打印 eMMC 卡信息 (CID/CSD/EXT_CSD/CMD13) */
 static void PrintCardInfo(EmmcCard_t *card)
 {
@@ -181,12 +250,15 @@ static void PrintCardInfo(EmmcCard_t *card)
 }
 
 
-/** @brief eMMC 硬件初始化: SdmmcPowerOn → 卡识别/选卡 → 速度切换 → 读信息 */
+/** @brief eMMC 硬件初始化: GPIO + 时钟 → 卡识别/选卡 → 速度切换 → 读信息 */
 static int EmmcHwInit(void)
 {
     char dec[16];
 
     PRINT("\r\n===== eMMC Init =====\r\n");
+
+//    EmmcGpioInit(); // TODO 配置后无法正常工作，暂时屏蔽，依赖u-boot的配置
+    EmmcClkInit();
 
     g_emmc.sdmmc = SDMMC2;
     IwdgKickDog(IWDG2);

@@ -404,3 +404,4 @@ SdmmcPowerOn (400kHz, 1-bit)
 |------|------|
 | CMD30/31 返回 WP 状态全 0 | 此 eMMC (NCard) 的 CMD30 SEND_WRITE_PROT 和 CMD31 SEND_WRITE_PROT_TYPE 返回全 0, 但 CMD28/29 设/清 WP 功能正常, 写保护生效已验证 |
 | Sleep 期间误读写后 DPSM 挂死无法恢复 | Sleep 态下发 CMDTRANS 命令 (CMD17/18/24/25) 会触发 DPSM, 即使命令 CTIMEOUT, DPSM 仍滞留活跃态 (DPSMACT=1), FIFORST 复位无效, 后续所有命令失败。当前通过读写前状态检查预防, 恢复方法尚未找到 |
+| EmmcGpioInit 全配 PG6(CMD) 导致初始化失败 | 对 PG6 同时调用 GpioMode + GpioAf（无论先后顺序）会导致 eMMC 无法识别。单独调用其中一个（只 GpioMode 或只 GpioAf）无问题。仅配置速度和上下拉也无问题。数据线全配无问题。CLK(PE3) 全配无问题。原因未明，可能与 GPIO_G 的 MODER 和 AFRL 寄存器连续多次读-改-写产生的中间态 glitch 有关。当前工作区：EmmcGpioInit 注释掉，靠 bootloader 的 GPIO 配置运行 |
