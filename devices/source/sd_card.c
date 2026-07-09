@@ -56,61 +56,9 @@ static SdmmcErr_t SendAcmd(volatile SdmmcRegs_t *sdmmc,
 }
 
 
-
-/* ---- 公开接口 ---- */
-
-/* 初始化: 上电→卡识别→选卡→4-bit→设定目标速率 */
-SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
+/* CID R2 响应解析 (CID[127:0] = resp[0..3]), 填充卡结构体 */
+static void ParseCid(SdCard_t *card, const uint32_t resp[4])
 {
-    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
-    uint32_t resp[4];
-    SdmmcErr_t err;
-
-    /* 上电: ≤400kHz, 1-bit (识别模式时钟要求见 Section 4.2) */
-    SdmmcPowerOn(sdmmc, card->ker_ck_hz);
-
-    /* CMD0: GO_IDLE_STATE */
-    err = SendCmd(sdmmc, SD_CMD_GO_IDLE_STATE, 0, SDMMC_RESP_NONE, NULL);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-
-    /* CMD8: SEND_IF_COND — arg 格式见 SD Spec v9.10 Section 4.3.13
-     * [11:8]=VHS(1=2.7~3.6V), [7:0]=check pattern(任选, 惯例0xAA) */
-    err = SendCmd(sdmmc, SD_CMD_SEND_IF_COND, SD_CMD8_ARG, SDMMC_RESP_SHORT, resp);
-    if (err == SDMMC_ERR_CTIMEOUT)
-        return SD_ERR_UNUSABLE;  /* SD v1.x 或非SD卡 */
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-    if ((resp[0] & SD_CMD8_RESP_MASK) != SD_CMD8_ARG)
-        return SD_ERR_UNUSABLE;
-
-    /* ACMD41 循环 — arg/resp 位域见 SD Spec v9.10 Section 5.1 (OCR) + Table 4-41
-     * arg: [30]=HCS(1=支持SDHC), [24]=S18R(1=主机支持1.8V切换),
-     *      [23:15]=电压窗口(0xFF80=2.7~3.6V全覆盖)
-     * resp: [31]=Busy(1=完成), [30]=CCS(1=SDHC), [24]=S18A(1=卡支持1.8V) — R3 无CRC */
-    uint32_t ocr = 0;
-    uint32_t retry;
-    for (retry = 0; retry < ACMD41_RETRY_MAX; retry++)
-    {
-        err = SendAcmd(sdmmc, 0, SD_ACMD_SEND_OP_COND, SD_ACMD41_ARG, SDMMC_RESP_SHORT_NOCRC, resp);
-        if (err != SDMMC_OK)
-            return SD_ERR_IO;
-        ocr = resp[0];
-        if (ocr & SD_OCR_BUSY)
-            break;
-    }
-    if (retry == ACMD41_RETRY_MAX)
-        return SD_ERR_INIT_TIMEOUT;
-    card->is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
-    card->s18a = (ocr & SD_OCR_S18A) ? 1 : 0;
-
-    /* CMD2: ALL_SEND_CID → 解析卡身份信息
-     * CID 位域定义见 SD Spec v9.10 Table 5-2 (Section 5.2)
-     * resp[0..3] = CID[127:96], [95:64], [63:32], [31:0] (RM0436 58.6.3) */
-    err = SendCmd(sdmmc, SD_CMD_ALL_SEND_CID, 0, SDMMC_RESP_LONG, resp);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-
     card->mfr_id = (resp[0] >> 24) & 0xFF;
     card->oem_id[0] = (resp[0] >> 16) & 0xFF;
     card->oem_id[1] = (resp[0] >> 8) & 0xFF;
@@ -127,23 +75,12 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
     card->serial = ((resp[2] & 0x00FFFFFF) << 8) | ((resp[3] >> 24) & 0xFF);
     card->mfr_year = ((resp[3] >> 12) & 0xFF) + 2000;
     card->mfr_month = (resp[3] >> 8) & 0xF;
+}
 
-    /* CMD3: SEND_RELATIVE_ADDR — R6 格式见 SD Spec v9.10 Section 4.9.5
-     * resp[0] 高16位=RCA, 低16位=部分Card Status */
-    err = SendCmd(sdmmc, SD_CMD_SET_REL_ADDR, 0, SDMMC_RESP_SHORT, resp);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-    card->rca = resp[0] >> 16;
 
-    /* CMD9: SEND_CSD → 解析容量
-     * arg=[31:16]=RCA (ac 类命令通用格式, 见 Table 4-22)
-     * CSD 位域定义见 SD Spec v9.10 Table 5-3 (V2.0) / Table 5-4 (V1.0)
-     * resp[] 映射同 CID: resp[0]=CSD[127:96] ... resp[3]=CSD[31:0] */
-    err = SendCmd(sdmmc, SD_CMD_SEND_CSD, card->rca << 16, SDMMC_RESP_LONG, resp);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-
-    /* TRAN_SPEED = CSD[103:96], 编码规则见 Table 5-6 */
+/* CSD R2 响应解析 — 容量 + 最高时钟, 依赖 is_sdhc 已确定 */
+static void ParseCsd(SdCard_t *card, const uint32_t resp[4])
+{
     uint8_t ts = resp[0] & 0xFF;
     card->max_clk_hz = speed_unit[ts & 0x7] / 10 * speed_mult[(ts >> 3) & 0xF];
 
@@ -163,21 +100,109 @@ SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
         card->total_blocks = block_nr * (1U << read_bl_len) / SD_BLOCK_SIZE;
     }
     card->capacity_mb = card->total_blocks / SD_BLOCKS_PER_MB;
+}
 
-    /* CMD7: SELECT_CARD → Transfer State
-     * arg=[31:16]=RCA (Table 4-22), 响应 R1b (带 Busy) */
-    err = SendCmd(sdmmc, SD_CMD_SEL_DESEL_CARD, card->rca << 16, SDMMC_RESP_SHORT, resp);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
 
-    /* ACMD6: SET_BUS_WIDTH — arg: 0=1-bit, 2=4-bit (Table 4-43) */
-    err = SendAcmd(sdmmc, card->rca, SD_ACMD_SET_BUS_WIDTH, SD_ACMD6_BUS_4BIT, SDMMC_RESP_SHORT, resp);
-    if (err != SDMMC_OK)
-        return SD_ERR_IO;
-    SdmmcSetBusWidth(sdmmc, SDMMC_BUS_4BIT);
+/* ---- 公开接口 ---- */
 
-    /* 设定目标速率 (包含时钟提频、UHS-I 电压切换 + 升级速率) */
+/* 初始化: 上电→卡识别→获取信息→选卡→4-bit→设定目标速率
+ * 注意: CMD9 必须在 CMD7 之前发, 否则部分 SD 卡初始化失败 (原因未明) */
+SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps)
+{
+    SdmmcPowerOn(card->sdmmc, card->ker_ck_hz);
+
+    SdCardErr_t err = SdCardIdentify(card);
+    if (err != SD_OK) return err;
+
+    err = SdCardGetInfo(card);
+    if (err != SD_OK) return err;
+
+    err = SdCardSelect(card);
+    if (err != SD_OK) return err;
+
+    err = SdCardSetBusWidth(card);
+    if (err != SD_OK) return err;
+
     return SdCardSetSpeed(card, target_MBps);
+}
+
+
+/* ---- 识别/选卡/总线宽度/信息获取 (与 eMMC 接口对齐) ---- */
+
+/* 识别: CMD0→CMD8→ACMD41→CMD2→CMD3, 卡进 Stand-by */
+SdCardErr_t SdCardIdentify(SdCard_t *card)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t resp[4];
+    SdmmcErr_t err;
+
+    /* CMD0: GO_IDLE_STATE */
+    err = SendCmd(sdmmc, SD_CMD_GO_IDLE_STATE, 0, SDMMC_RESP_NONE, NULL);
+    if (err != SDMMC_OK) return SD_ERR_IO;
+
+    /* CMD8: SEND_IF_COND — 区分 SD v2.0+ 与 v1.x */
+    err = SendCmd(sdmmc, SD_CMD_SEND_IF_COND, SD_CMD8_ARG, SDMMC_RESP_SHORT, resp);
+    if (err == SDMMC_ERR_CTIMEOUT) return SD_ERR_UNUSABLE;
+    if (err != SDMMC_OK) return SD_ERR_IO;
+    if ((resp[0] & SD_CMD8_RESP_MASK) != SD_CMD8_ARG) return SD_ERR_UNUSABLE;
+
+    /* ACMD41 循环: 设 HCS+S18R+电压窗口, 等卡 Busy=1 */
+    uint32_t ocr = 0;
+    uint32_t retry;
+    for (retry = 0; retry < ACMD41_RETRY_MAX; retry++)
+    {
+        err = SendAcmd(sdmmc, 0, SD_ACMD_SEND_OP_COND, SD_ACMD41_ARG, SDMMC_RESP_SHORT_NOCRC, resp);
+        if (err != SDMMC_OK) return SD_ERR_IO;
+        ocr = resp[0];
+        if (ocr & SD_OCR_BUSY) break;
+    }
+    if (retry == ACMD41_RETRY_MAX) return SD_ERR_INIT_TIMEOUT;
+    card->is_sdhc = (ocr & SD_OCR_CCS) ? 1 : 0;
+    card->s18a = (ocr & SD_OCR_S18A) ? 1 : 0;
+
+    /* CMD2: ALL_SEND_CID → 解析身份信息 */
+    err = SendCmd(sdmmc, SD_CMD_ALL_SEND_CID, 0, SDMMC_RESP_LONG, resp);
+    if (err != SDMMC_OK) return SD_ERR_IO;
+    ParseCid(card, resp);
+
+    /* CMD3: SET_REL_ADDR — R6 高16位=RCA */
+    err = SendCmd(sdmmc, SD_CMD_SET_REL_ADDR, 0, SDMMC_RESP_SHORT, resp);
+    if (err != SDMMC_OK) return SD_ERR_IO;
+    card->rca = resp[0] >> 16;
+
+    return SD_OK;
+}
+
+
+/* 选卡: CMD7 SEL_DESEL_CARD, Stand-by → Transfer */
+SdCardErr_t SdCardSelect(SdCard_t *card)
+{
+    SdmmcErr_t err = SendCmd(card->sdmmc, SD_CMD_SEL_DESEL_CARD,
+                              card->rca << 16, SDMMC_RESP_SHORT, NULL);
+    return (err == SDMMC_OK) ? SD_OK : SD_ERR_IO;
+}
+
+
+/* 设置总线宽度: ACMD6 SET_BUS_WIDTH + 硬件寄存器 */
+SdCardErr_t SdCardSetBusWidth(SdCard_t *card)
+{
+    SdmmcErr_t err = SendAcmd(card->sdmmc, card->rca, SD_ACMD_SET_BUS_WIDTH,
+                               SD_ACMD6_BUS_4BIT, SDMMC_RESP_SHORT, NULL);
+    if (err != SDMMC_OK) return SD_ERR_IO;
+    SdmmcSetBusWidth(card->sdmmc, SDMMC_BUS_4BIT);
+    return SD_OK;
+}
+
+
+/* 获取卡信息: CMD9 SEND_CSD, 解析容量/最高时钟 */
+SdCardErr_t SdCardGetInfo(SdCard_t *card)
+{
+    uint32_t resp[4];
+    SdmmcErr_t err = SendCmd(card->sdmmc, SD_CMD_SEND_CSD,
+                              card->rca << 16, SDMMC_RESP_LONG, resp);
+    if (err != SDMMC_OK) return SD_ERR_IO;
+    ParseCsd(card, resp);
+    return SD_OK;
 }
 
 

@@ -107,7 +107,21 @@ typedef struct {
 } SdCard_t;
 
 
+/* 识别: CMD0→CMD8→ACMD41→CMD2→CMD3, 卡进 Stand-by, 填充 CID/RCA/is_sdhc/s18a */
+SdCardErr_t SdCardIdentify(SdCard_t *card);
+
+/* 选择卡: CMD7 SEL_DESEL_CARD (Stand-by → Transfer) */
+SdCardErr_t SdCardSelect(SdCard_t *card);
+
+/* 设置总线宽度: ACMD6 SET_BUS_WIDTH + SdmmcSetBusWidth */
+SdCardErr_t SdCardSetBusWidth(SdCard_t *card);
+
+/* 获取卡信息: CMD9 SEND_CSD, 解析容量/最高时钟 */
+SdCardErr_t SdCardGetInfo(SdCard_t *card);
+
+/* 初始化全流程: 上电 → Identify → Select → SetBusWidth → GetInfo → SetSpeed */
 SdCardErr_t SdCardInit(SdCard_t *card, uint32_t target_MBps);
+
 SdCardErr_t SdCardSetSpeed(SdCard_t *card, uint32_t target_MBps);
 SdCardErr_t SdCardReadBlocks(SdCard_t *card, uint32_t block, void *buf, uint32_t count);
 SdCardErr_t SdCardWriteBlocks(SdCard_t *card, uint32_t block, const void *buf, uint32_t count);

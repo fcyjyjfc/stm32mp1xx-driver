@@ -12,7 +12,7 @@ static uint8_t g_buf[256 * 512] __attribute__((aligned(4)));
 
 
 /* SDMMC1 GPIO: PC8~PC12(AF12), PD2(AF12), 高速+上拉 */
-static void SdmmcGpioInit(void)
+static void SdGpioInit(void)
 {
     RCC->MP_AHB4ENSETR |= (1U << 2) | (1U << 3) | (1U << 7);  /* GPIOC, D, H */
 
@@ -35,7 +35,7 @@ static void SdmmcGpioInit(void)
     GpioPullUpDown(GPIO_D, 2, GPIO_PUPDR_PULL_UP);
 }
 
-static void SdmmcClkInit(void)
+static void SdClkInit(void)
 {
     /* ker_ck 选 HSI (64MHz), 频率已知不依赖 PLL 配置 */
     RCC->SDMMC12CKSELR = 3;
@@ -44,12 +44,12 @@ static void SdmmcClkInit(void)
 }
 
 /* 统一初始化: GPIO + 时钟 + 卡识别, 成功返回0 */
-static int SdmmcHwInit(void)
+static int SdHwInit(void)
 {
     char dec[16];
 
-    SdmmcGpioInit();
-    SdmmcClkInit();
+    SdGpioInit();
+    SdClkInit();
 
     g_card.sdmmc = SDMMC1;
     g_card.ker_ck_hz = 64000000;
@@ -120,7 +120,7 @@ static int SdmmcHwInit(void)
 
 
 /* GIC 中断统一配置: SDMMC1 IRQ 81, priority 5, enable IRQ */
-static void SdmmcGicConfig(void)
+static void SdGicConfig(void)
 {
     GicdSetGroup(GIC_SDMMC1);
     GicdSetPriority(GIC_SDMMC1, 5);
@@ -141,14 +141,14 @@ static void SdmmcGicConfig(void)
 }
 
 /* 中断清理: 关 SDMMC1 + 重置 done 标志 */
-static void SdmmcGicCleanup(void)
+static void SdGicCleanup(void)
 {
     GicdDisableInt(GIC_SDMMC1);
     g_sdmmc1_irq.it_done = 0;
 }
 
 /* 测试间扫尾: SDMMC1 外设复位 + 卡重初始化, 确保下一个测试在干净环境中运行 */
-static void SdmmcTestCleanup(void)
+static void SdTestCleanup(void)
 {
     RCC->AHB6RSTSETR = (1U << 16);  /* 断言 SDMMC1 复位 */
     RCC->AHB6RSTCLRR = (1U << 16);  /* 释放复位, 所有寄存器回到默认值 */
@@ -575,7 +575,7 @@ static void LlItMultiBlockTest(void)
     for (i = 0; i < 256; i++)
         p[i] = (uint16_t)i;
 
-    SdmmcGicConfig();
+    SdGicConfig();
 
     /* ---- 中断写 ---- */
     PRINT("  Writing via ISR...\r\n");
@@ -646,7 +646,7 @@ static void LlItMultiBlockTest(void)
     }
 
 cleanup:
-    SdmmcGicCleanup();
+    SdGicCleanup();
 }
 
 
@@ -731,7 +731,7 @@ static void LlItBtcTest(void)
     desc_rd_pool[8].buf_size = rd_sizes[1];
     desc_rd_pool[8].idmalar  = SDMMC_IDMALAR_ULS;        /* BAR=0! ULA=0 */
 
-    SdmmcGicConfig();
+    SdGicConfig();
 
     /* ---- 中断写: 只预填了节点0, 节点1 由前台在 BTC 后动态填 ---- */
     PRINT("  Writing 2 nodes via ISR (node1 BAR=0, fill on BTC)...\r\n");
@@ -898,8 +898,8 @@ static void LlItBtcTest(void)
     }
 
 cleanup:
-    SdmmcGicCleanup();
-    SdmmcTestCleanup();         /* 测试6触发 IDMATE, 需要外设复位 + 重初始化 */
+    SdGicCleanup();
+    SdTestCleanup();         /* 测试6触发 IDMATE, 需要外设复位 + 重初始化 */
 }
 
 
@@ -990,7 +990,7 @@ static void LlItBtcMultiTest(void)
     PRINT("  Clock reduced to 8 MHz\r\n");
 
     /* ---- 中断写 ---- */
-    SdmmcGicConfig();
+    SdGicConfig();
     g_sdmmc1_irq.it_done  = 0;
     g_sdmmc1_irq.btc_cnt = 0;
     g_sdmmc1_irq.dbg_idx = 0;
@@ -1135,7 +1135,7 @@ static void LlItBtcMultiTest(void)
             PRINT("  Verify FAILED\r\n");
     }
 
-    SdmmcGicCleanup();
+    SdGicCleanup();
 #undef N_PREPARED
 #undef N_NODES
 }
@@ -1224,7 +1224,7 @@ static void LlItPreparedTest(void)
     desc_rd_pool[8].buf_size = rd_sizes[1];
     desc_rd_pool[8].idmalar  = SDMMC_IDMALAR_ULS | SDMMC_IDMALAR_ABR;
 
-    SdmmcGicConfig();
+    SdGicConfig();
 
     /* ---- 中断写: 所有节点 ABR=1, BTC 仅计数 ---- */
     PRINT("  Writing via ISR (all pre-prepared)...\r\n");
@@ -1327,7 +1327,7 @@ static void LlItPreparedTest(void)
     }
 
 cleanup:
-    SdmmcGicCleanup();
+    SdGicCleanup();
 }
 
 
@@ -1488,7 +1488,7 @@ static void EraseTest(void)
 }
 
 
-static const MenuEntry_t sdmmc_menu[] = {
+static const MenuEntry_t sd_menu[] = {
     { "1", "Read MBR",              ReadMbrTest },
     { "2", "Write/Read Test",       WriteReadTest },
     { "3", "Multi-block Write/Read",MultiBlockTest },
@@ -1500,11 +1500,11 @@ static const MenuEntry_t sdmmc_menu[] = {
     { "9", "Erase Test (16 blk, erase 8)", EraseTest },
 };
 
-void SdmmcTest(void)
+void SdTest(void)
 {
-    PRINT("\r\n===== SDMMC Init =====\r\n");
-    if (SdmmcHwInit() != 0)
+    PRINT("\r\n===== SD Init =====\r\n");
+    if (SdHwInit() != 0)
         return;
 
-    RunSubMenu("SDMMC Test", sdmmc_menu, sizeof(sdmmc_menu) / sizeof(sdmmc_menu[0]));
+    RunSubMenu("SD Test", sd_menu, sizeof(sd_menu) / sizeof(sd_menu[0]));
 }

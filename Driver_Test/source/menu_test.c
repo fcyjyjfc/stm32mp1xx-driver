@@ -14,7 +14,7 @@ extern void IrqTest(void);
 extern void AdcTest(void);
 extern void DacTest(void);
 extern void MdmaTest(void);
-extern void SdmmcTest(void);
+extern void SdTest(void);
 extern void RngTest(void);
 extern void CrcTest(void);
 extern void EmmcTest(void);
@@ -32,10 +32,10 @@ static const MenuEntry_t g_menu[] = {
     { "10", "ADC",    AdcTest },
     { "11", "DAC",    DacTest },
     { "12", "MDMA",   MdmaTest },
-    { "13", "SDMMC",  SdmmcTest },
-    { "14", "RNG",    RngTest },
-    { "15", "CRC",    CrcTest },
-    { "16", "eMMC",   EmmcTest },
+    { "13", "SD",     SdTest },
+    { "14", "eMMC",   EmmcTest },
+    { "15", "RNG",    RngTest },
+    { "16", "CRC",    CrcTest },
 };
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
