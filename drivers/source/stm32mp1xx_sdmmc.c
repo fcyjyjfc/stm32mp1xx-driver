@@ -683,9 +683,10 @@ void SdmmcFifoReset(volatile SdmmcRegs_t *sdmmc)
  * IDMATE 无中断使能位 (实测), 仅 STAR 标志 + ICR 清除.
  */
 
-/* 两个 SDMMC 实例各自独立的中断状态 — 由 Sdmmc1IrqHandler / Sdmmc2IrqHandler 分别操作 */
+/* 三个 SDMMC 实例各自独立的中断状态 — 由 Sdmmc1IrqHandler / Sdmmc2IrqHandler / Sdmmc3IrqHandler 分别操作 */
 SdmmcIrqState_t g_sdmmc1_irq;
 SdmmcIrqState_t g_sdmmc2_irq;
+SdmmcIrqState_t g_sdmmc3_irq;
 
 
 /**
@@ -924,4 +925,13 @@ void Sdmmc1IrqHandler(void)
 void Sdmmc2IrqHandler(void)
 {
     SdmmcIrqHandlerCore(SDMMC2, &g_sdmmc2_irq);
+}
+
+
+/**
+ * @brief SDMMC3 中断入口 — 编译时绑定 SDMMC3 寄存器 + g_sdmmc3_irq
+ */
+void Sdmmc3IrqHandler(void)
+{
+    SdmmcIrqHandlerCore(SDMMC3, &g_sdmmc3_irq);
 }

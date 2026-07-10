@@ -281,6 +281,7 @@ typedef struct {
 
 extern SdmmcIrqState_t g_sdmmc1_irq;
 extern SdmmcIrqState_t g_sdmmc2_irq;
+extern SdmmcIrqState_t g_sdmmc3_irq;
 
 /* 启动 LL 传输 (不阻塞), irq 指向对应实例的 SdmmcIrqState_t, ISR 接管后续 */
 void SdmmcStartWriteLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
@@ -293,9 +294,10 @@ void SdmmcStartReadLL(volatile SdmmcRegs_t *sdmmc, SdmmcIrqState_t *irq,
                       const SdmmcIdmaDesc_t *desc_first,
                       SdmmcBlockSize_t  block_size_log);
 
-/* SDMMC1 / SDMMC2 独立中断入口, 编译时绑定, 由 do_irq → vector table 分发 */
+/* SDMMC1 / SDMMC2 / SDMMC3 独立中断入口, 编译时绑定, 由 do_irq → vector table 分发 */
 void Sdmmc1IrqHandler(void);
 void Sdmmc2IrqHandler(void);
+void Sdmmc3IrqHandler(void);
 
 
 /* ===== 寄存器辅助操作 (供上层使用, 避免直接访问寄存器) ===== */
