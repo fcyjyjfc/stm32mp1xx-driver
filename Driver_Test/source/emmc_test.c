@@ -26,9 +26,9 @@ static void EmmcGpioInit(void)
     RCC->MP_AHB4ENSETR |= (1U << 0) | (1U << 1) | (1U << 3)
                         | (1U << 4) | (1U << 6); /* GPIOA,B,D,E,G */
 
-    /* PG6 = CMD */
+    /* PG6 = CMD, AF10 */
     GpioMode(GPIO_G, 6, GPIO_MODER_AF);
-    GpioAf(GPIO_G, 6, 9);
+    GpioAf(GPIO_G, 6, 10);
     GpioOtype(GPIO_G, 6, GPIO_OTYPE_PUSH_PULL);
     GpioOspeed(GPIO_G, 6, GPIO_OSPEED_HI);
     GpioPullUpDown(GPIO_G, 6, GPIO_PUPDR_PULL_UP);
@@ -51,7 +51,7 @@ static void EmmcGpioInit(void)
         GpioPullUpDown(GPIO_B, pins_b[i], GPIO_PUPDR_PULL_UP);
     }
 
-    /* PA8=D4, PA9=D5 */
+    /* PA8=D4(AF9), PA9=D5(AF10) */
     GpioMode(GPIO_A, 8, GPIO_MODER_AF);
     GpioAf(GPIO_A, 8, 9);
     GpioOtype(GPIO_A, 8, GPIO_OTYPE_PUSH_PULL);
@@ -59,7 +59,7 @@ static void EmmcGpioInit(void)
     GpioPullUpDown(GPIO_A, 8, GPIO_PUPDR_PULL_UP);
 
     GpioMode(GPIO_A, 9, GPIO_MODER_AF);
-    GpioAf(GPIO_A, 9, 9);
+    GpioAf(GPIO_A, 9, 10);
     GpioOtype(GPIO_A, 9, GPIO_OTYPE_PUSH_PULL);
     GpioOspeed(GPIO_A, 9, GPIO_OSPEED_HI);
     GpioPullUpDown(GPIO_A, 9, GPIO_PUPDR_PULL_UP);
@@ -257,7 +257,7 @@ static int EmmcHwInit(void)
 
     PRINT("\r\n===== eMMC Init =====\r\n");
 
-//    EmmcGpioInit(); // TODO 配置后无法正常工作，暂时屏蔽，依赖u-boot的配置
+    EmmcGpioInit();
     EmmcClkInit();
 
     g_emmc.sdmmc = SDMMC2;
