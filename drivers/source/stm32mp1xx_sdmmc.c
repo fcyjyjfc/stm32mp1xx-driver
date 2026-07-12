@@ -208,13 +208,6 @@ static SdmmcErr_t SdmmcCmdPhase(volatile SdmmcRegs_t *sdmmc,
     if ((sta & SDMMC_STA_CCRCFAIL) && (cmd->resp_type != SDMMC_RESP_SHORT_NOCRC))
         return SDMMC_ERR_CCRCFAIL;
 
-    /* 校验回显的命令索引 */
-    if (cmd->resp_type == SDMMC_RESP_SHORT)
-    {
-        if ((sdmmc->RESPCMDR & 0x3F) != cmd->index)
-            return SDMMC_ERR_RESP_MISMATCH;
-    }
-
     /* 读取响应数据, 上层根据命令类型自行解析 */
     if (resp)
     {

@@ -49,6 +49,16 @@ typedef enum {
 #define SDIO_R1_IO_STATE       0xF000U     /* CMD13 R1 bits[12:9]=0xF 标识 IO-only */
 
 
+/* ---- CMD53: IO_RW_EXTENDED ---- */
+/* arg 位域 */
+#define SDIO_CMD53_RW           (1U << 31)  /* 1=写, 0=读 */
+#define SDIO_CMD53_FUNC(x)      ((uint32_t)(x) << 28)
+#define SDIO_CMD53_BLOCK_MODE   (1U << 26)  /* 0=byte mode, 1=block mode */
+#define SDIO_CMD53_OP_INC       (1U << 25)  /* 0=fixed addr, 1=incrementing */
+#define SDIO_CMD53_ADDR(x)      (((uint32_t)(x) & 0x1FFFF) << 9)
+#define SDIO_CMD53_CNT(x)       ((uint32_t)(x) & 0x1FF)
+
+
 /* ---- CMD52: IO_RW_DIRECT ---- */
 /* arg 位域 */
 #define SDIO_CMD52_RW          (1U << 31)  /* 1=写, 0=读 */
@@ -155,6 +165,9 @@ SdioCardErr_t SdioCardIdentify(SdioCard_t *card);
 /* CMD52 单字节读 (Function 0, RAW=0) */
 SdioCardErr_t SdioCardReadB(SdioCard_t *card, uint16_t addr, uint8_t *val);
 
+/* CMD52 单字节读 (指定 Function, RAW=0) */
+SdioCardErr_t SdioCardReadFnB(SdioCard_t *card, uint8_t fn, uint16_t addr, uint8_t *val);
+
 /* CMD52 单字节写 (Function 0, RAW=0) */
 SdioCardErr_t SdioCardWriteB(SdioCard_t *card, uint16_t addr, uint8_t val);
 
@@ -169,6 +182,14 @@ SdioCardErr_t SdioCardReadCis(SdioCard_t *card);
 
 /* 读全部卡信息: CCCR + CIS (封装 SdioCardReadCccr+SdioCardReadCis) */
 SdioCardErr_t SdioCardReadInfo(SdioCard_t *card);
+
+/* CMD53 多字节读 (byte mode, 增量地址) */
+SdioCardErr_t SdioCardReadMultiB(SdioCard_t *card, uint16_t addr,
+                                  uint8_t fn, uint8_t *buf, uint16_t cnt);
+
+/* CMD53 多字节写 (byte mode, 增量地址) */
+SdioCardErr_t SdioCardWriteMultiB(SdioCard_t *card, uint16_t addr,
+                                   uint8_t fn, const uint8_t *buf, uint16_t cnt);
 
 
 #endif /* SDIO_CARD_H_ */

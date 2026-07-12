@@ -227,6 +227,70 @@
 | JOVSE=1 + CONT=1 串口刷屏看不到注入 | 常规转换太快，注入结果被淹没 | 降低常规触发频率或存结果验证 |
 | DUAL 组合模式误用导致 ADC1 读值异常 | `ADC_DUAL_REG_SIMULT=0x01` 实际是"常规+注入同步"组合模式 | 修正为 0x06（纯常规同步） |
 
+## SDIO (AP6212 / CYW43438)
+
+硬件配置: SDMMC3, ker_ck=HCLK2(64MHz), PD0(CMD,AF10)+PG15(CLK,AF10)+PF0/4(D0/D1,AF9)+PD5/7(D2/D3,AF10)
+
+### 初始化 & 识别
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| GPIO 初始化 | 通过 | PD0/PG15/PF0/PF4/PD5/PD7, AF10/AF9, 上拉 |
+| WL_REG_ON 上电时序 | 通过 | PD4 拉高后等待 ~50ms |
+| RCC 时钟使能 | 通过 | SDMMC3CKSELR=3(HCLK2), MP_AHB2ENSETR bit16 |
+| SdioCardIdentify | 通过 | CMD0 → CMD5(arg=0 探测) → CMD5(poll C=1) → CMD3 → CMD7 |
+| NF (I/O 功能数) | 通过 | R4 返回 NF=2 (F1=WiFi, F2=BT) |
+| S18A (1.8V 切换) | 通过 | 卡支持 1.8V, 当前在 3.3V 工作 |
+
+### CCCR & CIS
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| CCCR Read (0x00~0x14) | 通过 | CMD52 Func=0 读全部 CCCR 寄存器 |
+| CMD52 RAW Loopback | 通过 | INT_ENABLE 写+RAW 读回验证 |
+| CIS Dump | 通过 | 逐元组扫描, CISTPL_MANFID/CISTPL_SDIO_STD/CISTPL_FUNCE 解析正常 |
+| 卡信息 | 通过 | CCCR/SDIO 版本, CIS 指针, 制造商 ID, F1 最大块大小等 |
+
+### I/O 功能使能 & 总线配置
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| IO_ENABLE F1 写+轮询 | 通过 | IO_ENABLE=0x02, 轮询 IO_READY bit1 就绪 |
+| 4-bit 总线切换 | 通过 | BUS_CTRL bit0=1 + SdmmcSetBusWidth(4BIT) |
+| 高速模式 (SDR25) | 通过 | BUS_SPEED=1, 时钟 25MHz |
+| CD Disable | 通过 | BUS_CTRL bit7=1 |
+
+### FBR (Function Basic Register) 访问
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| F1 CSI (F0 地址空间 0x100) | 通过 | 返回值 0x00 (CSA=0, 无 CMD53 支持声明) |
+| F1 CSI (Fn 直接访问, Func=1 addr=0) | 通过 | 返回值 0xA6 (CSA=0, 但 Linux brcmfmac 无视此位) |
+| F1 块大小 (F0 地址空间 0x110-0x111) | 通过 | 写 64 回读验证 0x0040 正确 |
+
+### CMD53 数据传输
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| byte mode (F1, cnt=4, addr=0) | **未通过** | R5=0x1800 (ERROR + IO_CURRENT_STATE=CMD) |
+| block mode (F1, 1×64B, addr=0) | **未通过** | R5=0x1800 (ERROR) + SdmmcReadData DTIMEOUT |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| RESPCMDR 误判 CMD53 为 CMD52 | R5 响应回显命令索引 52 (CMD52 的索引) 而非 53, 导致 SDMMC_ERR_RESP_MISMATCH | 删除 SdmmcCmdPhase 中 RESPCMDR 校验 (sdmmc.c:211~216) |
+| CMD53 数据阶段 DTIMER 过长 | DTIMER=0xFFFFFFFF @25MHz ≈ 171s, 加上命令错误后无限等待 DATAEND 导致看门狗复位 | DTIMER=ker_ck_hz/10 (~100ms) + R5 ERROR 提前返回 |
+| SdioCardReadMultiB DTMODE 配置错误 | 使用 SDMMC_DCTRL_SDMODE (DTMODE=01 电压切换模式) 而非 DTMODE=00 | 改用 DTMODE=00 + DBLOCKSIZE=0 |
+
+### 未解决问题
+
+- R5=0x1800 (ERROR) 表示卡拒接 CMD53. 可能原因：
+  - F1 CSI CSA=0 (但 Linux brcmfmac 无视此位仍用 CMD53 收发所有数据)
+  - F1 需额外初始化步骤 (如 F1 内部窗口/backplane 配置, CYW43438 的 SBSDIO 有 4KB 窗口机制)
+  - CMD53 参数有误 (地址/计数/功能号等)
+  需参照 Linux brcmfmac 源码 (`brcmf_sdiod_ramrw`, `brcmf_sdiod_send_pkt`) 确定正确用法.
+
 ## MDMA
 
 | 测试项 | 状态 | 说明 |

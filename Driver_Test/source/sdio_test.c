@@ -134,7 +134,7 @@ static int SdioHwInit(void)
         uint8_t bus;
         if (SdioCardReadB(&g_sdio, SDIO_CCCR_BUS_CTRL, &bus) != SDIO_OK)
             return -1;
-        bus |= 0x01;
+        bus |= 0x81;  /* bit7=CD Disable, bit0=4-bit */
         if (SdioCardWriteB(&g_sdio, SDIO_CCCR_BUS_CTRL, bus) != SDIO_OK)
             return -1;
         SdmmcSetBusWidth(g_sdio.sdmmc, SDMMC_BUS_4BIT);
@@ -445,11 +445,172 @@ static void CisDumpTest(void)
     PRINT("CIS Dump done.\r\n");
 }
 
+/* ---- R5 解码打印 ---- */
+static void PrintR5(uint32_t r5)
+{
+    PRINT("  R5=0x");
+    PrintHex8((uint8_t)(r5 >> 24));
+    PrintHex8((uint8_t)(r5 >> 16));
+    PrintHex8((uint8_t)(r5 >> 8));
+    PrintHex8((uint8_t)r5);
+    PRINT("\r\n");
+
+    if (r5 & SDIO_R5_COM_CRC_ERROR) PRINT("    COM_CRC_ERROR\r\n");
+    if (r5 & SDIO_R5_ILLEGAL_CMD)   PRINT("    ILLEGAL_CMD\r\n");
+    if (r5 & SDIO_R5_ERROR)         PRINT("    ERROR\r\n");
+    if (r5 & SDIO_R5_FUNC_NUM)      PRINT("    FUNC_NUM\r\n");
+    if (r5 & SDIO_R5_OUT_OF_RANGE)  PRINT("    OUT_OF_RANGE\r\n");
+
+    uint32_t st = SDIO_R5_IO_CURRENT_STATE(r5);
+    PRINT("    IO_CURRENT_STATE=");
+    if (st == 0)      PRINT("DIS\r\n");
+    else if (st == 1) PRINT("CMD\r\n");
+    else if (st == 2) PRINT("TRN\r\n");
+    else              { PrintHex8((uint8_t)st); PRINT("\r\n"); }
+}
+
+
+/* ================================
+ *  4. CMD53 多字节读 — 先读 F1 CSI 验证支持, 再试 F1
+ * ================================ */
+static void Cmd53ReadTest(void)
+{
+    char dec[16];
+    uint8_t csi;
+    SdioCardErr_t err;
+
+    PRINT("\r\n----- CMD53 Read -----\r\n");
+
+    /* 读 IO_ENABLE / IO_READY */
+    {
+        uint8_t ena, ready;
+        SdioCardReadB(&g_sdio, SDIO_CCCR_IO_ENABLE, &ena);
+        SdioCardReadB(&g_sdio, SDIO_CCCR_IO_READY, &ready);
+        PRINT("  IO_ENABLE=0x"); PrintHex8(ena);
+        PRINT("  IO_READY=0x"); PrintHex8(ready); PRINT("\r\n");
+    }
+
+    /* 读各 Function CSI: 先试 F0 地址空间 (n*0x100), 再试 Fn 直接访问 */
+    for (int fn = 1; fn <= 2; fn++)
+    {
+        IwdgKickDog(IWDG2);
+        if (SdioCardReadB(&g_sdio, (uint16_t)(fn * 0x100), &csi) == SDIO_OK)
+        {
+            PRINT("  F"); PrintDec(dec, fn); PRINT(dec);
+            PRINT(" CSI(F0)=0x"); PrintHex8(csi);
+            PRINT(" CSA="); PRINT((csi & 0x01) ? "yes" : "no");
+            PRINT("\r\n");
+        }
+        /* 再试 Fn 直接访问 */
+        if (SdioCardReadFnB(&g_sdio, (uint8_t)fn, 0, &csi) == SDIO_OK)
+        {
+            PRINT("  F"); PrintDec(dec, fn); PRINT(dec);
+            PRINT(" CSI(Fn)=0x"); PrintHex8(csi);
+            PRINT(" CSA="); PRINT((csi & 0x01) ? "yes" : "no");
+            PRINT("\r\n");
+        }
+    }
+
+    /* 读 F1 状态: R5 IO_CURRENT_STATE in idle */
+    {
+        uint8_t val;
+        PRINT("  F1 state: ");
+        if (SdioCardReadFnB(&g_sdio, 1, 0, &val) == SDIO_OK)
+        {
+            uint32_t r5 = g_sdio.sdmmc->RESP1R;
+            uint32_t st = SDIO_R5_IO_CURRENT_STATE(r5);
+            if (st == 0)      PRINT("DIS\r\n");
+            else if (st == 1) PRINT("CMD\r\n");
+            else if (st == 2) PRINT("TRN\r\n");
+            else              { PrintHex8((uint8_t)st); PRINT("\r\n"); }
+        }
+    }
+
+    /* CD Disable */
+    {
+        uint8_t bus;
+        if (SdioCardReadB(&g_sdio, SDIO_CCCR_BUS_CTRL, &bus) != SDIO_OK)
+            { PRINT("  BUS_CTRL read FAILED\r\n"); return; }
+        bus |= 0x81;
+        if (SdioCardWriteB(&g_sdio, SDIO_CCCR_BUS_CTRL, bus) != SDIO_OK)
+            { PRINT("  BUS_CTRL write FAILED\r\n"); return; }
+        PRINT("  BUS_CTRL=0x"); PrintHex8(bus); PRINT("\r\n");
+    }
+
+    /* 设 F1 block size = 64 (F0 addr 0x110-0x111, 16-bit LE) */
+    {
+        uint8_t lo = 64, hi = 0;
+        SdioCardWriteB(&g_sdio, 0x110, lo);
+        SdioCardWriteB(&g_sdio, 0x111, hi);
+        /* 读回验证 */
+        SdioCardReadB(&g_sdio, 0x110, &lo);
+        SdioCardReadB(&g_sdio, 0x111, &hi);
+        PRINT("  F1 blksz=0x"); PrintHex8(hi); PrintHex8(lo);
+        PRINT(" ("); PrintDec(dec, hi * 256 + lo); PRINT(dec); PRINT(")\r\n");
+    }
+
+    /* CMD53 byte mode, F1, addr=0, cnt=4 */
+    PRINT("  -> byte mode cnt=4...\r\n");
+    IwdgKickDog(IWDG2);
+    err = SdioCardReadMultiB(&g_sdio, 0, 1, g_buf, 4);
+    if (err == SDIO_OK) {
+        PRINT("  Data:"); for (int i = 0; i < 4; i++) { PRINT(" "); PrintHex8(g_buf[i]); }
+        PRINT("\r\n  byte mode OK\r\n");
+    } else {
+        PrintR5(g_sdio.sdmmc->RESP1R);
+    }
+
+    /* CMD53 byte mode, F0, addr=0, cnt=4 (CCCR 诊断) */
+    PRINT("  -> F0 byte mode cnt=4...\r\n");
+    IwdgKickDog(IWDG2);
+    err = SdioCardReadMultiB(&g_sdio, 0, 0, g_buf, 4);
+    if (err == SDIO_OK) {
+        PRINT("  F0 Data:"); for (int i = 0; i < 4; i++) { PRINT(" "); PrintHex8(g_buf[i]); }
+        PRINT("\r\n  F0 byte mode OK\r\n");
+    } else {
+        PrintR5(g_sdio.sdmmc->RESP1R);
+    }
+
+    /* CMD53 block mode: 1 block × 64B, DBLOCKSIZE=6 */
+    PRINT("  -> block mode 1×64B...\r\n");
+    {
+        uint32_t resp[4];
+        uint32_t arg = SDIO_CMD53_FUNC(1) | SDIO_CMD53_OP_INC
+                     | SDIO_CMD53_BLOCK_MODE
+                     | SDIO_CMD53_ADDR(0) | SDIO_CMD53_CNT(1);
+
+        SdmmcData_t sd = {
+            .buf_addr = (uint32_t)g_buf,
+            .len = 64,
+            .block_size_log = SDMMC_BLKSIZ_64B,
+            .dir_read = SDMMC_DIR_READ,
+        };
+        SdmmcCmd_t cmd = {
+            .index     = SDIO_CMD_IO_RW_EXTENDED,
+            .arg       = arg,
+            .resp_type = SDMMC_RESP_SHORT,
+            .cmdtrans  = SDMMC_CMD_DATA,
+            .cmdstop   = SDMMC_CMD_NOSTOP,
+        };
+        IwdgKickDog(IWDG2);
+        SdmmcErr_t serr = SdmmcReadData(g_sdio.sdmmc, &cmd, &sd, resp);
+
+        if (serr == SDMMC_OK) {
+            PRINT("  Data[0]:"); for (int i = 0; i < 8; i++) { PRINT(" "); PrintHex8(g_buf[i]); }
+            PRINT("\r\n  block mode OK\r\n");
+        } else {
+            PRINT("  SdmmcReadData err="); PrintDec(dec, (int)serr); PRINT(dec); PRINT("\r\n");
+            PrintR5(resp[0]);
+        }
+    }
+}
+
 
 static const MenuEntry_t sdio_menu[] = {
     { "1", "CCCR Read",      CccrReadTest },
     { "2", "CMD52 Loopback", Cmd52LoopbackTest },
     { "3", "CIS Dump",       CisDumpTest },
+    { "4", "CMD53 Read",     Cmd53ReadTest },
 };
 
 

@@ -187,6 +187,30 @@ SdioCardErr_t SdioCardReadB(SdioCard_t *card, uint16_t addr, uint8_t *val)
 
 
 /**
+ * @brief CMD52 单字节读 (指定 Function, RAW=0)
+ *
+ * 用于读取指定 Function 的 FBR 或寄存器, 如 F1 CSI (fn=1, addr=0).
+ */
+SdioCardErr_t SdioCardReadFnB(SdioCard_t *card, uint8_t fn, uint16_t addr, uint8_t *val)
+{
+    uint32_t resp[4];
+    uint32_t arg = SDIO_CMD52_FUNC(fn) | SDIO_CMD52_ADDR(addr);
+
+    SdmmcErr_t err = SendCmd(card->sdmmc, SDIO_CMD_IO_RW_DIRECT, arg,
+                              SDMMC_RESP_SHORT, resp);
+    if (err != SDMMC_OK)
+    {
+        if (val) *val = 0;
+        return SDIO_ERR_IO;
+    }
+
+    if (val)
+        *val = (uint8_t)(resp[0] & 0xFF);
+    return SDIO_OK;
+}
+
+
+/**
  * @brief CMD52 单字节写 (Function 0, RAW=0)
  *
  * 写指定数据到寄存器. RAW=0: R5 返回写入值, 不回读.
@@ -397,6 +421,137 @@ SdioCardErr_t SdioCardReadInfo(SdioCard_t *card)
     err = SdioCardReadCis(card);
     if (err != SDIO_OK)
         return err;
+
+    return SDIO_OK;
+}
+
+
+/* ---- CMD53 多字节传输 ---- */
+
+SdioCardErr_t SdioCardReadMultiB(SdioCard_t *card, uint16_t addr,
+                                  uint8_t fn, uint8_t *buf, uint16_t cnt)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t resp[4];
+
+    if (cnt == 0) cnt = 512;
+    if (cnt > 512) return SDIO_ERR_IO;
+
+    uint32_t arg = SDIO_CMD53_FUNC(fn) | SDIO_CMD53_OP_INC
+                 | SDIO_CMD53_ADDR(addr) | SDIO_CMD53_CNT(cnt);
+
+    /* DTIMER = ~100ms @ ker_ck, 不求精确 */
+    sdmmc->DTIMER = card->ker_ck_hz / 10;
+    sdmmc->DLENR = cnt;
+    sdmmc->IDMABASER = (uint32_t)(uintptr_t)buf;
+    sdmmc->IDMACTRLR = SDMMC_IDMA_IDMAEN;
+    sdmmc->DCTRL = SDMMC_DCTRL_DTDIR;  /* DTMODE=00 (block mode), DBLOCKSIZE=0 */
+
+    SdmmcCmd_t cmd = {
+        .index     = SDIO_CMD_IO_RW_EXTENDED,
+        .arg       = arg,
+        .resp_type = SDMMC_RESP_SHORT,
+        .cmdtrans  = SDMMC_CMD_DATA,
+        .cmdstop   = SDMMC_CMD_NOSTOP,
+    };
+    SdmmcErr_t err = SdmmcSendCmd(sdmmc, &cmd, resp);
+    if (err != SDMMC_OK)
+    {
+        sdmmc->IDMACTRLR = 0;
+        sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+        return SDIO_ERR_IO;
+    }
+
+    /* 卡拒了? R5 ERROR 位 → 不等数据阶段 */
+    if (resp[0] & SDIO_R5_ERROR)
+    {
+        sdmmc->IDMACTRLR = 0;
+        sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+        return SDIO_ERR_IO;
+    }
+
+    uint32_t sta;
+    do {
+        sta = sdmmc->STAR;
+    } while (!(sta & (SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT |
+                      SDMMC_STA_DCRCFAIL | SDMMC_STA_RXOVERR)));
+
+    sdmmc->IDMACTRLR = 0;
+    sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+
+    if (sta & (SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL | SDMMC_STA_RXOVERR))
+        return SDIO_ERR_IO;
+
+    if (resp[0] & SDIO_R5_ERROR)
+        return SDIO_ERR_IO;
+
+    return SDIO_OK;
+}
+
+
+SdioCardErr_t SdioCardWriteMultiB(SdioCard_t *card, uint16_t addr,
+                                   uint8_t fn, const uint8_t *buf, uint16_t cnt)
+{
+    volatile SdmmcRegs_t *sdmmc = card->sdmmc;
+    uint32_t resp[4];
+
+    if (cnt == 0) cnt = 512;
+    if (cnt > 512) return SDIO_ERR_IO;
+
+    uint32_t arg = SDIO_CMD53_RW | SDIO_CMD53_FUNC(fn) | SDIO_CMD53_OP_INC
+                 | SDIO_CMD53_ADDR(addr) | SDIO_CMD53_CNT(cnt);
+
+    sdmmc->DTIMER = card->ker_ck_hz / 10;
+    sdmmc->DLENR = cnt;
+    sdmmc->IDMABASER = (uint32_t)(uintptr_t)buf;
+    sdmmc->IDMACTRLR = SDMMC_IDMA_IDMAEN;
+    sdmmc->DCTRL = 0;  /* DTMODE=00, DBLOCKSIZE=0, DTDIR=0 (write) */
+
+    SdmmcCmd_t cmd = {
+        .index     = SDIO_CMD_IO_RW_EXTENDED,
+        .arg       = arg,
+        .resp_type = SDMMC_RESP_SHORT,
+        .cmdtrans  = SDMMC_CMD_DATA,
+        .cmdstop   = SDMMC_CMD_NOSTOP,
+    };
+    SdmmcErr_t err = SdmmcSendCmd(sdmmc, &cmd, resp);
+    if (err != SDMMC_OK)
+    {
+        sdmmc->IDMACTRLR = 0;
+        sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+        return SDIO_ERR_IO;
+    }
+
+    /* 卡拒了? 不等数据阶段 */
+    if (resp[0] & SDIO_R5_ERROR)
+    {
+        sdmmc->IDMACTRLR = 0;
+        sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+        return SDIO_ERR_IO;
+    }
+
+    uint32_t sta;
+    do {
+        sta = sdmmc->STAR;
+    } while (!(sta & (SDMMC_STA_DATAEND | SDMMC_STA_DTIMEOUT |
+                      SDMMC_STA_DCRCFAIL | SDMMC_STA_TXUNDERR)));
+
+    if (sta & (SDMMC_STA_DTIMEOUT | SDMMC_STA_DCRCFAIL | SDMMC_STA_TXUNDERR))
+    {
+        sdmmc->IDMACTRLR = 0;
+        sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+        return SDIO_ERR_IO;
+    }
+
+    do {
+        sta = sdmmc->STAR;
+    } while (sta & SDMMC_STA_BUSYD0);
+
+    sdmmc->IDMACTRLR = 0;
+    sdmmc->ICR = SDMMC_ICR_ALLFLAGS;
+
+    if (resp[0] & SDIO_R5_ERROR)
+        return SDIO_ERR_IO;
 
     return SDIO_OK;
 }
