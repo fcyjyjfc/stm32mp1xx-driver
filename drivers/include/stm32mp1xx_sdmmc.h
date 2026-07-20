@@ -46,13 +46,9 @@ typedef struct {
 } SdmmcRegs_t;
 
 
-#define SDMMC1_BASE     0x58005000U
-#define SDMMC2_BASE     0x58007000U
-#define SDMMC3_BASE     0x48004000U
-
-#define SDMMC1          ((volatile SdmmcRegs_t *)SDMMC1_BASE)
-#define SDMMC2          ((volatile SdmmcRegs_t *)SDMMC2_BASE)
-#define SDMMC3          ((volatile SdmmcRegs_t *)SDMMC3_BASE)
+extern volatile SdmmcRegs_t *const SDMMC1;
+extern volatile SdmmcRegs_t *const SDMMC2;
+extern volatile SdmmcRegs_t *const SDMMC3;
 
 
 /* ---- STAR 状态位 ---- */

@@ -17,6 +17,15 @@
 #include "stm32mp1xx_sdmmc.h"
 
 
+/* ================================================================== */
+/*  基地址变量定义                                                       */
+/* ================================================================== */
+
+volatile SdmmcRegs_t *const SDMMC1 = (void *)0x58005000U;
+volatile SdmmcRegs_t *const SDMMC2 = (void *)0x58007000U;
+volatile SdmmcRegs_t *const SDMMC3 = (void *)0x48004000U;
+
+
 /* 粗略软件延时, 不依赖 STGEN; CA7 跑几百MHz 时约 1ms/次 */
 static void DelayMs(uint32_t ms)
 {

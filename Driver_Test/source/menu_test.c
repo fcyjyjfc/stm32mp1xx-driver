@@ -38,6 +38,7 @@ static const MenuEntry_t g_menu[] = {
     { "15", "SDIO",   SdioTest },
     { "16", "RNG",    RngTest },
     { "17", "CRC",    CrcTest },
+
 };
 
 #define MENU_CNT  (sizeof(g_menu) / sizeof(g_menu[0]))
