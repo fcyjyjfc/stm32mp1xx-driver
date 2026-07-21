@@ -470,3 +470,33 @@ SdmmcPowerOn (400kHz, 1-bit)
 | CMD30/31 返回 WP 状态全 0 | 此 eMMC (NCard) 的 CMD30 SEND_WRITE_PROT 和 CMD31 SEND_WRITE_PROT_TYPE 返回全 0, 但 CMD28/29 设/清 WP 功能正常, 写保护生效已验证 |
 | Sleep 期间误读写后 DPSM 挂死无法恢复 | Sleep 态下发 CMDTRANS 命令 (CMD17/18/24/25) 会触发 DPSM, 即使命令 CTIMEOUT, DPSM 仍滞留活跃态 (DPSMACT=1), FIFORST 复位无效, 后续所有命令失败。当前通过读写前状态检查预防, 恢复方法尚未找到 |
 | ~~EmmcGpioInit 全配 PG6(CMD) 导致初始化失败~~ | **已修复**: PG6(CMD) 应配 AF10 而非 AF9, PA9(D5) 应配 AF10 而非 AF9. 两个 AF 配置错误导致 eMMC 无法识别 |
+
+## FDCAN
+
+硬件配置: FDCAN1, ker_ck=64MHz, 内部回环模式 (LBCK)
+
+### 经典 CAN 回环
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| Init 125kbit/s | 通过 | FdcanInit + NBTP 自动计算 |
+| 标准帧过滤 (Range, FIFO 0) | 通过 | 0x000~0x7FF, ANFS/ANFE=REJECT |
+| 发送 (FIFO) | 通过 | 4 帧 0x100/0x200/0x300/0x400, DLC=8 |
+| 接收 + 校验 | 通过 | FdcanReadFifo0 轮询, ID/DLC/数据全比对 |
+
+### CAN FD 回环
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| Init 1M/2M bit/s | 通过 | 仲裁 1M, 数据相位 2M, DSIZE_64 |
+| 扩展帧过滤 (Range, FIFO 0) | 通过 | 0x00000000~0x1FFFFFFF |
+| 发送 (FIFO, FD) | 通过 | 6 帧扩展 ID, DLC 9/10/12/13/14/15 |
+| 接收 + 校验 | 通过 | FdcanReadFifo0 轮询, ID/XTD/DLC/数据全比对 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| 标准帧 ID 全为 0 | T0 写 ID 未左移 18 位, 硬件从 bit[28:18] 读到全 0 | 标准帧 ID 左移 18 位, 读时右移回 11 位 |
+| GFC 硬编码 ACCEPT_F0 | 未匹配帧行为不可配置 | 新增 anfs/anfe 配置项 |
+| memcpy RAM 访问 | 非 4 字节对齐, 多余局部变量 ram | 改 uint32_t 直接访问 FDCAN_SRAM[] + DLC→word 查表 |

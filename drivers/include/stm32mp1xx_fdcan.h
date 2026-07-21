@@ -176,6 +176,8 @@ typedef struct {
     uint32_t ext_filters;       /* 扩展 ID 过滤元素数                  */
     uint32_t reject_remote;     /* 0=接受远程帧, 1=拒绝 (GREC_RRFS/RRFE) */
     uint32_t xidam;             /* 扩展 ID 掩码 EIDM[28:0]              */
+    uint32_t anfs;              /* 未匹配标准帧: 0=FIFO0, 1=FIFO1, 2=拒绝 */
+    uint32_t anfe;              /* 未匹配扩展帧: 0=FIFO0, 1=FIFO1, 2=拒绝 */
 } FdcanCfg_t;
 
 

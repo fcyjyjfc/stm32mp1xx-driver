@@ -253,8 +253,8 @@ void FdcanInit(volatile FdcanRegs_t *fdcan, uint32_t ker_ck_hz,
                    (tx_evt_sa      << FDCAN_TXEFC_EFSA_Pos);
 
     /* -- 全局过滤: 未匹配帧 → Rx FIFO 0, 可选拒绝远程帧 -- */
-    fdcan->GFC = (FDCAN_GFC_ACCEPT_F0 << FDCAN_GFC_ANFS_Pos) |
-                 (FDCAN_GFC_ACCEPT_F0 << FDCAN_GFC_ANFE_Pos) |
+    fdcan->GFC = ((cfg->anfs & 3) << FDCAN_GFC_ANFS_Pos) |
+                 ((cfg->anfe & 3) << FDCAN_GFC_ANFE_Pos) |
                  (cfg->reject_remote ? (FDCAN_GFC_RRFS | FDCAN_GFC_RRFE) : 0U);
 
     /* XIDAM: 扩展 ID 掩码, 全 1 (0x1FFFFFFF) = 不屏蔽任何位 */
@@ -296,22 +296,22 @@ static void FdcanWriteTxElement(volatile FdcanRegs_t *fdcan, uint32_t idx,
 {
     /* Tx 元素在 SRAM 中的 word 偏移 = TBSA + idx × 每元素 word 数 */
     uint32_t tx_dsize  = fdcan->TXESC & FDCAN_TXESC_TBDS_Msk;
-    uint32_t words_per = 2 + DsizeDataWords[tx_dsize & 7];
+    uint32_t words_per = FdcanElemWords(tx_dsize);
 
     uint32_t base = ((fdcan->TXBC & FDCAN_TXBC_TBSA_Msk) >> FDCAN_TXBC_TBSA_Pos)
                     + idx * words_per;
 
-    volatile uint32_t *ram = FDCAN_SRAM;
-
-    /* T0: XTD 在 bit[30], ID 在 bit[28:0]; ESI/RTR 保持 0 */
-    uint32_t t0 = (xtd ? (1U << 30) : 0) | (id & 0x1FFFFFFFU);
+    /* T0: XTD[30] | ID, 标准帧用 bit[28:18], 扩展帧用 bit[28:0] */
+    uint32_t t0;
+    if (xtd)    t0 = (1U << 30) | (id & 0x1FFFFFFFU);
+    else        t0 = ((id & 0x7FFU) << 18);
 
     /* T1: MM=0|EFC=0|FDF|BRS|DLC=len */
     uint32_t t1 = (len & 0xFU) << 16;
     if (fd)  t1 |= (1U << 21) | (1U << 20);
 
-    ram[base + 0] = t0;
-    ram[base + 1] = t1;
+    FDCAN_SRAM[base + 0] = t0;
+    FDCAN_SRAM[base + 1] = t1;
 
     /*
      * 数据从 T2 (word[2]) 开始写入.
@@ -319,14 +319,9 @@ static void FdcanWriteTxElement(volatile FdcanRegs_t *fdcan, uint32_t idx,
      *   ≤8 → len; 9→12; 10→16; 11→20; 12→24; 13→32; 14→48; 15→64
      */
     if (data && len) {
-        uint32_t nbytes;
-        if (len < 9)           nbytes = len;
-        else if (len < 13)     nbytes = 8 + (len - 8) * 4;
-        else if (len == 13)    nbytes = 32;
-        else if (len == 14)    nbytes = 48;
-        else                   nbytes = 64;
-
-        memcpy((void *)&ram[base + 2], data, nbytes);
+        uint32_t nwords = (len < 8) ? 2 : DsizeDataWords[len - 8];
+        for (uint32_t i = 0; i < nwords; i++)
+            FDCAN_SRAM[base + 2 + i] = ((uint32_t *)data)[i];
     }
 
     /* TXBAR[n]=1 → 请求发送 buffer n */
@@ -404,25 +399,20 @@ int FdcanSendBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
 static void FdcanReadElement(uint32_t base, uint32_t *id, int *xtd,
                              uint8_t *data, uint32_t *len, uint16_t *ts)
 {
-    volatile uint32_t *ram = FDCAN_SRAM;
-    uint32_t r0 = ram[base + 0];
-    uint32_t r1 = ram[base + 1];
+    uint32_t r0 = FDCAN_SRAM[base + 0];
+    uint32_t r1 = FDCAN_SRAM[base + 1];
 
-    if (id)   *id   = r0 & 0x1FFFFFFFU;
-    if (xtd)  *xtd  = (r0 >> 30) & 1;
+    int is_xtd = (r0 >> 30) & 1;
+    if (xtd)  *xtd  = is_xtd;
+    if (id)   *id   = is_xtd ? (r0 & 0x1FFFFFFFU) : ((r0 >> 18) & 0x7FFU);
     if (len)  *len  = (r1 >> 16) & 0xFU;
     if (ts)   *ts   = (uint16_t)(r1 & 0xFFFFU);
 
     if (data) {
         uint32_t dlc = (r1 >> 16) & 0xFU;
-        uint32_t nbytes;
-        if (dlc < 9)           nbytes = dlc;
-        else if (dlc < 13)     nbytes = 8 + (dlc - 8) * 4;
-        else if (dlc == 13)    nbytes = 32;
-        else if (dlc == 14)    nbytes = 48;
-        else                   nbytes = 64;
-
-        memcpy(data, (void *)&ram[base + 2], nbytes);
+        uint32_t nwords = (dlc < 8) ? 2 : DsizeDataWords[dlc - 8];
+        for (uint32_t i = 0; i < nwords; i++)
+            ((uint32_t *)data)[i] = FDCAN_SRAM[base + 2 + i];
     }
 }
 
@@ -457,7 +447,7 @@ int FdcanReadFifo0(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
     /* ---- 2. 计算该元素在 SRAM 中的地址 ---- */
     /* 每元素 word 数 = 2(头字 R0/R1) + 数据字, 由 RXESC.F0DS 决定 */
     uint32_t f0ds = (fdcan->RXESC & FDCAN_RXESC_F0DS_Msk) >> FDCAN_RXESC_F0DS_Pos;
-    uint32_t words_per = 2 + DsizeDataWords[f0ds & 7];
+    uint32_t words_per = FdcanElemWords(f0ds);
 
     uint32_t base = f0sa + get_idx * words_per;
 
@@ -502,7 +492,7 @@ int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
     uint32_t f1sa = (fdcan->RXF1C & FDCAN_RXF1C_F1SA_Msk) >> FDCAN_RXF1C_F1SA_Pos;
 
     uint32_t f1ds = (fdcan->RXESC & FDCAN_RXESC_F1DS_Msk) >> FDCAN_RXESC_F1DS_Pos;
-    uint32_t words_per = 2 + DsizeDataWords[f1ds & 7];
+    uint32_t words_per = FdcanElemWords(f1ds);
 
     uint32_t base = f1sa + get_idx * words_per;
 
@@ -553,7 +543,7 @@ int FdcanReadBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
     uint32_t rbsa = (fdcan->RXBC & FDCAN_RXBC_RBSA_Msk) >> FDCAN_RXBC_RBSA_Pos;
 
     uint32_t rbds = (fdcan->RXESC & FDCAN_RXESC_RBDS_Msk) >> FDCAN_RXESC_RBDS_Pos;
-    uint32_t words_per = 2 + DsizeDataWords[rbds & 7];
+    uint32_t words_per = FdcanElemWords(rbds);
 
     uint32_t base = rbsa + buf_idx * words_per;
 
@@ -626,13 +616,13 @@ int FdcanTxEventRead(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
     uint32_t get_idx = (txefs & FDCAN_TXEFS_EFGI_Msk) >> FDCAN_TXEFS_EFGI_Pos;
     uint32_t efsa    = (fdcan->TXEFC & FDCAN_TXEFC_EFSA_Msk) >> FDCAN_TXEFC_EFSA_Pos;
 
-    volatile uint32_t *ram = FDCAN_SRAM;
     uint32_t base = efsa + get_idx * 2;
-    uint32_t e0 = ram[base + 0];
-    uint32_t e1 = ram[base + 1];
+    uint32_t e0 = FDCAN_SRAM[base + 0];
+    uint32_t e1 = FDCAN_SRAM[base + 1];
 
-    if (id)  *id  = e0 & 0x1FFFFFFFU;
-    if (xtd) *xtd = (e0 >> 30) & 1;
+    int is_xtd = (e0 >> 30) & 1;
+    if (id)  *id  = is_xtd ? (e0 & 0x1FFFFFFFU) : ((e0 >> 18) & 0x7FFU);
+    if (xtd) *xtd = is_xtd;
     if (mm)  *mm  = (uint8_t)(e1 >> 24);          /* MM  在 bit[31:24] */
     if (ts)  *ts  = (uint16_t)(e1 & 0xFFFFU);     /* TXTS 在 bit[15:0]  */
     if (et)  *et  = (uint8_t)((e1 >> 22) & 3);    /* ET  在 bit[23:22] */
