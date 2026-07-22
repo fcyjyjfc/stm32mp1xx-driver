@@ -5,6 +5,8 @@
 #include <string.h>
 #include "stm32mp1xx_fdcan.h"
 #include "stm32mp1xx_rcc.h"
+#include "stm32mp1xx_gpio.h"
+#include "stm32mp1xx_iwdg.h"
 #include "common_test.h"
 
 
@@ -12,7 +14,7 @@
 /*  测试配置                                                              */
 /* ================================================================== */
 
-#define FDCAN_KER_CK_HZ  12000000U
+#define FDCAN_KER_CK_HZ  24000000U
 
 
 /* ================================================================== */
@@ -23,6 +25,30 @@
  * DLC → 实际字节数
  */
 static const uint8_t dlc_bytes[] = { 0,1,2,3,4,5,6,7,8, 12,16,20,24, 32,48,64 };
+
+/*
+ * FDCAN1 GPIO 初始化 — 正常模式需要,
+ * 回环模式不需外部引脚, 可不调此函数.
+ *   TX: PH13, AF9
+ *   RX: PI9,  AF9
+ */
+static void Fdcan1GpioInit(void)
+{
+    RCC->MP_AHB4ENSETR |= (1U << 7) | (1U << 8);  /* GPIOH(bit7), GPIOI(bit8) clock enable */
+
+    /* TX: PH13, AF9, push-pull, high speed, no pull */
+    GpioMode(GPIO_H, 13, GPIO_MODER_AF);
+    GpioOtype(GPIO_H, 13, GPIO_OTYPE_PUSH_PULL);
+    GpioOspeed(GPIO_H, 13, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_H, 13, GPIO_PUPDR_NO);
+    GpioAf(GPIO_H, 13, 9);
+
+    /* RX: PI9, AF9, high speed, pull-up */
+    GpioMode(GPIO_I, 9, GPIO_MODER_AF);
+    GpioOspeed(GPIO_I, 9, GPIO_OSPEED_HI);
+    GpioPullUpDown(GPIO_I, 9, GPIO_PUPDR_PULL_UP);
+    GpioAf(GPIO_I, 9, 9);
+}
 
 
 /* ================================================================== */
@@ -201,6 +227,7 @@ static void TestFilterSend(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- Filter + Send (Normal) ---\r\n");
+    Fdcan1GpioInit();
 
     /*
      * 配置: 4 条标准帧过滤 + 4 条扩展帧过滤 + Tx FIFO 4 + Tx Event FIFO 4
@@ -370,6 +397,7 @@ static void TestSendBuf(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- SendBuf (Normal) ---\r\n");
+    Fdcan1GpioInit();
 
     static const FdcanCfg_t cfg = {
         .start_word      = 0,
@@ -447,6 +475,92 @@ static void TestSendBuf(void)
 
 
 /* ================================================================== */
+/*  测试 5: 持续发送, 串口任意键停止, 64-bit 递增计数器         */
+/* ================================================================== */
+
+static void TestContinuousSend(void)
+{
+    volatile FdcanRegs_t *fdcan = FDCAN1;
+
+    PRINT("\r\n--- Continuous Send ---\r\n");
+    Fdcan1GpioInit();
+
+    static const FdcanCfg_t cfg = {
+        .start_word      = 0,
+        .tx_fifo_elements = 4,
+        .tx_dsize        = FDCAN_DSIZE_8,
+        .tx_evt_elements = 4,
+        .std_filters     = 0,
+        .ext_filters     = 0,
+        .xidam           = FDCAN_XIDAM_DISABLED,
+        .anfs            = FDCAN_GFC_REJECT,
+        .anfe            = FDCAN_GFC_REJECT,
+        .disable_auto_retrans = 1,
+    };
+
+    RCC->MP_APB2ENSETR |= 1 << 24;
+    RCC->FDCANCKSELR = 0;
+
+    FdcanInit(fdcan, FDCAN_KER_CK_HZ, 500000, 0, &cfg, FDCAN_MODE_CAN);
+    PRINT("Init done (125 kbit/s, DAR=1)\r\n");
+    PRINT("Sending... press any key to stop.\r\n");
+
+    uint32_t counter_lo = 0;
+    uint32_t counter_hi = 0;
+    uint32_t sent = 0;
+
+    while (!FramePoll(0))
+    {
+        IwdgKickDog(IWDG2);
+
+        uint8_t data[8];
+        /* 64-bit counter 拆成两个 uint32_t, 避免 yagarto 工具链的 64-bit 问题 */
+        data[0] = (uint8_t)(counter_lo >> 0);
+        data[1] = (uint8_t)(counter_lo >> 8);
+        data[2] = (uint8_t)(counter_lo >> 16);
+        data[3] = (uint8_t)(counter_lo >> 24);
+        data[4] = (uint8_t)(counter_hi >> 0);
+        data[5] = (uint8_t)(counter_hi >> 8);
+        data[6] = (uint8_t)(counter_hi >> 16);
+        data[7] = (uint8_t)(counter_hi >> 24);
+
+        if (FdcanSend(fdcan, 0x100, 0, data, 8, 0) != 0)
+        {
+            /* FIFO full - wait for TXBTO */
+            uint32_t to = 5000000;
+            while ((fdcan->TXBTO & 0xFU) != 0xFU && --to);
+            if (to == 0) break;
+            continue;
+        }
+
+        sent++;
+        /* 手动 64-bit 递增 (counter_hi:counter_lo) */
+        if (++counter_lo == 0)
+            counter_hi++;
+
+        /* 等当前帧发送完成再发下一帧 */
+        {
+            uint32_t to = 5000000;
+            while ((fdcan->TXBTO & 1) == 0 && --to);
+        }
+    }
+
+    char buf[16];
+    PRINT("\r\nStopped. Sent ");
+    NumToStr(buf, sent);
+    PRINT(buf);
+    PRINT(" frames\r\n");
+
+    uint32_t psr = fdcan->PSR;
+    uint32_t lec = (psr & FDCAN_PSR_LEC_Msk) >> FDCAN_PSR_LEC_Pos;
+    PRINT("LEC=");
+    NumToStr(buf, lec);
+    PRINT(buf);
+    PRINT("\r\n--- Test done ---\r\n");
+}
+
+
+/* ================================================================== */
 /*  菜单                                                                */
 /* ================================================================== */
 
@@ -455,6 +569,7 @@ static const MenuEntry_t fdcan_menu[] = {
     { "2", "CAN FD loopback",       TestCanFdLoopback      },
     { "3", "Filter + Tx FIFO send", TestFilterSend },
     { "4", "SendBuf send",          TestSendBuf    },
+    { "5", "Continuous send (key to stop)", TestContinuousSend },
 };
 
 void FdcanTest(void)

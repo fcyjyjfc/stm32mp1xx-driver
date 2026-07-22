@@ -473,7 +473,7 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 ## FDCAN
 
-硬件配置: FDCAN1, ker_ck=64MHz, 内部回环模式 (LBCK)
+硬件配置: FDCAN1, ker_ck=24MHz(HSE=24MHz→FDCANCKSELR=0), PH13(AF9)=TX, PI9(AF9)=RX, SN65HVD230 收发器
 
 ### 经典 CAN 回环
 
@@ -493,6 +493,15 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 发送 (FIFO, FD) | 通过 | 6 帧扩展 ID, DLC 9/10/12/13/14/15 |
 | 接收 + 校验 | 通过 | FdcanReadFifo0 轮询, ID/XTD/DLC/数据全比对 |
 
+### 正常模式发送 (DAR = 1, 需总线 ACK)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| GPIO 初始化 | 通过 | PH13(AF9)=TX, PI9(AF9)=RX, 推挽输出, 高速, RX 上拉 |
+| 1Mbit/s 连续发送 (串口停止) | **通过** | 64-bit 递增 (uint32_t 拆分防复位), 逻辑分析仪/示波器验证 1Mbps 波形, 总线 ACK 正常 |
+| 标准帧过滤 + Tx FIFO | 待测 | |
+| 发送缓冲区 (TxBuf) | 待测 | |
+
 ### 已知问题/修复记录
 
 | 问题 | 原因 | 修复 |
@@ -500,3 +509,7 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 标准帧 ID 全为 0 | T0 写 ID 未左移 18 位, 硬件从 bit[28:18] 读到全 0 | 标准帧 ID 左移 18 位, 读时右移回 11 位 |
 | GFC 硬编码 ACCEPT_F0 | 未匹配帧行为不可配置 | 新增 anfs/anfe 配置项 |
 | memcpy RAM 访问 | 非 4 字节对齐, 多余局部变量 ram | 改 uint32_t 直接访问 FDCAN_SRAM[] + DLC→word 查表 |
+| NBTP 计算溢出 | sample_point_pct=875→unsigned 溢出→NTSEG2 无效 | 修正为 87 |
+| NSJW ≥ NTSEG2 | nsjw=ntseg2 违反 RM 约束 (NSJW < NTSEG2) | nsjw = ntseg2 > 0 ? ntseg2 - 1 : 0 |
+| HSE 频率误配 | 代码假设 HSE=12MHz, 实际 HSE=24MHz → 实际波特率 2Mbps | FDCAN_KER_CK_HZ=24000000U |
+| uint64_t 自增复位 | yagarto 4.6.2 工具链缺陷, counter++ 导致 CPU 复位 | 拆为两个 uint32_t + 手动进位 |

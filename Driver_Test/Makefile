@@ -5,12 +5,20 @@ OUTPUT_DIR = out
 
 CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 				-nostdinc -std=c99 -I../drivers/include -I../devices/include
-CFLAGS += -I"D:/STM32TOOL/yagarto/arm-none-eabi/include"
-CFLAGS += -I"D:/STM32TOOL/yagarto/lib/gcc/arm-none-eabi/4.6.2/include"
 
 CROSS_COMPILE = arm-none-eabi-
-LD	= $(CROSS_COMPILE)ld
 CC	= $(CROSS_COMPILE)gcc
+
+YAGARTO_PATH ?= C:/Program Files (x86)/yagarto
+CFLAGS += -I"$(YAGARTO_PATH)/arm-none-eabi/include"
+GCC_LIB_DIR := $(shell $(CC) -print-file-name=include 2>nul)
+ifneq ($(GCC_LIB_DIR),include)
+CFLAGS += -I"$(GCC_LIB_DIR)"
+else
+CFLAGS += -I"$(YAGARTO_PATH)/lib/gcc/arm-none-eabi/4.6.2/include"
+endif
+
+LD	= $(CROSS_COMPILE)ld
 NM  = $(CROSS_COMPILE)nm
 OBJCOPY = $(CROSS_COMPILE)objcopy
 OBJDUMP = $(CROSS_COMPILE)objdump

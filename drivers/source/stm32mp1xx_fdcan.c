@@ -70,8 +70,8 @@ static uint32_t Fdcan_CalcNBTP(uint32_t ker_ck_hz, uint32_t target_bitrate,
         if (ntseg1 > 255 || ntseg1 < 1)           /* 8-bit 上限 */
             continue;
 
-        /* SJW ≤ TSEG2, 直接取 ntseg2 (7-bit 上限) */
-        uint32_t nsjw = ntseg2;
+        /* SJW < TSEG2, RM 要求 NSJW 必须小于 NTSEG2 */
+        uint32_t nsjw = ntseg2 > 0 ? ntseg2 - 1 : 0;
         if (nsjw > 127) nsjw = 127;
 
         return (nsjw  << FDCAN_NBTP_NSJW_Pos)  |
@@ -130,14 +130,14 @@ void FdcanInit(volatile FdcanRegs_t *fdcan, uint32_t ker_ck_hz,
 
     /* ---- 3. 位时序 ---- */
 
-    /* 标称相位: 采样点 87.5% (经典 CAN 推荐值, 兼顾抗干扰和采样裕量) */
-    uint32_t nbtp = Fdcan_CalcNBTP(ker_ck_hz, bitrate, 875);
+    /* 标称相位: 采样点 87% (经典 CAN 推荐值, 兼顾抗干扰和采样裕量) */
+    uint32_t nbtp = Fdcan_CalcNBTP(ker_ck_hz, bitrate, 87);
     if (nbtp == 0) {
         /* 算不出来时用保守值: NBRP=0, 15+3=18tq, 能跑通但波特率可能不准 */
-        nbtp = (2U << FDCAN_NBTP_NSJW_Pos)   |
+        nbtp = (1U << FDCAN_NBTP_NSJW_Pos)   |
                (0U << FDCAN_NBTP_NBRP_Pos)   |
-               (12U << FDCAN_NBTP_NTSEG1_Pos) |
-               (2U << FDCAN_NBTP_NTSEG2_Pos);
+               (18U << FDCAN_NBTP_NTSEG1_Pos) |
+               (3U << FDCAN_NBTP_NTSEG2_Pos);
     }
     fdcan->NBTP = nbtp;  /* 写入标称位时序 */
 
@@ -146,7 +146,7 @@ void FdcanInit(volatile FdcanRegs_t *fdcan, uint32_t ker_ck_hz,
         uint32_t dbrp, dtseg1, dtseg2, dsjw;
 
         /* 复用 Fdcan_CalcNBTP 算数据相位参数 (算法相同, 只是字段位宽不同) */
-        uint32_t dbtp = Fdcan_CalcNBTP(ker_ck_hz, data_bitrate, 800);
+        uint32_t dbtp = Fdcan_CalcNBTP(ker_ck_hz, data_bitrate, 80);
 
         if (dbtp) {
             /* 从 NBTP 格式中提取各字段值 */
