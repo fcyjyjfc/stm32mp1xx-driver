@@ -26,6 +26,35 @@
  */
 static const uint8_t dlc_bytes[] = { 0,1,2,3,4,5,6,7,8, 12,16,20,24, 32,48,64 };
 
+static void PrintRxFrame(const FdcanRxFrame_t *f)
+{
+    char buf[16];
+
+    if (f->r0.B.xtd) PRINT("ext "); else PRINT("std ");
+    PRINT("0x");
+    PrintHex32(buf, f->r0.B.xtd ? f->r0.B.id : (f->r0.B.id >> 18));
+    PRINT(buf);
+    PRINT("  L=");
+    NumToStr(buf, f->r1.B.dlc);
+    PRINT(buf);
+    if (f->r1.B.anmf)
+        PRINT("  ANMF");
+    else {
+        PRINT("  Fidx=");
+        NumToStr(buf, f->r1.B.fidx);
+        PRINT(buf);
+    }
+    PRINT("  ");
+    {
+        uint32_t n = dlc_bytes[f->r1.B.dlc & 0xFU];
+        for (uint32_t j = 0; j < n && j < 8; j++) {
+            PrintHex8(f->data[j]);
+            PRINT(" ");
+        }
+    }
+    PRINT("\r\n");
+}
+
 /*
  * FDCAN1 GPIO 初始化 — 正常模式需要,
  * 回环模式不需外部引脚, 可不调此函数.
@@ -98,13 +127,10 @@ static void TestClassicCanLoopback(void)
 
     int pass = 1;
     for (int i = 0; i < n; i++) {
-        uint32_t id, len;
-        int xtd;
-        uint8_t rx[8];
-        uint16_t ts;
+        FdcanRxFrame_t f;
         uint32_t timeout = 5000000;
 
-        while (FdcanReadFifo0(fdcan, &id, &xtd, rx, &len, &ts) != 0
+        while (FdcanReadFifo0(fdcan, &f) != 0
                && --timeout);
 
         if (timeout == 0) {
@@ -117,8 +143,9 @@ static void TestClassicCanLoopback(void)
             break;
         }
 
-        if (id != frames[i].id || len != 8
-            || memcmp(rx, frames[i].data, 8) != 0) {
+        uint32_t id = f.r0.B.xtd ? f.r0.B.id : (f.r0.B.id >> 18);
+        if (id != frames[i].id || f.r1.B.dlc != 8
+            || memcmp(f.data, frames[i].data, 8) != 0) {
             pass = 0;
         }
     }
@@ -184,13 +211,11 @@ static void TestCanFdLoopback(void)
 
     int pass = 1;
     for (int i = 0; i < n; i++) {
-        uint32_t id, len, nbytes = dlc_bytes[frames[i].dlc];
-        int xtd;
-        uint8_t rx[64];
-        uint16_t ts;
+        uint32_t nbytes = dlc_bytes[frames[i].dlc];
+        FdcanRxFrame_t f;
         uint32_t timeout = 5000000;
 
-        while (FdcanReadFifo0(fdcan, &id, &xtd, rx, &len, &ts) != 0
+        while (FdcanReadFifo0(fdcan, &f) != 0
                && --timeout);
 
         if (timeout == 0) {
@@ -203,8 +228,9 @@ static void TestCanFdLoopback(void)
             break;
         }
 
-        if (id != frames[i].id || len != frames[i].dlc || !xtd
-            || memcmp(rx, frames[i].data, nbytes) != 0) {
+        uint32_t id = f.r0.B.xtd ? f.r0.B.id : (f.r0.B.id >> 18);
+        if (id != frames[i].id || f.r1.B.dlc != frames[i].dlc || !f.r0.B.xtd
+            || memcmp(f.data, frames[i].data, nbytes) != 0) {
             pass = 0;
         }
     }
@@ -218,173 +244,119 @@ static void TestCanFdLoopback(void)
 
 
 /* ================================================================== */
-/*  测试 3: 过滤 + 发送 (正常模式, 无回环, DAR)                            */
-/*         验证: filter SRAM 写入 / Tx FIFO 发送 / TXBTO / Tx Event FIFO */
+/*  测试 3: 过滤组合测试 — 验证 filter SRAM + 接收确认 (需 PC USB-CAN)     */
+/*         覆盖: 标准(Range/Dual/Classic/Reject/RxBuf ×5)                */
+/*               扩展(Range/Dual/Classic/Reject/RxBuf ×5)                */
+/*               GFC(ANFS=REJECT, ANFE=FIFO1)                          */
 /* ================================================================== */
 
-static void TestFilterSend(void)
+static void TestFilterCombo(void)
 {
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
-    PRINT("\r\n--- Filter + Send (Normal) ---\r\n");
+    PRINT("\r\n--- Filter Combo Test ---\r\n");
     Fdcan1GpioInit();
 
     /*
-     * 配置: 4 条标准帧过滤 + 4 条扩展帧过滤 + Tx FIFO 4 + Tx Event FIFO 4
-     * DAR=1: 无 ACK 时只发一次, 避免无限重传
+     * 过滤规划:
+     *   Std 0: Range   0x100~0x1FF       → FIFO0   (范围匹配-接收)
+     *   Std 1: Dual    0x200 / 0x201      → FIFO0   (双ID匹配-接收)
+     *   Std 2: Classic 0x300 / 0x7F0      → FIFO0   (经典掩码 0x300~0x30F)
+     *   Std 3: Range   0x500~0x5FF       → REJECT  (范围匹配-拒收)
+     *   Std 4: ID=0x400                        → RxBuf0  (单ID-专用缓冲, SFEC=7 时 SFT 无效)
+     *   ANFS = REJECT                            (未匹配标准帧全部拒绝)
+     *
+     *   Ext 0: Range   0x10000000~0x100000FF → FIFO0
+     *   Ext 1: Dual    0x10000100/0x10000101  → FIFO0
+     *   Ext 2: Classic 0x10000200/0x1FFFFFF0  → FIFO0   (掩码: 低4位不关心)
+     *   Ext 3: Range   0x1FFF0000~0x1FFFFFFF → REJECT
+     *   Ext 4: ID=0x10001000                   → RxBuf1  (单ID-专用缓冲)
+     *   ANFE = FIFO1                                   (未匹配扩展帧→FIFO1)
      */
     static const FdcanCfg_t cfg = {
-        .start_word       = 0,
-        .rxf0_elements    = 8,
-        .rxf0_dsize       = FDCAN_DSIZE_8,
-        .tx_fifo_elements = 4,
-        .tx_dsize         = FDCAN_DSIZE_8,
-        .tx_evt_elements  = 4,
-        .std_filters      = 4,
-        .ext_filters      = 4,
-        .xidam            = FDCAN_XIDAM_DISABLED,
-        .anfs             = FDCAN_GFC_REJECT,
-        .anfe             = FDCAN_GFC_REJECT,
-        .disable_auto_retrans = 1,
+        .start_word     = 0,
+        .rxf0_elements  = 8,
+        .rxf0_dsize     = FDCAN_DSIZE_8,
+        .rxf1_elements  = 4,
+        .rxf1_dsize     = FDCAN_DSIZE_8,
+        .rx_buffers     = 2,
+        .rx_dsize       = FDCAN_DSIZE_8,
+        .std_filters    = 5,
+        .ext_filters    = 5,
+        .xidam          = FDCAN_XIDAM_DISABLED,
+        .anfs           = FDCAN_GFC_REJECT,
+        .anfe           = FDCAN_GFC_ACCEPT_F1,
     };
 
     RCC->MP_APB2ENSETR |= 1 << 24;
     RCC->FDCANCKSELR = 0;
 
-    FdcanInit(fdcan, FDCAN_KER_CK_HZ, 125000, 0, &cfg, FDCAN_MODE_CAN);
-    PRINT("Init done (125 kbit/s, DAR=1)\r\n");
+    FdcanInit(fdcan, FDCAN_KER_CK_HZ, 500000, 0, &cfg, FDCAN_MODE_CAN);
+    PRINT("Init done (500 kbit/s)\r\n");
 
-    /* ---- 配置标准帧过滤 ---- */
-    FdcanFilterStd(fdcan, 0, FDCAN_SFT_RANGE,   FDCAN_FEC_FIFO0, 0x100, 0x1FF);
-    FdcanFilterStd(fdcan, 1, FDCAN_SFT_DUAL,    FDCAN_FEC_FIFO0, 0x200, 0x201);
-    FdcanFilterStd(fdcan, 2, FDCAN_SFT_CLASSIC, FDCAN_FEC_FIFO0, 0x300, 0x7F0);
+    /* ---- 标准帧过滤 ---- */
+    FdcanFilterStd(fdcan, 0, FDCAN_SFT_RANGE,   FDCAN_FEC_FIFO0,  0x100, 0x1FF);
+    FdcanFilterStd(fdcan, 1, FDCAN_SFT_DUAL,    FDCAN_FEC_FIFO0,  0x200, 0x201);
+    FdcanFilterStd(fdcan, 2, FDCAN_SFT_CLASSIC, FDCAN_FEC_FIFO0,  0x300, 0x7F0);
     FdcanFilterStd(fdcan, 3, FDCAN_SFT_RANGE,   FDCAN_FEC_REJECT, 0x500, 0x5FF);
+    FdcanFilterStdRxBuf(fdcan, 4, 0x400, 0);
 
-    /* ---- 配置扩展帧过滤 ---- */
-    FdcanFilterExt(fdcan, 0, FDCAN_EFT_RANGE,         FDCAN_FEC_FIFO0, 0x10000000, 0x100000FF);
-    FdcanFilterExt(fdcan, 1, FDCAN_EFT_DUAL,          FDCAN_FEC_FIFO0, 0x10000100, 0x10000101);
-    FdcanFilterExt(fdcan, 2, FDCAN_EFT_CLASSIC,       FDCAN_FEC_FIFO0, 0x10000200, 0x1FFFFFF0);
-    FdcanFilterExt(fdcan, 3, FDCAN_EFT_RANGE_NO_XIDAM, FDCAN_FEC_REJECT, 0x1FFF0000, 0x1FFFFFFF);
+    /* ---- 扩展帧过滤 ---- */
+    FdcanFilterExt(fdcan, 0, FDCAN_EFT_RANGE,   FDCAN_FEC_FIFO0,  0x10000000, 0x100000FF);
+    FdcanFilterExt(fdcan, 1, FDCAN_EFT_DUAL,    FDCAN_FEC_FIFO0,  0x10000100, 0x10000101);
+    FdcanFilterExt(fdcan, 2, FDCAN_EFT_CLASSIC, FDCAN_FEC_FIFO0,  0x10000200, 0x1FFFFFF0);
+    FdcanFilterExt(fdcan, 3, FDCAN_EFT_RANGE,   FDCAN_FEC_REJECT, 0x1FFF0000, 0x1FFFFFFF);
+    FdcanFilterExtRxBuf(fdcan, 4, 0x10001000, 1);
 
-    PRINT("Filters configured: 4 std + 4 ext\r\n");
+    /* ---- 过滤配置摘要 ---- */
+    PRINT("\r\n=== Std Filters ===\r\n");
+    PRINT(" F0: 0x100~0x1FF       → FIFO0   (Range)\r\n");
+    PRINT(" F1: 0x200, 0x201       → FIFO0   (Dual)\r\n");
+    PRINT(" F2: 0x300/0x7F0        → FIFO0   (Classic: 0x300~0x30F)\r\n");
+    PRINT(" F3: 0x500~0x5FF        → REJECT\r\n");
+    PRINT(" F4: 0x400              → RxBuf0  (single ID)\r\n");
+    PRINT("    ANFS=REJECT\r\n");
 
-    /* ---- 验证过滤 SRAM 内容 ---- */
-    uint32_t sid_sa = (fdcan->SIDFC & FDCAN_SIDFC_FLSSA_Msk) >> FDCAN_SIDFC_FLSSA_Pos;
-    uint32_t xid_sa = (fdcan->XIDFC & FDCAN_XIDFC_FLESA_Msk) >> FDCAN_XIDFC_FLESA_Pos;
+    PRINT("\r\n=== Ext Filters ===\r\n");
+    PRINT(" F0: 0x10000000~0x100000FF → FIFO0   (Range)\r\n");
+    PRINT(" F1: 0x10000100,0x10000101 → FIFO0   (Dual)\r\n");
+    PRINT(" F2: 0x10000200/0x1FFFFFF0 → FIFO0   (Classic: 0x10000200~F)\r\n");
+    PRINT(" F3: 0x1FFF0000~0x1FFFFFFF → REJECT\r\n");
+    PRINT(" F4: 0x10001000            → RxBuf1  (single ID)\r\n");
+    PRINT("    ANFE=FIFO1\r\n");
 
-    int filter_ok = 1;
+    PRINT("\r\n[F0]=FIFO0 [F1]=FIFO1 [RB]=RxBuf  |  press key to stop\r\n\r\n");
 
-    /* 标准帧 0: SFT=Range(0) SFEC=FIFO0(1) SFID1=0x100 SFID2=0x1FF */
-    uint32_t s0 = FDCAN_SRAM[sid_sa + 0];
-    if (s0 != (0x100U << 16 | 0x1FF)) filter_ok = 0;
-
-    /* 标准帧 1: SFT=Dual(1) SFEC=FIFO0(1) SFID1=0x200 SFID2=0x201 */
-    uint32_t s1 = FDCAN_SRAM[sid_sa + 1];
-    if (s1 != ((1U << 30) | (1U << 27) | (0x200U << 16) | 0x201)) filter_ok = 0;
-
-    /* 标准帧 2: SFT=Classic(2) SFEC=FIFO0(1) SFID1=0x300 SFID2=0x7F0 */
-    uint32_t s2 = FDCAN_SRAM[sid_sa + 2];
-    if (s2 != ((2U << 30) | (1U << 27) | (0x300U << 16) | 0x7F0)) filter_ok = 0;
-
-    /* 标准帧 3: SFT=Range(0) SFEC=Reject(3) SFID1=0x500 SFID2=0x5FF */
-    uint32_t s3 = FDCAN_SRAM[sid_sa + 3];
-    if (s3 != ((3U << 27) | (0x500U << 16) | 0x5FF)) filter_ok = 0;
-
-    /* 扩展帧 0: EFEC=FIFO0(1) EFID1=0x10000000 / EFT=Range(0) EFID2=0x100000FF */
-    uint32_t e0_0 = FDCAN_SRAM[xid_sa + 0];
-    uint32_t e0_1 = FDCAN_SRAM[xid_sa + 1];
-    if (e0_0 != ((1U << 29) | 0x10000000) || e0_1 != 0x100000FF) filter_ok = 0;
-
-    /* 扩展帧 3: EFEC=Reject(3) EFID1=0x1FFF0000 / EFT=RangeNoXidam(3) EFID2=0x1FFFFFFF */
-    uint32_t e3_0 = FDCAN_SRAM[xid_sa + 6];
-    uint32_t e3_1 = FDCAN_SRAM[xid_sa + 7];
-    if (e3_0 != ((3U << 29) | 0x1FFF0000) || e3_1 != ((3U << 30) | 0x1FFFFFFF)) filter_ok = 0;
-
-    if (filter_ok)
-        PRINT("Filter SRAM verify OK\r\n");
-    else
-        PRINT("Filter SRAM verify FAIL\r\n");
-
-    /* ---- 发送标准帧 (匹配过滤 0~2 和一条不匹配的) ---- */
-    static const uint8_t data[8] = {0xA1,0xB2,0xC3,0xD4,0xE5,0xF6,0x07,0x18};
-
-    uint32_t tx_ids[] = { 0x150, 0x200, 0x304, 0x600 };
-    for (int i = 0; i < 4; i++) {
-        if (FdcanSend(fdcan, tx_ids[i], 0, data, 8, 0) != 0) {
-            PRINT("FAIL: Tx FIFO full at frame ");
-            char buf[4];
-            NumToStr(buf, i);
-            PRINT(buf);
-            PRINT("\r\n");
-            break;
-        }
-    }
-    PRINT("Sent 4 std frames\r\n");
-
-    /* ---- 等待 TXBTO (DAR=1, 单次发送后即置位) ---- */
+    /* ---- 实时监控循环 ---- */
+    while (!FramePoll(0))
     {
-        uint32_t timeout = 5000000;
-        uint32_t txbto;
-        do {
-            txbto = fdcan->TXBTO;
-        } while (txbto != 0x0FU && --timeout);
+        IwdgKickDog(IWDG2);
 
-        if (timeout == 0)
-            PRINT("TXBTO timeout (no ACK on bus)\r\n");
-        else
-            PRINT("TXBTO=0x0F OK\r\n");
-    }
+        FdcanRxFrame_t f;
+        int buf_idx;
 
-    /* ---- 读 Tx Event FIFO ---- */
-    {
-        int evt = 0;
-        for (int i = 0; i < 4; i++) {
-            uint32_t eid;
-            int extd;
-            uint8_t mm, et;
-            uint16_t ts;
-            if (FdcanTxEventRead(fdcan, &eid, &extd, &mm, &ts, &et) == 0)
-                evt++;
-        }
-
-        if (evt == 4) {
-            PRINT("Tx Event FIFO: 4 events OK\r\n");
-            PRINT("PASS\r\n");
+        if (FdcanReadFifo0(fdcan, &f) == 0) {
+            PRINT("[F0] ");
+            PrintRxFrame(&f);
+        } else if (FdcanReadFifo1(fdcan, &f) == 0) {
+            PRINT("[F1] ");
+            PrintRxFrame(&f);
         } else {
-            PRINT("Tx Event FIFO: ");
-            char buf[4];
-            NumToStr(buf, evt);
-            PRINT(buf);
-            PRINT(" events (no ACK on bus)\r\n");
+            for (buf_idx = 0; buf_idx < 2; buf_idx++) {
+                if (FdcanReadBuf(fdcan, buf_idx, &f) == 0) {
+                    PRINT("[RB");
+                    char b[4];
+                    NumToStr(b, buf_idx);
+                    PRINT(b);
+                    PRINT("] ");
+                    PrintRxFrame(&f);
+                    break;
+                }
+            }
         }
     }
 
-    /* ---- 检查 PSR: 确认模块状态 ---- */
-    {
-        uint32_t psr = fdcan->PSR;
-        uint32_t act = (psr & FDCAN_PSR_ACT_Msk) >> FDCAN_PSR_ACT_Pos;
-        uint32_t lec = (psr & FDCAN_PSR_LEC_Msk) >> FDCAN_PSR_LEC_Pos;
-        uint32_t ecr = fdcan->ECR;
-        uint32_t tec = (ecr & FDCAN_ECR_TEC_Msk) >> FDCAN_ECR_TEC_Pos;
-        uint32_t rec = (ecr & FDCAN_ECR_REC_Msk) >> FDCAN_ECR_REC_Pos;
-
-        PRINT("PSR ACT=");
-        char buf[4];
-        NumToStr(buf, act);
-        PRINT(buf);
-        PRINT(" LEC=");
-        NumToStr(buf, lec);
-        PRINT(buf);
-        PRINT(" TEC=");
-        NumToStr(buf, tec);
-        PRINT(buf);
-        PRINT(" REC=");
-        NumToStr(buf, rec);
-        PRINT(buf);
-        PRINT("\r\n");
-    }
-
-    PRINT("--- Test done ---\r\n");
+    PRINT("Stopped.\r\n");
 }
 
 
@@ -416,6 +388,7 @@ static void TestSendBuf(void)
     RCC->FDCANCKSELR = 0;
 
     FdcanInit(fdcan, FDCAN_KER_CK_HZ, 125000, 0, &cfg, FDCAN_MODE_CAN);
+    FdcanTimestampInit(fdcan, 0, FDCAN_TSCC_TSS_INC);
     PRINT("Init done (4 dedicated Tx, DAR=1)\r\n");
 
     static const uint8_t data[8] = {0xDE,0xAD,0xBE,0xEF,0xCA,0xFE,0x00,0x01};
@@ -450,12 +423,31 @@ static void TestSendBuf(void)
     {
         int evt = 0;
         for (int i = 0; i < 4; i++) {
-            uint32_t eid;
-            int extd;
-            uint8_t mm, et;
-            uint16_t ts;
-            if (FdcanTxEventRead(fdcan, &eid, &extd, &mm, &ts, &et) == 0)
-                evt++;
+            FdcanTxEvent_t e;
+            if (FdcanTxEventRead(fdcan, &e) != 0)
+                break;
+            evt++;
+
+            char buf[16];
+            PRINT("[TxEvt ");
+            char b[4];
+            NumToStr(b, i);
+            PRINT(b);
+            PRINT("] ");
+            if (e.r0.B.xtd) PRINT("ext "); else PRINT("std ");
+            PRINT("0x");
+            PrintHex32(buf, e.r0.B.xtd ? e.r0.B.id : (e.r0.B.id >> 18));
+            PRINT(buf);
+            PRINT("  ET=");
+            NumToStr(b, e.r1.B.et);
+            PRINT(b);
+            PRINT("  MM=");
+            NumToStr(b, e.r1.B.mm);
+            PRINT(b);
+            PRINT("  TXTS=");
+            NumToStr(buf, e.r1.B.txts);
+            PRINT(buf);
+            PRINT("\r\n");
         }
 
         if (evt == 4) {
@@ -561,15 +553,146 @@ static void TestContinuousSend(void)
 
 
 /* ================================================================== */
+/*  测试 6: CAN 监控 + 周期发送, 时间戳回绕, 统计                        */
+/* ================================================================== */
+
+static void TestCanMonitor(void)
+{
+    volatile FdcanRegs_t *fdcan = FDCAN1;
+
+    PRINT("\r\n--- CAN Monitor + Periodic Send ---\r\n");
+    Fdcan1GpioInit();
+
+    static const FdcanCfg_t cfg = {
+        .start_word      = 0,
+        .rxf0_elements   = 32,
+        .rxf0_dsize      = FDCAN_DSIZE_8,
+        .tx_fifo_elements = 4,
+        .tx_dsize        = FDCAN_DSIZE_8,
+        .tx_evt_elements = 4,
+        .std_filters     = 1,
+        .ext_filters     = 1,
+        .xidam           = FDCAN_XIDAM_DISABLED,
+        .anfs            = FDCAN_GFC_ACCEPT_F0,
+        .anfe            = FDCAN_GFC_ACCEPT_F0,
+    };
+
+    RCC->MP_APB2ENSETR |= 1 << 24;
+    RCC->FDCANCKSELR = 0;
+
+    FdcanInit(fdcan, FDCAN_KER_CK_HZ, 500000, 0, &cfg, FDCAN_MODE_CAN);
+    FdcanFilterStd(fdcan, 0, FDCAN_SFT_RANGE, FDCAN_FEC_FIFO0, 0x000, 0x7FF);
+    FdcanFilterExt(fdcan, 0, FDCAN_EFT_RANGE, FDCAN_FEC_FIFO0, 0x00000000, 0x1FFFFFFF);
+    /* prescaler=15: 1 tick = 16 bit time = 32us @500k, 16-bit wrap ≈2.1s */
+    FdcanTimestampInit(fdcan, 15, FDCAN_TSCC_TSS_INC);
+    PRINT("Init done (500 kbit/s, prescaler=15)\r\n\r\n");
+
+    uint16_t prev_ts = FdcanTimestampRead(fdcan);
+    uint32_t ts_wraps = 0;
+
+    uint32_t rx_total = 0;
+    uint32_t tx_count = 0;
+
+    uint32_t last_send_ticks  = 0;
+    uint32_t last_print_ticks = 0;
+
+    PRINT("press any key to stop\r\n\r\n");
+
+    while (!FramePoll(0))
+    {
+        IwdgKickDog(IWDG2);
+
+        /* ---- time (wrap-safe) ---- */
+        uint16_t cur_ts = FdcanTimestampRead(fdcan);
+        if (cur_ts < prev_ts) ts_wraps++;
+        prev_ts = cur_ts;
+        uint32_t ticks = (ts_wraps << 16) | cur_ts;
+
+        /* ---- receive + print ---- */
+        {
+            FdcanRxFrame_t f;
+            while (FdcanReadFifo0(fdcan, &f) == 0) {
+                rx_total++;
+                PrintRxFrame(&f);
+            }
+        }
+
+        /* ---- periodic send (every 1s = 31250 ticks) ---- */
+        if (ticks - last_send_ticks >= 31250) {
+            last_send_ticks = ticks;
+            uint8_t data[8];
+            data[0] = (uint8_t)(tx_count >> 0);
+            data[1] = (uint8_t)(tx_count >> 8);
+            data[2] = (uint8_t)(tx_count >> 16);
+            data[3] = (uint8_t)(tx_count >> 24);
+            data[4] = (uint8_t)(cur_ts >> 0);
+            data[5] = (uint8_t)(cur_ts >> 8);
+            data[6] = 0;
+            data[7] = 0;
+            if (FdcanSend(fdcan, 0x7E0, 0, data, 8, 0) == 0)
+                tx_count++;
+        }
+
+        /* ---- periodic print (every 1s) ---- */
+        if (ticks - last_print_ticks >= 31250) {
+            last_print_ticks = ticks;
+
+            uint32_t ecr = fdcan->ECR;
+            uint32_t tec = (ecr & FDCAN_ECR_TEC_Msk) >> FDCAN_ECR_TEC_Pos;
+            uint32_t rec = (ecr & FDCAN_ECR_REC_Msk) >> FDCAN_ECR_REC_Pos;
+            uint32_t sec = ticks / 31250;
+
+            char buf[16];
+            PRINT("RX=");
+            NumToStr(buf, rx_total);
+            PRINT(buf);
+            PRINT("  TX=");
+            NumToStr(buf, tx_count);
+            PRINT(buf);
+            PRINT("  TEC=");
+            NumToStr(buf, tec);
+            PRINT(buf);
+            PRINT("  REC=");
+            NumToStr(buf, rec);
+            PRINT(buf);
+            PRINT("  s=");
+            NumToStr(buf, sec);
+            PRINT(buf);
+            PRINT("\r\n");
+        }
+    }
+
+    /* final */
+    uint16_t end_ts = FdcanTimestampRead(fdcan);
+    if (end_ts < prev_ts) ts_wraps++;
+    uint32_t final_ticks = (ts_wraps << 16) | end_ts;
+
+    PRINT("\r\n--- Final Stats ---\r\n");
+    char buf[16];
+    PRINT("Elapsed: ");
+    NumToStr(buf, final_ticks / 31250);
+    PRINT(buf);
+    PRINT(" s  RX: ");
+    NumToStr(buf, rx_total);
+    PRINT(buf);
+    PRINT("  TX: ");
+    NumToStr(buf, tx_count);
+    PRINT(buf);
+    PRINT("\r\n--- Test done ---\r\n");
+}
+
+
+/* ================================================================== */
 /*  菜单                                                                */
 /* ================================================================== */
 
 static const MenuEntry_t fdcan_menu[] = {
     { "1", "Classic CAN loopback",  TestClassicCanLoopback },
     { "2", "CAN FD loopback",       TestCanFdLoopback      },
-    { "3", "Filter + Tx FIFO send", TestFilterSend },
+    { "3", "Filter combo (PC assist)", TestFilterCombo },
     { "4", "SendBuf send",          TestSendBuf    },
     { "5", "Continuous send (key to stop)", TestContinuousSend },
+    { "6", "CAN Monitor + periodic send",  TestCanMonitor },
 };
 
 void FdcanTest(void)

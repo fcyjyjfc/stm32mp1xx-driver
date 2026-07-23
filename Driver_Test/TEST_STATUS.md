@@ -498,9 +498,55 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
 | GPIO 初始化 | 通过 | PH13(AF9)=TX, PI9(AF9)=RX, 推挽输出, 高速, RX 上拉 |
-| 1Mbit/s 连续发送 (串口停止) | **通过** | 64-bit 递增 (uint32_t 拆分防复位), 逻辑分析仪/示波器验证 1Mbps 波形, 总线 ACK 正常 |
-| 标准帧过滤 + Tx FIFO | 待测 | |
-| 发送缓冲区 (TxBuf) | 待测 | |
+| 500kbit/s 连续发送 (串口停止) | 通过 | 64-bit 递增 (uint32_t 拆分防复位), USB-CAN 模块 + PC 上位机验证, 总线 ACK 正常 |
+
+### 过滤组合测试 (正常模式, 需 PC USB-CAN 配合发帧)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 标准帧 Range (0x100~0x1FF→FIFO0) | 通过 | Fidx=0, ID+边界验证 |
+| 标准帧 Dual (0x200/0x201→FIFO0) | 通过 | Fidx=1, 双 ID 精确匹配 |
+| 标准帧 Classic (0x300/0x7F0→FIFO0) | 通过 | Fidx=2, 0x300~0x30F 范围 |
+| 标准帧 Range→REJECT (0x500~0x5FF) | 通过 | 拒收帧不进 FIFO, 软件不可见 |
+| 标准帧 RxBuf (0x400→RxBuf0) | 通过 | Fidx=4, SFEC=7 单 ID 专用缓冲 |
+| 扩展帧 Range (0x10000000~FF→FIFO0) | 通过 | Fidx=0 |
+| 扩展帧 Dual (0x10000100/101→FIFO0) | 通过 | Fidx=1 |
+| 扩展帧 Classic (0x10000200/0x1FFFFFF0→FIFO0) | 通过 | Fidx=2, 低 4 位任意 |
+| 扩展帧 Range→REJECT (0x1FFF0000~FF) | 通过 | 拒收生效 |
+| 扩展帧 RxBuf (0x10001000→RxBuf1) | 通过 | Fidx=4 |
+| ANFS=REJECT + ANFE=FIFO1 | 通过 | 未匹配扩展帧→FIFO1, 打印 ANMF |
+| 实时监控循环 | 通过 | 串口实时打印帧信息(来源/ID/DLC/Fidx/ANMF/数据), 任意键停止 |
+
+### 专用 Tx Buffer + Tx Event FIFO (正常模式, DAR=1)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 4 dedicated buffer 发送 | 通过 | FdcanSendBuf 逐 buffer 发送 ID 0x100~0x103 |
+| TXBTO 完成确认 | 通过 | TXBTO=0x0F 全部发送完成 |
+| Tx Event FIFO | 通过 | 4 events, ET=2(单次发送), MM=0, TXTS 正常计数 |
+| 时间戳 (TSS_INC, prescaler=0) | 通过 | TXTS 随帧递增 |
+| Tx Event 结构体打印 | 通过 | FdcanTxEvent_t 硬件位域直接映射, ID/ET/MM/TXTS |
+
+### CAN 监控 + 周期发送
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 全帧接收 | 通过 | 标准+扩展全接受, FdcanRxFrame_t 结构体 |
+| 接收帧实时打印 | 通过 | PrintRxFrame 公用函数 (来源/ID/DLC/Fidx/ANMF/数据) |
+| 周期发送 (每秒 1 帧) | 通过 | ID=0x7E0, 数据含 32-bit 发送计数+16-bit 时间戳 |
+| 时间戳回绕处理 | 通过 | prescaler=15(32us/tick), 16-bit 回绕检测+累加 |
+| ECR 错误计数 (TEC/REC) | 通过 | 每秒打印 RX/TX/TEC/REC/秒数 |
+| 统计打印 | 通过 | 停止后打印总耗时/总接收/总发送 |
+
+### 驱动接口改进
+
+| 改进 | 说明 |
+|------|------|
+| FdcanRxFrame_t | union+bit-field 硬件格式直接映射 (R0: ID/RTR/XTD/ESI, R1: RXTS/DLC/BRS/FDF/FIDX/ANMF), 接收函数直接 SRAM 赋值 |
+| FdcanTxEvent_t | union+bit-field 硬件格式 (R0: ID/RTR/XTD/ESI, R1: TXTS/DLC/BRS/EDL/ET/MM), FdcanTxEventRead 一步读 |
+| FdcanFilterStdRxBuf / FdcanFilterExtRxBuf | 专用 Rx Buffer 过滤, 去掉冗余的 SFT/EFT 参数 |
+| PrintRxFrame | 测试 3 和测试 6 共用的帧打印函数 |
+| EFC=1 | FdcanWriteTxElement T1 bit23 置 1, 发送成功后写 Tx Event FIFO |
 
 ### 已知问题/修复记录
 
@@ -513,3 +559,6 @@ SdmmcPowerOn (400kHz, 1-bit)
 | NSJW ≥ NTSEG2 | nsjw=ntseg2 违反 RM 约束 (NSJW < NTSEG2) | nsjw = ntseg2 > 0 ? ntseg2 - 1 : 0 |
 | HSE 频率误配 | 代码假设 HSE=12MHz, 实际 HSE=24MHz → 实际波特率 2Mbps | FDCAN_KER_CK_HZ=24000000U |
 | uint64_t 自增复位 | yagarto 4.6.2 工具链缺陷, counter++ 导致 CPU 复位 | 拆为两个 uint32_t + 手动进位 |
+| Tx Event FIFO 无事件 | T1 bit23 EFC(Event FIFO Control)=0, 硬件不写事件 | EFC=1, 发送成功时写 Tx Event |
+| FdcanTimestampInit 无效 | TSCC 受保护寄存器, 需 CCE=1+INIT=1 才可写 | 在 FdcanTimestampInit 中进入/退出配置模式 |
+| 时间戳计数停止 | 无 DAR 且无 ACK → 自动重传 → TEC 飙升 → Bus-Off → INIT=1 停计数器 | 配 DAR=1 避免自动重传 |

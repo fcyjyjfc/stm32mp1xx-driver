@@ -217,6 +217,68 @@ typedef enum {
 
 
 /* ================================================================== */
+/*  Rx 元素 — 按 RM0436 §59.5.2 Table 462 位定义                       */
+/*  R0: ESI[31]|XTD[30]|RTR[29]|ID[28:0]                              */
+/*  R1: ANMF[31]|FIDX[30:24]|-|FDF[21]|BRS[20]|DLC[19:16]|RXTS[15:0] */
+/* ================================================================== */
+typedef union {
+    uint32_t R;
+    struct {
+        uint32_t id  : 29;
+        uint32_t rtr : 1;
+        uint32_t xtd : 1;
+        uint32_t esi : 1;
+    } B;
+} FdcanRxR0_t;
+
+typedef union {
+    uint32_t R;
+    struct {
+        uint32_t rxts : 16;
+        uint32_t dlc  : 4;
+        uint32_t brs  : 1;
+        uint32_t fdf  : 1;
+        uint32_t      : 2;
+        uint32_t fidx : 7;
+        uint32_t anmf : 1;
+    } B;
+} FdcanRxR1_t;
+
+typedef struct {
+    FdcanRxR0_t r0;
+    FdcanRxR1_t r1;
+    uint8_t     data[64];
+} FdcanRxFrame_t;
+
+typedef union {
+    uint32_t R;
+    struct {
+        uint32_t id  : 29;
+        uint32_t rtr : 1;
+        uint32_t xtd : 1;
+        uint32_t esi : 1;
+    } B;
+} FdcanTxEventR0_t;
+
+typedef union {
+    uint32_t R;
+    struct {
+        uint32_t txts : 16;
+        uint32_t dlc  : 4;
+        uint32_t brs  : 1;
+        uint32_t edl  : 1;
+        uint32_t et   : 2;
+        uint32_t mm   : 8;
+    } B;
+} FdcanTxEventR1_t;
+
+typedef struct {
+    FdcanTxEventR0_t r0;
+    FdcanTxEventR1_t r1;
+} FdcanTxEvent_t;
+
+
+/* ================================================================== */
 /*  函数声明                                                           */
 /* ================================================================== */
 
@@ -231,22 +293,18 @@ extern int  FdcanSendBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
                          uint32_t id, int xtd, const uint8_t *data, uint32_t len,
                          int fd);
 
-extern int  FdcanReadFifo0(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
-                        uint8_t *data, uint32_t *len, uint16_t *ts);
+extern int  FdcanReadFifo0(volatile FdcanRegs_t *fdcan, FdcanRxFrame_t *f);
 
-extern int  FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
-                           uint8_t *data, uint32_t *len, uint16_t *ts);
+extern int  FdcanReadFifo1(volatile FdcanRegs_t *fdcan, FdcanRxFrame_t *f);
 
 extern int  FdcanReadBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
-                         uint32_t *id, int *xtd, uint8_t *data, uint32_t *len,
-                         uint16_t *ts);
+                         FdcanRxFrame_t *f);
 
 extern void FdcanTimestampInit(volatile FdcanRegs_t *fdcan,
                             uint32_t prescaler, uint32_t source);
 extern uint16_t FdcanTimestampRead(volatile FdcanRegs_t *fdcan);
 
-extern int  FdcanTxEventRead(volatile FdcanRegs_t *fdcan, uint32_t *id,
-                          int *xtd, uint8_t *mm, uint16_t *ts, uint8_t *et);
+extern int  FdcanTxEventRead(volatile FdcanRegs_t *fdcan, FdcanTxEvent_t *e);
 
 extern void FdcanFilterStd(volatile FdcanRegs_t *fdcan, uint32_t idx,
                         FdcanSft_t sft, FdcanFilterAction_t sfec,
@@ -255,6 +313,12 @@ extern void FdcanFilterStd(volatile FdcanRegs_t *fdcan, uint32_t idx,
 extern void FdcanFilterExt(volatile FdcanRegs_t *fdcan, uint32_t idx,
                         FdcanEft_t eft, FdcanFilterAction_t efec,
                         uint32_t efid1, uint32_t efid2);
+
+extern void FdcanFilterStdRxBuf(volatile FdcanRegs_t *fdcan, uint32_t idx,
+                                uint32_t sfid, uint32_t buf_idx);
+
+extern void FdcanFilterExtRxBuf(volatile FdcanRegs_t *fdcan, uint32_t idx,
+                                uint32_t efid, uint32_t buf_idx);
 
 extern void FdcanLoopbackEnable(volatile FdcanRegs_t *fdcan);
 extern void FdcanLoopbackDisable(volatile FdcanRegs_t *fdcan);

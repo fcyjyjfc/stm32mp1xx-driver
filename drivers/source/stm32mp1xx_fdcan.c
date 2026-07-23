@@ -306,8 +306,8 @@ static void FdcanWriteTxElement(volatile FdcanRegs_t *fdcan, uint32_t idx,
     if (xtd)    t0 = (1U << 30) | (id & 0x1FFFFFFFU);
     else        t0 = ((id & 0x7FFU) << 18);
 
-    /* T1: MM=0|EFC=0|FDF|BRS|DLC=len */
-    uint32_t t1 = (len & 0xFU) << 16;
+    /* T1: MM=0|EFC=1|FDF|BRS|DLC=len */
+    uint32_t t1 = (1U << 23) | ((len & 0xFU) << 16);
     if (fd)  t1 |= (1U << 21) | (1U << 20);
 
     FDCAN_SRAM[base + 0] = t0;
@@ -389,47 +389,33 @@ int FdcanSendBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
 
 /**
  * @brief  读 Rx 元素头和数据 (FdcanReadFifo0/FdcanReadFifo1/FdcanReadBuf 共用)
- * @param  base  SRAM word 偏移 (需调用方提前计算)
- * @param  id    输出: CAN ID
- * @param  xtd   输出: 0=标准帧, 1=扩展帧
- * @param  data  输出: 数据缓冲区
- * @param  len   输出: DLC
- * @param  ts    输出: Rx 时间戳 (NULL=不需要)
+ * @param  base SRAM word 偏移 (需调用方提前计算)
+ * @param  f    输出: Rx 帧 (r0 + r1 + data[64])
  */
-static void FdcanReadElement(uint32_t base, uint32_t *id, int *xtd,
-                             uint8_t *data, uint32_t *len, uint16_t *ts)
+static void FdcanReadElement(uint32_t base, FdcanRxFrame_t *f)
 {
-    uint32_t r0 = FDCAN_SRAM[base + 0];
-    uint32_t r1 = FDCAN_SRAM[base + 1];
+    if (!f) return;
 
-    int is_xtd = (r0 >> 30) & 1;
-    if (xtd)  *xtd  = is_xtd;
-    if (id)   *id   = is_xtd ? (r0 & 0x1FFFFFFFU) : ((r0 >> 18) & 0x7FFU);
-    if (len)  *len  = (r1 >> 16) & 0xFU;
-    if (ts)   *ts   = (uint16_t)(r1 & 0xFFFFU);
+    f->r0.R = FDCAN_SRAM[base + 0];
+    f->r1.R = FDCAN_SRAM[base + 1];
 
-    if (data) {
-        uint32_t dlc = (r1 >> 16) & 0xFU;
-        uint32_t nwords = (dlc < 8) ? 2 : DsizeDataWords[dlc - 8];
-        for (uint32_t i = 0; i < nwords; i++)
-            ((uint32_t *)data)[i] = FDCAN_SRAM[base + 2 + i];
-    }
+    uint32_t dlc = f->r1.B.dlc;
+    uint32_t nwords = (dlc < 8) ? 2 : DsizeDataWords[dlc - 8];
+    for (uint32_t i = 0; i < nwords; i++)
+        ((uint32_t *)f->data)[i] = FDCAN_SRAM[base + 2 + i];
 }
 
 
 /**
  * @brief 从 Rx FIFO 0 读一帧 (轮询)
- * @param fdcan  FDCAN 实例
- * @param id     输出: CAN ID
- * @param xtd    输出: 0=标准, 1=扩展
- * @param data   输出: 数据缓冲区 (至少 8 字节)
- * @param len    输出: DLC
- * @param ts     输出: Rx 时间戳 (NULL=不需要)
+ * @param fdcan FDCAN 实例
+ * @param f     输出: Rx 帧 (r0 + r1 + data[64])
  * @return 0=读到一帧, -1=FIFO 空
  */
-int FdcanReadFifo0(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
-                   uint8_t *data, uint32_t *len, uint16_t *ts)
+int FdcanReadFifo0(volatile FdcanRegs_t *fdcan, FdcanRxFrame_t *f)
 {
+    if (!f) return -1;
+
     /* ---- 1. 查 FIFO 状态 ---- */
     uint32_t rxf0s = fdcan->RXF0S;
 
@@ -452,7 +438,7 @@ int FdcanReadFifo0(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
     uint32_t base = f0sa + get_idx * words_per;
 
     /* ---- 3. 读元素 ---- */
-    FdcanReadElement(base, id, xtd, data, len, ts);
+    FdcanReadElement(base, f);
 
     /* ---- 4. 确认读取 ---- */
     /* F0AI = get_idx → 硬件释放该元素, 自动推进 F0GI, F0FL-- */
@@ -462,23 +448,16 @@ int FdcanReadFifo0(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
 }
 
 
-/* ================================================================== */
-/*  接收 — 轮询 Rx FIFO 1 (同 FIFO 0, 不同寄存器)                      */
-/* ================================================================== */
-
 /**
  * @brief  从 Rx FIFO 1 读一帧 (轮询)
  * @param  fdcan FDCAN 实例
- * @param  id    输出: CAN ID
- * @param  xtd   输出: 0=标准帧, 1=扩展帧
- * @param  data  输出: 数据缓冲区
- * @param  len   输出: DLC
- * @param  ts    输出: Rx 时间戳 (NULL=不需要)
+ * @param  f     输出: Rx 帧 (r0 + r1 + data[64])
  * @return 0=读到一帧, -1=FIFO 空
  */
-int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
-                   uint8_t *data, uint32_t *len, uint16_t *ts)
+int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, FdcanRxFrame_t *f)
 {
+    if (!f) return -1;
+
     /* F1FL: FIFO 1 待读帧数 */
     uint32_t rxf1s = fdcan->RXF1S;
     uint32_t fill  = (rxf1s & FDCAN_RXF1S_F1FL_Msk) >> FDCAN_RXF1S_F1FL_Pos;
@@ -496,7 +475,7 @@ int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
 
     uint32_t base = f1sa + get_idx * words_per;
 
-    FdcanReadElement(base, id, xtd, data, len, ts);
+    FdcanReadElement(base, f);
 
     /* F1AI = get_idx → 硬件释放元素, 推进 F1GI, F1FL-- */
     fdcan->RXF1A = get_idx & FDCAN_RXF1A_F1AI_Msk;
@@ -513,11 +492,7 @@ int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
  * @brief  从 Rx Buffer (NDAT 机制) 读一帧
  * @param  fdcan   FDCAN 实例
  * @param  buf_idx Rx buffer 索引
- * @param  id      输出: CAN ID
- * @param  xtd     输出: 0=标准帧, 1=扩展帧
- * @param  data    输出: 数据缓冲区
- * @param  len     输出: DLC
- * @param  ts      输出: Rx 时间戳 (NULL=不需要)
+ * @param  f       输出: Rx 帧 (r0 + r1 + data[64])
  * @return 0=读到一帧, -1=无新数据
  *
  *   不同于 FIFO: 每个 buffer 独立, 硬件通过 NDAT 标记新数据.
@@ -526,9 +501,10 @@ int FdcanReadFifo1(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
  *   读完后写 NDAT 对应位清零.
  */
 int FdcanReadBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
-                 uint32_t *id, int *xtd, uint8_t *data, uint32_t *len,
-                 uint16_t *ts)
+                 FdcanRxFrame_t *f)
 {
+    if (!f) return -1;
+
     /* 检查 NDAT: 该 buffer 是否有新数据 */
     uint32_t ndat;
     if (buf_idx < 32) {
@@ -547,7 +523,7 @@ int FdcanReadBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
 
     uint32_t base = rbsa + buf_idx * words_per;
 
-    FdcanReadElement(base, id, xtd, data, len, ts);
+    FdcanReadElement(base, f);
 
     /* 清 NDAT 位: 写对应 bit 清 1, 通知硬件已读完 */
     if (buf_idx < 32)
@@ -572,8 +548,15 @@ int FdcanReadBuf(volatile FdcanRegs_t *fdcan, uint32_t buf_idx,
 void FdcanTimestampInit(volatile FdcanRegs_t *fdcan,
                         uint32_t prescaler, uint32_t source)
 {
+    fdcan->CCCR |= FDCAN_CCCR_INIT;
+    while (!(fdcan->CCCR & FDCAN_CCCR_INIT));
+    fdcan->CCCR |= FDCAN_CCCR_CCE;
+
     fdcan->TSCC = ((prescaler & 0xFU) << FDCAN_TSCC_TCP_Pos) |
                   (source & FDCAN_TSCC_TSS_Msk);
+
+    fdcan->CCCR &= ~FDCAN_CCCR_INIT;
+    while (fdcan->CCCR & FDCAN_CCCR_INIT);
 }
 
 /**
@@ -594,20 +577,17 @@ uint16_t FdcanTimestampRead(volatile FdcanRegs_t *fdcan)
 /**
  * @brief  从 Tx Event FIFO 读一条事件 (轮询)
  * @param  fdcan FDCAN 实例
- * @param  id    输出: CAN ID
- * @param  xtd   输出: 0=标准帧, 1=扩展帧
- * @param  mm    输出: Message Marker (NULL=不需要)
- * @param  ts    输出: Tx 时间戳 (NULL=不需要)
- * @param  et    输出: Event Type (NULL=不需要, 1=正常, 2=取消后仍发送)
+ * @param  e     输出: Tx 事件 (r0 + r1)
  * @return 0=读到, -1=FIFO 空
  *
  *   Tx Event 元素格式 (固定 2 words):
  *     E0: ESI[31] | XTD[30] | RTR[29] | ID[28:0]
  *     E1: MM[31:24] | ET[23:22] | EDL[21] | BRS[20] | DLC[19:16] | TXTS[15:0]
  */
-int FdcanTxEventRead(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
-                     uint8_t *mm, uint16_t *ts, uint8_t *et)
+int FdcanTxEventRead(volatile FdcanRegs_t *fdcan, FdcanTxEvent_t *e)
 {
+    if (!e) return -1;
+
     uint32_t txefs = fdcan->TXEFS;
     uint32_t fill  = (txefs & FDCAN_TXEFS_EFFL_Msk) >> FDCAN_TXEFS_EFFL_Pos;
     if (fill == 0)
@@ -617,15 +597,8 @@ int FdcanTxEventRead(volatile FdcanRegs_t *fdcan, uint32_t *id, int *xtd,
     uint32_t efsa    = (fdcan->TXEFC & FDCAN_TXEFC_EFSA_Msk) >> FDCAN_TXEFC_EFSA_Pos;
 
     uint32_t base = efsa + get_idx * 2;
-    uint32_t e0 = FDCAN_SRAM[base + 0];
-    uint32_t e1 = FDCAN_SRAM[base + 1];
-
-    int is_xtd = (e0 >> 30) & 1;
-    if (id)  *id  = is_xtd ? (e0 & 0x1FFFFFFFU) : ((e0 >> 18) & 0x7FFU);
-    if (xtd) *xtd = is_xtd;
-    if (mm)  *mm  = (uint8_t)(e1 >> 24);          /* MM  在 bit[31:24] */
-    if (ts)  *ts  = (uint16_t)(e1 & 0xFFFFU);     /* TXTS 在 bit[15:0]  */
-    if (et)  *et  = (uint8_t)((e1 >> 22) & 3);    /* ET  在 bit[23:22] */
+    e->r0.R = FDCAN_SRAM[base + 0];
+    e->r1.R = FDCAN_SRAM[base + 1];
 
     /* 确认读取 */
     fdcan->TXEFA = get_idx & FDCAN_TXEFA_EFAI_Msk;
@@ -683,6 +656,27 @@ void FdcanFilterExt(volatile FdcanRegs_t *fdcan, uint32_t idx,
     uint32_t base = sa + idx * 2;
     FDCAN_SRAM[base + 0] = ((uint32_t)efec << 29) | (efid1 & 0x1FFFFFFFU);
     FDCAN_SRAM[base + 1] = ((uint32_t)eft  << 30) | (efid2 & 0x1FFFFFFFU);
+}
+
+/*
+ * 专用 Rx Buffer 过滤 — SFEC=7 时 SFT 无效, sfid2[5:0] 被征用为 buffer 索引,
+ * 每个 filter 元素只能匹配一个 ID. 下面两个函数去掉冗余参数, 语义清晰.
+ */
+void FdcanFilterStdRxBuf(volatile FdcanRegs_t *fdcan, uint32_t idx,
+                         uint32_t sfid, uint32_t buf_idx)
+{
+    uint32_t sa = (fdcan->SIDFC & FDCAN_SIDFC_FLSSA_Msk) >> FDCAN_SIDFC_FLSSA_Pos;
+    uint32_t val = (7U << 27) | ((sfid & 0x7FFU) << 16) | (buf_idx & 0x3FU);
+    FDCAN_SRAM[sa + idx] = val;
+}
+
+void FdcanFilterExtRxBuf(volatile FdcanRegs_t *fdcan, uint32_t idx,
+                         uint32_t efid, uint32_t buf_idx)
+{
+    uint32_t sa = (fdcan->XIDFC & FDCAN_XIDFC_FLESA_Msk) >> FDCAN_XIDFC_FLESA_Pos;
+    uint32_t base = sa + idx * 2;
+    FDCAN_SRAM[base + 0] = (7U << 29) | (efid & 0x1FFFFFFFU);
+    FDCAN_SRAM[base + 1] = (buf_idx & 0x3FU);
 }
 
 
