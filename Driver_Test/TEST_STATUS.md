@@ -538,6 +538,30 @@ SdmmcPowerOn (400kHz, 1-bit)
 | ECR 错误计数 (TEC/REC) | 通过 | 每秒打印 RX/TX/TEC/REC/秒数 |
 | 统计打印 | 通过 | 停止后打印总耗时/总接收/总发送 |
 
+### IRQ 接收 + 过滤优先级 (测试 7)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| GIC 配置 | 通过 | GicdSetGroup/SetPriority/SetTarget/SetTrigMode/GicdEnableInt + GicRegisterIrq |
+| IRQ 线使能 (ILE_EINT0) | 通过 | RF0NE + TEFNE + DRXE + TSWE |
+| ISR 分发 | 通过 | FdcanIrqCore 统一入口, 读 IR 后分发 |
+| IR 标志 w1c 清除 | 通过 | ISR 末尾 FdcanIrqClear 统一清除, 此前不清导致中断风暴→看门狗复位 |
+| Rx FIFO 0 中断接收 | 通过 | 打印帧信息 (来源/ID/DLC/Fidx/ANMF/数据) |
+| Tx Event FIFO 中断 | 通过 | EFC=1, 打印发送事件 (ID/ET/MM/TXTS) |
+| 过滤优先级演示 | 通过 | 3 个 RxBuf 过滤在 range 之前优先命中, 0x400 在 range 之后永不被匹配 (dead filter) |
+| NDAT 扫描 4 buffer | 通过 | for(i=0; i<4 && ndat; i++) 覆盖全部 Rx Buffer |
+| CCE 保护 SRAM 写入 | 通过 | FdcanEnterCfg/FdcanExitCfg 封装过滤配置 |
+| 周期发送 (每秒 1 帧) | 通过 | TSW 中断触发, ID=0x7E0, 与上位机数据匹配 |
+
+### CAN FD 发送 (测试 8)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| Init 1M/3M bit/s | 通过 | 仲裁 1M, 数据相位 3M, DSIZE_64, FDOE+BRSE |
+| DLC 变化发送 | 通过 | 8→12→16→20→24→32→48→64 字节循环 (sent&7 查表) |
+| DAR=1 单次发送 | 通过 | 禁止自动重传, TXBTO 确认 |
+| 串口停止 + 统计 | 通过 | FramePoll(0) 检测, 打印发送帧数和 LEC |
+
 ### 驱动接口改进
 
 | 改进 | 说明 |

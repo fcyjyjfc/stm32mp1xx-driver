@@ -666,7 +666,8 @@ void FdcanFilterStdRxBuf(volatile FdcanRegs_t *fdcan, uint32_t idx,
                          uint32_t sfid, uint32_t buf_idx)
 {
     uint32_t sa = (fdcan->SIDFC & FDCAN_SIDFC_FLSSA_Msk) >> FDCAN_SIDFC_FLSSA_Pos;
-    uint32_t val = (7U << 27) | ((sfid & 0x7FFU) << 16) | (buf_idx & 0x3FU);
+    /* SFT=Classic(2<<30), mask=0→11-bit exact match */
+    uint32_t val = (2U << 30) | (7U << 27) | ((sfid & 0x7FFU) << 16) | (buf_idx & 0x3FU);
     FDCAN_SRAM[sa + idx] = val;
 }
 

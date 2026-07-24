@@ -1069,6 +1069,19 @@ static inline void FdcanIrqLineDisable(volatile FdcanRegs_t *fdcan)
     fdcan->ILE = 0;
 }
 
+static inline void FdcanEnterCfg(volatile FdcanRegs_t *fdcan)
+{
+    fdcan->CCCR |= FDCAN_CCCR_INIT;
+    while (!(fdcan->CCCR & FDCAN_CCCR_INIT));
+    fdcan->CCCR |= FDCAN_CCCR_CCE;
+}
+
+static inline void FdcanExitCfg(volatile FdcanRegs_t *fdcan)
+{
+    fdcan->CCCR &= ~FDCAN_CCCR_INIT;
+    while (fdcan->CCCR & FDCAN_CCCR_INIT);
+}
+
 /* ================================================================== */
 /*  其他寄存器读取 (封装直操作)                                           */
 /* ================================================================== */
