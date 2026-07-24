@@ -7,6 +7,7 @@
 #include "stm32mp1xx_rcc.h"
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_iwdg.h"
+#include "stm32mp1xx_gic.h"
 #include "common_test.h"
 
 
@@ -637,7 +638,7 @@ static void TestCanMonitor(void)
         if (ticks - last_print_ticks >= 31250) {
             last_print_ticks = ticks;
 
-            uint32_t ecr = fdcan->ECR;
+            uint32_t ecr = FdcanEcr(fdcan);
             uint32_t tec = (ecr & FDCAN_ECR_TEC_Msk) >> FDCAN_ECR_TEC_Pos;
             uint32_t rec = (ecr & FDCAN_ECR_REC_Msk) >> FDCAN_ECR_REC_Pos;
             uint32_t sec = ticks / 31250;
@@ -683,6 +684,286 @@ static void TestCanMonitor(void)
 
 
 /* ================================================================== */
+/*  通用 IRQ 上下文 + 核心 (FDCAN1/2 共用)                              */
+/*  ISR 先读 IR, 按位分发处理, 不复用之前各自循环判断方式                 */
+/* ================================================================== */
+
+#define IRQ_RING_SIZE 64
+
+typedef struct {
+    uint8_t  source;   /* 0=FIFO0, 1=FIFO1, 2=RxBuf */
+    uint8_t  buf_idx;  /* valid when source==2 */
+    uint16_t rxts;     /* RXTS 硬件时间戳 */
+    FdcanRxFrame_t frame;
+} IrqRxEntry_t;
+
+typedef struct {
+    volatile FdcanRegs_t *fdcan;   /* 实例指针               */
+    IrqRxEntry_t  ring[IRQ_RING_SIZE];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+    volatile uint32_t rx[3];       /* FIFO0 / FIFO1 / RxBuf  */
+    volatile uint32_t tx_evt;      /* Tx Event 计数          */
+    volatile uint32_t ts_wraps;    /* TSW 中断计数            */
+    volatile uint32_t overrun;
+    volatile FdcanTxEvent_t last_evt;  /* 最新 Tx Event 副本  */
+} FdcanIrqCtx_t;
+
+static FdcanIrqCtx_t irq_ctx1;
+static FdcanIrqCtx_t irq_ctx2;
+
+/* 通用中断核心: 读 IR→按位分发 → 清 */
+static void FdcanIrqCore(FdcanIrqCtx_t *ctx)
+{
+    volatile FdcanRegs_t *fdcan = ctx->fdcan;
+    uint32_t ir = FdcanIrqGet(fdcan);
+    uint32_t next;
+
+    if (ir & FDCAN_IR_RF0N) {
+        FdcanRxFrame_t f;
+        while (FdcanReadFifo0(fdcan, &f) == 0) {
+            next = (ctx->head + 1) % IRQ_RING_SIZE;
+            if (next == ctx->tail) { ctx->overrun++; break; }
+            ctx->ring[ctx->head].frame  = f;
+            ctx->ring[ctx->head].source = 0;
+            ctx->ring[ctx->head].rxts   = f.r1.B.rxts;
+            ctx->head = next;
+            ctx->rx[0]++;
+        }
+    }
+
+    if (ir & FDCAN_IR_RF1N) {
+        FdcanRxFrame_t f;
+        while (FdcanReadFifo1(fdcan, &f) == 0) {
+            next = (ctx->head + 1) % IRQ_RING_SIZE;
+            if (next == ctx->tail) { ctx->overrun++; break; }
+            ctx->ring[ctx->head].frame  = f;
+            ctx->ring[ctx->head].source = 1;
+            ctx->ring[ctx->head].rxts   = f.r1.B.rxts;
+            ctx->head = next;
+            ctx->rx[1]++;
+        }
+    }
+
+    if (ir & FDCAN_IR_DRX) {
+        uint32_t ndat = FdcanNdat1(fdcan);
+        for (uint32_t i = 0; i < 2 && ndat; i++) {
+            if (ndat & (1U << i)) {
+                FdcanRxFrame_t f;
+                if (FdcanReadBuf(fdcan, i, &f) == 0) {
+                    next = (ctx->head + 1) % IRQ_RING_SIZE;
+                    if (next == ctx->tail) { ctx->overrun++; break; }
+                    ctx->ring[ctx->head].frame   = f;
+                    ctx->ring[ctx->head].source  = 2;
+                    ctx->ring[ctx->head].buf_idx = (uint8_t)i;
+                    ctx->ring[ctx->head].rxts    = f.r1.B.rxts;
+                    ctx->head = next;
+                    ctx->rx[2]++;
+                }
+                ndat &= ~(1U << i);
+            }
+        }
+    }
+
+    if (ir & FDCAN_IR_TEFN) {
+        FdcanTxEvent_t e;
+        while (FdcanTxEventRead(fdcan, &e) == 0) {
+            ctx->last_evt = e;
+            ctx->tx_evt++;
+        }
+    }
+
+    /* TSW 在 Rx 之后处理, 避免帧赋到回绕后的计数值 */
+    if (ir & FDCAN_IR_TSW) {
+        ctx->ts_wraps++;
+        FdcanIrqClear(fdcan, FDCAN_IR_TSW);
+    }
+}
+
+static void Fdcan1IrqHandler(void) { FdcanIrqCore(&irq_ctx1); }
+static void Fdcan2IrqHandler(void) { FdcanIrqCore(&irq_ctx2); }
+
+
+/* ================================================================== */
+/*  测试 7: IRQ 版 CAN 监控 + 周期发送 (同测试 6 行为, 中断实现)         */
+/*         RX/TX 均打印绝对时间戳 [sec.mmm]                             */
+/* ================================================================== */
+
+static void PrintTimestamp(uint32_t ticks)
+{
+    char buf[16];
+    uint32_t sec = ticks / 31250;
+    uint32_t ms  = ((ticks % 31250) * 32) / 1000;
+    NumToStr(buf, sec); PRINT(buf);
+    PRINT(".");
+    if (ms < 10)      { PRINT("00"); }
+    else if (ms < 100){ PRINT("0");  }
+    NumToStr(buf, ms); PRINT(buf);
+}
+
+static void TestIrqReceive(void)
+{
+    volatile FdcanRegs_t *fdcan = FDCAN1;
+    FdcanIrqCtx_t *ctx = &irq_ctx1;
+
+    PRINT("\r\n--- IRQ Monitor + Periodic Send ---\r\n");
+    Fdcan1GpioInit();
+
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->fdcan = fdcan;
+
+    static const FdcanCfg_t cfg = {
+        .start_word      = 0,
+        .rxf0_elements   = 32,
+        .rxf0_dsize      = FDCAN_DSIZE_8,
+        .tx_fifo_elements = 4,
+        .tx_dsize        = FDCAN_DSIZE_8,
+        .tx_evt_elements = 4,
+        .std_filters     = 1,
+        .ext_filters     = 1,
+        .xidam           = FDCAN_XIDAM_DISABLED,
+        .anfs            = FDCAN_GFC_ACCEPT_F0,
+        .anfe            = FDCAN_GFC_ACCEPT_F0,
+    };
+
+    RCC->MP_APB2ENSETR |= 1 << 24;
+    RCC->FDCANCKSELR = 0;
+
+    FdcanInit(fdcan, FDCAN_KER_CK_HZ, 500000, 0, &cfg, FDCAN_MODE_CAN);
+    FdcanFilterStd(fdcan, 0, FDCAN_SFT_RANGE, FDCAN_FEC_FIFO0, 0x000, 0x7FF);
+    FdcanFilterExt(fdcan, 0, FDCAN_EFT_RANGE, FDCAN_FEC_FIFO0, 0x00000000, 0x1FFFFFFF);
+    FdcanTimestampInit(fdcan, 15, FDCAN_TSCC_TSS_INC);
+    PRINT("Init done (500 kbit/s, prescaler=15)\r\n");
+
+    FdcanIrqLineEnable(fdcan, FDCAN_ILE_EINT0);
+    FdcanIrqEnable(fdcan, FDCAN_IE_RF0NE | FDCAN_IE_TSWE);
+    GicRegisterIrq(GIC_FDCAN1_IT0, Fdcan1IrqHandler);
+    PRINT("IRQ enabled (int0: RF0NE TSWE)\r\n\r\n");
+
+    uint32_t last_send_ticks  = 0;
+    uint32_t last_print_ticks = 0;
+    uint32_t tx_count = 0;
+    uint32_t rx_total = 0;
+    uint32_t prev_tx_evt = 0;
+
+    PRINT("press any key to stop\r\n\r\n");
+
+    while (!FramePoll(0))
+    {
+        IwdgKickDog(IWDG2);
+
+        /* ---- time ---- */
+        uint16_t cur_ts = FdcanTimestampRead(fdcan);
+        uint32_t ticks = (ctx->ts_wraps << 16) | cur_ts;
+
+        /* ---- consume ring buffer + print with timestamp ---- */
+        while (ctx->tail != ctx->head)
+        {
+            IrqRxEntry_t *e = &ctx->ring[ctx->tail];
+            rx_total++;
+
+            uint32_t abs_ticks = (ctx->ts_wraps << 16) | e->rxts;
+            PRINT("[");
+            PrintTimestamp(abs_ticks);
+            PRINT("] ");
+            PrintRxFrame(&e->frame);
+
+            ctx->tail = (ctx->tail + 1) % IRQ_RING_SIZE;
+        }
+
+        /* ---- Tx Event arrived (ISR 已放入 last_evt) ---- */
+        if (ctx->tx_evt != prev_tx_evt) {
+            prev_tx_evt = ctx->tx_evt;
+            FdcanTxEvent_t *evt = (FdcanTxEvent_t *)&ctx->last_evt;
+            uint32_t abs_ticks = (ctx->ts_wraps << 16) | evt->r1.B.txts;
+            char b[16];
+            PRINT("[");
+            PrintTimestamp(abs_ticks);
+            PRINT("] TX std 0x");
+            PrintHex32(b, evt->r0.B.xtd ? evt->r0.B.id : (evt->r0.B.id >> 18));
+            PRINT(b);
+            PRINT("  MM=");
+            NumToStr(b, evt->r1.B.mm); PRINT(b);
+            PRINT("  ET=");
+            NumToStr(b, evt->r1.B.et); PRINT(b);
+            PRINT("  #");
+            NumToStr(b, tx_count); PRINT(b);
+            PRINT("\r\n");
+        }
+
+        /* ---- periodic send (every 1s = 31250 ticks) ---- */
+        if (ticks - last_send_ticks >= 31250) {
+            last_send_ticks = ticks;
+            uint8_t data[8];
+            data[0] = (uint8_t)(tx_count >> 0);
+            data[1] = (uint8_t)(tx_count >> 8);
+            data[2] = (uint8_t)(tx_count >> 16);
+            data[3] = (uint8_t)(tx_count >> 24);
+            data[4] = (uint8_t)(cur_ts >> 0);
+            data[5] = (uint8_t)(cur_ts >> 8);
+            data[6] = 0;
+            data[7] = 0;
+            if (FdcanSend(fdcan, 0x7E0, 0, data, 8, 0) == 0)
+                tx_count++;
+        }
+
+        /* ---- periodic stats (every 1s) ---- */
+        if (ticks - last_print_ticks >= 31250) {
+            last_print_ticks = ticks;
+
+            uint32_t ecr = FdcanEcr(fdcan);
+            uint32_t tec = (ecr & FDCAN_ECR_TEC_Msk) >> FDCAN_ECR_TEC_Pos;
+            uint32_t rec = (ecr & FDCAN_ECR_REC_Msk) >> FDCAN_ECR_REC_Pos;
+
+            char buf[16];
+            PRINT("RX=");
+            NumToStr(buf, rx_total); PRINT(buf);
+            PRINT("  TX=");
+            NumToStr(buf, tx_count); PRINT(buf);
+            PRINT("  TEC=");
+            NumToStr(buf, tec); PRINT(buf);
+            PRINT("  REC=");
+            NumToStr(buf, rec); PRINT(buf);
+            PRINT("  s=");
+            NumToStr(buf, ticks / 31250); PRINT(buf);
+            if (ctx->overrun) {
+                PRINT("  OVR=");
+                NumToStr(buf, ctx->overrun); PRINT(buf);
+            }
+            if (ctx->ts_wraps) {
+                PRINT("  WRAP=");
+                NumToStr(buf, ctx->ts_wraps); PRINT(buf);
+            }
+            PRINT("\r\n");
+        }
+    }
+
+    /* ---- cleanup ---- */
+    FdcanIrqDisable(fdcan, FDCAN_IE_RF0NE | FDCAN_IE_TSWE);
+    FdcanIrqLineDisable(fdcan);
+    GicRegisterIrq(GIC_FDCAN1_IT0, 0);
+
+    /* ---- final stats ---- */
+    uint16_t end_ts = FdcanTimestampRead(fdcan);
+    uint32_t final_ticks = (ctx->ts_wraps << 16) | end_ts;
+
+    PRINT("\r\n--- Final Stats ---\r\n");
+    char buf[16];
+    PRINT("Elapsed: ");
+    NumToStr(buf, final_ticks / 31250); PRINT(buf);
+    PRINT(" s  RX: ");
+    NumToStr(buf, rx_total); PRINT(buf);
+    PRINT("  TX: ");
+    NumToStr(buf, tx_count); PRINT(buf);
+    if (ctx->overrun) {
+        PRINT("  OVR: ");
+        NumToStr(buf, ctx->overrun); PRINT(buf);
+    }
+    PRINT("\r\n--- Test done ---\r\n");
+}
+
+
+/* ================================================================== */
 /*  菜单                                                                */
 /* ================================================================== */
 
@@ -693,6 +974,7 @@ static const MenuEntry_t fdcan_menu[] = {
     { "4", "SendBuf send",          TestSendBuf    },
     { "5", "Continuous send (key to stop)", TestContinuousSend },
     { "6", "CAN Monitor + periodic send",  TestCanMonitor },
+    { "7", "IRQ receive",           TestIrqReceive },
 };
 
 void FdcanTest(void)

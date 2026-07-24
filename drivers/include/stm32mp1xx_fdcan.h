@@ -1035,4 +1035,52 @@ extern void FdcanLoopbackDisable(volatile FdcanRegs_t *fdcan);
 #define FDCAN_CCU_IE_CWEE          (1U << 0)
 
 
+/* ================================================================== */
+/*  中断控制 (内联)                                                      */
+/* ================================================================== */
+
+static inline void FdcanIrqEnable(volatile FdcanRegs_t *fdcan, uint32_t mask)
+{
+    fdcan->IE |= mask;
+}
+
+static inline void FdcanIrqDisable(volatile FdcanRegs_t *fdcan, uint32_t mask)
+{
+    fdcan->IE &= ~mask;
+}
+
+static inline void FdcanIrqClear(volatile FdcanRegs_t *fdcan, uint32_t mask)
+{
+    fdcan->IR = mask;
+}
+
+static inline uint32_t FdcanIrqGet(volatile FdcanRegs_t *fdcan)
+{
+    return fdcan->IR & fdcan->IE;
+}
+
+static inline void FdcanIrqLineEnable(volatile FdcanRegs_t *fdcan, uint32_t lines)
+{
+    fdcan->ILE = lines & (FDCAN_ILE_EINT0 | FDCAN_ILE_EINT1);
+}
+
+static inline void FdcanIrqLineDisable(volatile FdcanRegs_t *fdcan)
+{
+    fdcan->ILE = 0;
+}
+
+/* ================================================================== */
+/*  其他寄存器读取 (封装直操作)                                           */
+/* ================================================================== */
+
+static inline uint32_t FdcanEcr(volatile FdcanRegs_t *fdcan)
+{
+    return fdcan->ECR;
+}
+
+static inline uint32_t FdcanNdat1(volatile FdcanRegs_t *fdcan)
+{
+    return fdcan->NDAT1;
+}
+
 #endif /* STM32MP1XX_FDCAN_H_ */
