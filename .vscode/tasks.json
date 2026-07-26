@@ -1,0 +1,57 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build (Driver_Test)",
+            "type": "shell",
+            "command": "make all",
+            "options": {
+                "cwd": "${workspaceFolder}/Driver_Test"
+            },
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Load ELF (CM4)",
+            "type": "shell",
+            "command": "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
+            "args": [
+                "-f", "board/st/stm32mp157f-dk2.cfg",
+                "-s", "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/openocd/scripts",
+                "-c", "init; halt; program \"${workspaceFolder}/Driver_Test/out/Driver_Test.elf\"; reset; exit"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/Driver_Test"
+            },
+            "group": "none",
+            "problemMatcher": []
+        },
+        {
+            "label": "Load ELF (A7)",
+            "type": "shell",
+            "command": "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
+            "args": [
+                "-f", "board/st/stm32mp157f-dk2.cfg",
+                "-s", "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/openocd/scripts",
+                "-c", "init; targets stm32mp15x.cpu0; halt; program \"${workspaceFolder}/Driver_Test/out/Driver_Test.elf\" verify; resume; exit"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/Driver_Test"
+            },
+            "group": "none",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build & Load (CM4)",
+            "dependsOn": ["Build (Driver_Test)", "Load ELF (CM4)"],
+            "dependsOrder": "sequence",
+            "group": {
+                "kind": "build"
+            },
+            "problemMatcher": []
+        }
+    ]
+}

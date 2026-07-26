@@ -232,6 +232,10 @@ void GiccEoiInt(uint32_t id);
 IrqHandler_t GicRegisterIrq(uint32_t id, IrqHandler_t handler);
 void do_irq(void);
 
+/* CPU 中断全局控制 */
+void EnableCpuIrq(void);
+void DisableCpuIrq(void);
+
 
 typedef struct {
     volatile uint32_t CTLR;                 /* 0x000 — 控制寄存器 */

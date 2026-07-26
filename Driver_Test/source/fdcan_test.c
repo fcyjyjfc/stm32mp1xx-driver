@@ -103,6 +103,9 @@ static void TestClassicCanLoopback(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- Classic CAN Loopback ---\r\n");
+    PRINT("  Loopback mode, no external wiring required\r\n");
+    PRINT("  Send 4 standard frames (0x100/0x200/0x300/0x400)\r\n");
+    PRINT("  Receive from FIFO0 and verify ID/DLC/data automatically\r\n");
 
     RCC->MP_APB2ENSETR |= 1 << 24;
     RCC->FDCANCKSELR = 0;
@@ -169,6 +172,9 @@ static void TestCanFdLoopback(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- CAN FD Loopback ---\r\n");
+    PRINT("  Loopback mode, no external wiring required\r\n");
+    PRINT("  Send 6 extended FD frames with varying DLC (9~15)\r\n");
+    PRINT("  Receive from FIFO0 and verify ID/DLC/data automatically\r\n");
 
     static const FdcanCfg_t fd_cfg = {
         .start_word     = 0,
@@ -257,6 +263,11 @@ static void TestFilterCombo(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- Filter Combo Test ---\r\n");
+    PRINT("  Requires PC USB-CAN to send matching/non-matching frames\r\n");
+    PRINT("  Standard filters: Range (0x100~0x1FF), Dual (0x200/0x201),\r\n");
+    PRINT("    Classic (0x300/0x7F0), Reject (0x500~0x5FF), RxBuf (0x400)\r\n");
+    PRINT("  Extended filters: Range/Dual/Classic/Reject/RxBuf x5\r\n");
+    PRINT("  ANFS=REJECT, ANFE=FIFO1 (unmatched ext frames -> FIFO1)\r\n");
     Fdcan1GpioInit();
 
     /*
@@ -371,6 +382,10 @@ static void TestSendBuf(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- SendBuf (Normal) ---\r\n");
+    PRINT("  Normal mode, requires bus ACK (connect USB-CAN)\r\n");
+    PRINT("  Send 4 frames via dedicated Tx buffers, DAR=1 (no auto retransmit)\r\n");
+    PRINT("  Wait for TXBTO=0x0F to confirm all transmitted\r\n");
+    PRINT("  Read 4 events from Tx Event FIFO (includes timestamp)\r\n");
     Fdcan1GpioInit();
 
     static const FdcanCfg_t cfg = {
@@ -477,6 +492,10 @@ static void TestContinuousSend(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- Continuous Send ---\r\n");
+    PRINT("  Normal mode, requires bus ACK (connect USB-CAN)\r\n");
+    PRINT("  Continuously send standard frame 0x100 with 64-bit incrementing counter\r\n");
+    PRINT("  500 kbit/s, DAR=1\r\n");
+    PRINT("  Press any key to stop, shows sent count and LEC\r\n");
     Fdcan1GpioInit();
 
     static const FdcanCfg_t cfg = {
@@ -563,6 +582,11 @@ static void TestCanMonitor(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- CAN Monitor + Periodic Send ---\r\n");
+    PRINT("  Normal mode, requires bus traffic (connect USB-CAN or test 5)\r\n");
+    PRINT("  Full acceptance (std+ext range), prints all received frames\r\n");
+    PRINT("  Periodically sends 0x7E0 every 1 second with TX count and timestamp\r\n");
+    PRINT("  Prints RX/TX/ECR statistics every 1 second\r\n");
+    PRINT("  Press any key to stop, shows elapsed time and totals\r\n");
     Fdcan1GpioInit();
 
     static const FdcanCfg_t cfg = {
@@ -835,6 +859,10 @@ static void TestIrqReceive(void)
     FdcanIrqCtx_t *ctx = &irq_ctx1;
 
     PRINT("\r\n--- IRQ Monitor + Periodic Send ---\r\n");
+    PRINT("  Same as test 6 but using interrupts for RX/TxEvent/TSW\r\n");
+    PRINT("  Demonstrates filter priority: 0x100/0x200/0x300 -> RxBuf (faster),\r\n");
+    PRINT("    range 0x000~0x7FF -> FIFO0 (fallback)\r\n");
+    PRINT("  Frames with absolute timestamps [seconds.milliseconds]\r\n");
     Fdcan1GpioInit();
 
     memset(ctx, 0, sizeof(*ctx));
@@ -983,6 +1011,10 @@ static void TestCanFdSend(void)
     volatile FdcanRegs_t *fdcan = FDCAN1;
 
     PRINT("\r\n--- CAN FD Send (1M/3M) ---\r\n");
+    PRINT("  Normal mode, requires bus ACK (connect USB-CAN)\r\n");
+    PRINT("  Send FD frames with cycling DLC: 8/12/16/20/24/32/48/64 bytes\r\n");
+    PRINT("  1 Mbit/s arbitration / 3 Mbit/s data phase, DAR=1\r\n");
+    PRINT("  Press any key to stop, shows sent count and LEC\r\n");
     Fdcan1GpioInit();
 
     static const FdcanCfg_t cfg = {

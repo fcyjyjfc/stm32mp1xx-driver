@@ -100,6 +100,15 @@ void GicdSetGroup(uint32_t id)
 
 void GicdInit(void)
 {
+    uint32_t i;
+
+    /* 禁用所有 SPI 中断线 (ID 32~287), 清除残留配置 */
+    for (i = 1U; i < 9U; i++)
+        GICD->ICENABLER[i] = 0xFFFFFFFFU;
+    /* 清除所有 SPI 挂起 */
+    for (i = 1U; i < 9U; i++)
+        GICD->ICPENDR[i] = 0xFFFFFFFFU;
+
     /* 使能 Group 0 + Group 1 中断转发到 CPU 接口 */
     GICD->CTLR |= 3;
 }
@@ -146,4 +155,20 @@ void do_irq(void)
         irq_table[id]();                            /* 分发到注册的处理函数 */
 
     GiccEoiInt(id);                                 /* 写 EOIR 结束中断 */
+}
+
+
+void EnableCpuIrq(void)
+{
+    uint32_t cpsr;
+    __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr));
+    __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr & ~0x80U));
+}
+
+
+void DisableCpuIrq(void)
+{
+    uint32_t cpsr;
+    __asm__ volatile("mrs %0, cpsr" : "=r"(cpsr));
+    __asm__ volatile("msr cpsr_c, %0" :: "r"(cpsr | 0x80U));
 }

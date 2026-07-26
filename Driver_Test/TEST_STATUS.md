@@ -1,5 +1,18 @@
 # Driver Test Status
 
+## 测试框架
+
+| 项目 | 说明 |
+|------|------|
+| 启动状态初始化 | 确保每项外设从复位状态开始。重新 F5 仿真或从其他程序跳转时，外设保持上次状态，中断线/标志位可能残留。 |
+| 防护策略 | ① start.S 开头 `msr cpsr,#0xdF` (I=1, F=1) 屏蔽 IRQ/FIQ ② `TestCommonInit` 开头 `GicdInit` 禁用+清除所有 SPI 中断挂起 ③ 外设初始化前 RCC 硬件复位 ④ 所有外设 + GIC 配置完成后才 `GicdEnableInt` + `EnableCpuIrq` |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| 第二次 F5 DMA TC 中断残留 | 调试器附着时不复位硬件，DMA 保留上次 TCIF，`UsartDmaRxInit` 使能 TCIE 后立即触发 | RCC AHB2 硬件复位 DMA + GicdInit 清所有 SPI 挂起 + CPSR.I=1 启动 + 中断使能放末尾 |
+
 ## USART4
 
 | 测试项 | 状态 | 说明 |
@@ -586,3 +599,65 @@ SdmmcPowerOn (400kHz, 1-bit)
 | Tx Event FIFO 无事件 | T1 bit23 EFC(Event FIFO Control)=0, 硬件不写事件 | EFC=1, 发送成功时写 Tx Event |
 | FdcanTimestampInit 无效 | TSCC 受保护寄存器, 需 CCE=1+INIT=1 才可写 | 在 FdcanTimestampInit 中进入/退出配置模式 |
 | 时间戳计数停止 | 无 DAR 且无 ACK → 自动重传 → TEC 飙升 → Bus-Off → INIT=1 停计数器 | 配 DAR=1 避免自动重传 |
+
+## SAI + CS42L51 音频
+
+硬件配置: SAI2 Block A, I2S 主机, MCLK=64MHz, 8kHz 采样率, 16-bit. CODEC: CS42L51, I2C5 控制 (0x94), PC0=RST.
+
+### 基本功能
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| GPIO/时钟初始化 | 通过 | PE0(MCLK,AF10), PI7(FS,AF10), PI5(SCK,AF10), PI6(SD,AF10), HI 速. SAI2CKSELR=3(PLLQ), CPERCKSELR=0 |
+| I2C 通信 | 通过 | cs42l51_i2c_write/read, MAP 地址 + Restart, CS42L51 应答正常 |
+| SAI I2S 初始化 | 通过 | SaiCfgFillI2S(64MHz→8kHz, 16-bit, Master TX) |
+| CODEC 初始化 | 通过 | RESET↑→PDN=1→配寄存器→PDN=0→50ms 等待 |
+| 1kHz 正弦波输出 | 通过 | 16 点 × 1/4 幅值, 8kHz 播放心跳 |
+| Interactive 命令 | 通过 | FramePoll 非阻塞接收, +/-/v/p/m/s/q 全功能 |
+| 停止/退出 | 通过 | SaiStop + Cs42l51Deinit (PDN=1, RESET↓), 返回菜单 |
+
+### 音量控制
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| AOUT 增益 (v 命令) | 通过 | 0~24 half-db = 0~+12dB, 寄存器 0x00~0x18 |
+| PCMMIX 衰减 (p 命令) | 通过 | -102~+24 half-db = -51~+12dB, 7-bit signed 编码 |
+| AOUT + / - 快调 | 通过 | 4 步/次 (2dB), 上限 0x18 |
+| Mute 切换 (m 命令) | 通过 | Cs42l51SetVolume(0x80), 恢复上次音量 |
+| 状态显示 (s 命令) | 通过 | 读回 AOUT/PCMMIX/09h 寄存器原始值 |
+
+### 驱动接口
+
+| 函数 | 说明 |
+|------|------|
+| `Cs42l51AoutHalfDbToReg(half_db)` | half-dB → AOUT 寄存器值 (0~24 → 0x00~0x18) |
+| `Cs42l51PcmmixHalfDbToReg(half_db)` | half-dB → PCMMIX 寄存器值 (正=0x00~0x18 增益, 负=0x19~0x7F 衰减) |
+
+### CS42L51 编码细节
+
+**AOUT (寄存器 16h/17h)** — unsigned binary:
+| half-db | 寄存器 | dB |
+|---------|--------|----|
+| 24 | 0x18 | +12 (最大) |
+| 8 | 0x08 | +4 |
+| 0 | 0x00 | 0 |
+| >0x18 或 0x19~0x33 | — | **无效 (无声)** |
+
+**PCMMIX (寄存器 10h/11h)** — 7-bit signed (补码):
+| half-db | 寄存器 | dB |
+|---------|--------|----|
+| +24 | 0x18 | +12 (最大) |
+| 0 | 0x00 | 0 (参考) |
+| -1 | 0x7F | -0.5 |
+| -64 | 0x40 | -32 |
+| -96 | 0x20 | -48 |
+| -102 | 0x19 | -51 (最小) |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| DATA_SEL 双移位导致音量失控 | `CS42L51_DATA_SEL_DSP 1<<6` (0x40) 传入 `CS42L51_DATA_SEL(s) ((s)&3)<<6` → 0x00 (PCM 模式), AOUT/PCMMIX 音量写寄存器不生效 | _PCM/_DSP/_ADC 改为未移位值 (0/1/2) |
+| I2C 连续写入寄存器值不对 | CS42L51 需 ~1ms 间隔, 连续写入时后一帧被忽略 | cs42l51_i2c_write 末尾加 cs42l51_delay_ms(1) |
+| AOUT 寄存器 0x19~0x33 无效 | unsigned binary 编码在 0x19~0x33 区间无有效映射, 写入后芯片静音 | Cs42l51AoutHalfDbToReg 截断至 0x18, 不支持 AOUT 衰减 |
+| PCMMIX 20 比 10 和 40 都小 | PCMMIX 用 7-bit signed 编码, 0x20=(-96)×0.5=-48dB, 0x10=(+16)×0.5=+8dB(增益), 0x40=(-64)×0.5=-32dB | 驱动提供 Cs42l51PcmmixHalfDbToReg 统一换算 |

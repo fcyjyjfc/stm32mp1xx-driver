@@ -1,0 +1,15 @@
+[
+    {
+        "key": "ctrl+shift+l",
+        "command": "runCommands",
+        "args": {
+            "commands": [
+                "workbench.debug.action.focusRepl",
+                {
+                    "command": "type",
+                    "args": { "text": "load\n" }
+                }
+            ]
+        }
+    }
+]

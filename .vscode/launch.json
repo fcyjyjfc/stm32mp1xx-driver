@@ -1,0 +1,30 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug (Attach, U-Boot DDR)",
+            "cwd": "${workspaceFolder}",
+            "type": "cortex-debug",
+            "request": "attach",
+            "servertype": "openocd",
+            "executable": "${workspaceFolder}/Driver_Test/out/Driver_Test.elf",
+            "configFiles": [
+                "board/st/stm32mp157f-dk2.cfg"
+            ],
+            "searchDir": [
+                "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/openocd/scripts"
+            ],
+            "serverpath": "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
+            "serverArgs": [
+                "-c", "stm32mp15x.cm4 configure -defer-examine"
+            ],
+            "gdbPath": "C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin/arm-none-eabi-gdb.exe",
+            "gdbTarget": "localhost:3334",
+            "preAttachCommands": [
+                "monitor halt",
+                "load"
+            ],
+            "runToEntryPoint": "main"
+        }
+    ]
+}

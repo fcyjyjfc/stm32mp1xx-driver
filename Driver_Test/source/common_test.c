@@ -75,6 +75,19 @@ void TestCommonInit(void)
 {
     RCC->MP_AHB2ENSETR |= (1u << 1) | (1u << 2);
 
+    /* 硬件复位 DMA2: 第二次 F5 仿真时 DMA 保留上次 TCIF 等残留状态,
+     * 不清除则 UsartDmaRxInit 刚使能 TCIE 就会触发虚假中断.
+     * 同理, 其他外设在使用前也应从复位状态开始 (通过 RCC 或各自复位位). */
+    RCC->AHB2RSTSETR = (1u << 1);
+    RCC->AHB2RSTCLRR = (1u << 1);
+
+    /* 1. GIC 最先初始化: 禁用所有 SPI 并清除残留挂起, 防止外设初始化
+     *    过程中虚假中断到达 CPU (此时 CPSR.I=0, CPU 会响应已使能的 GIC). */
+    GicdInit();
+    GiccInit(10, 2);
+
+    /* 2. 外设初始化 (此时 GIC 已清理, CPU IRQ 已屏蔽) */
+
     /* DMA TX: DMA2 Stream 0 */
     UsartDmaTxInit(&g_dma_tx_ctx, USART4, DMA2, 0,
                    DMAMUX_REQ_UART4_TX, g_tx_ring, sizeof(g_tx_ring));
@@ -84,9 +97,6 @@ void TestCommonInit(void)
     GicdSetTarget(GIC_DMA2_STR0, 1);
     GicdSetTrigMode(GIC_DMA2_STR0, 0);
     GicRegisterIrq(GIC_DMA2_STR0, DmaTxIsr);
-    GicdEnableInt(GIC_DMA2_STR0);
-    GicdInit();
-    GiccInit(10, 2);
 
     /* DMA RX: DMA2 Stream 1, 循环模式 + TC 中断计圈 */
     UsartDmaRxInit(&g_dma_rx_ctx, USART4, DMA2, 1,
@@ -97,9 +107,14 @@ void TestCommonInit(void)
     GicdSetTarget(GIC_DMA2_STR1, 1);
     GicdSetTrigMode(GIC_DMA2_STR1, 0);
     GicRegisterIrq(GIC_DMA2_STR1, DmaRxIsr);
-    GicdEnableInt(GIC_DMA2_STR1);
 
     FrameParserInit(&g_frame_parser, OnFrame);
+
+    /* 3. 所有外设就绪后, 统一使能中断线 + 开 CPU IRQ.
+     *    至此之前在 start.S 屏蔽的 IRQ 才解除, 确保 ISR 运行前一切已初始化. */
+    GicdEnableInt(GIC_DMA2_STR0);
+    GicdEnableInt(GIC_DMA2_STR1);
+    EnableCpuIrq();
 }
 
 

@@ -74,7 +74,10 @@ init_stack:
   mov  sp,r0 
   sub  r0,#0 
    /*** system mode stack (privileged, same regs as usr) ***/
-  msr  cpsr,#0x1F
+  msr  cpsr,#0xdF       /* I=1,F=1: 屏蔽 IRQ/FIQ. 外设残留中断 (如 DMA TCIF)
+                         * 在外设复位+GIC清理完成前不应响应, 否则
+                         * 未初始化的 ISR 或残留挂起会导致误触发.
+                         * EnableCpuIrq() 在 TestCommonInit 末尾统一开启. */
   mov  sp,r0
 
 

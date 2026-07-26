@@ -9,13 +9,13 @@ CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 CROSS_COMPILE = arm-none-eabi-
 CC	= $(CROSS_COMPILE)gcc
 
-YAGARTO_PATH ?= C:/Program Files (x86)/yagarto
-CFLAGS += -I"$(YAGARTO_PATH)/arm-none-eabi/include"
+XPACK_PATH ?= C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1
+CFLAGS += -I"$(XPACK_PATH)/arm-none-eabi/include"
 GCC_LIB_DIR := $(shell $(CC) -print-file-name=include 2>nul)
 ifneq ($(GCC_LIB_DIR),include)
 CFLAGS += -I"$(GCC_LIB_DIR)"
 else
-CFLAGS += -I"$(YAGARTO_PATH)/lib/gcc/arm-none-eabi/4.6.2/include"
+CFLAGS += -I"$(XPACK_PATH)/lib/gcc/arm-none-eabi/15.2.1/include"
 endif
 
 LD	= $(CROSS_COMPILE)ld
