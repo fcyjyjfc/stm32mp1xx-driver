@@ -194,6 +194,12 @@ uint8_t UsartReadAll(volatile UsartRegs_t *const usart_reg)
 }
 
 
+void UsartSetBaud(volatile UsartRegs_t *usart, uint32_t ker_ck_hz, uint32_t baud)
+{
+    usart->BRR = ker_ck_hz / baud;
+}
+
+
 /*
  * 从环形缓冲区取一段连续数据启动 DMA 传输。
  * 回绕时只取 tail 到末尾的部分, TC 中断里会再次 Kick 取剩余部分。

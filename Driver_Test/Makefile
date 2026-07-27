@@ -6,10 +6,10 @@ OUTPUT_DIR = out
 CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 				-nostdinc -std=c99 -I../drivers/include -I../devices/include
 
-CROSS_COMPILE = arm-none-eabi-
-CC	= $(CROSS_COMPILE)gcc
+XPACK_PATH = C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1
 
-XPACK_PATH ?= C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1
+CROSS_COMPILE = $(XPACK_PATH)/bin/arm-none-eabi-
+CC	= $(CROSS_COMPILE)gcc
 CFLAGS += -I"$(XPACK_PATH)/arm-none-eabi/include"
 GCC_LIB_DIR := $(shell $(CC) -print-file-name=include 2>nul)
 ifneq ($(GCC_LIB_DIR),include)
@@ -66,7 +66,7 @@ all: $(BUILD_DIR) $(OUTPUT_DIR) $(OBJS) start.o
 	@$(OBJDUMP) -DS $(OUTPUT_DIR)/$(NAME).elf > $(OUTPUT_DIR)/$(NAME).dis
 
 clean:
-	@rm -rf $(BUILD_DIR)
-	@rm -rf $(OUTPUT_DIR)
-	@rm -f start.o
+	@if exist $(BUILD_DIR) rmdir /s /q $(BUILD_DIR)
+	@if exist $(OUTPUT_DIR) rmdir /s /q $(OUTPUT_DIR)
+	@if exist start.o del /q start.o
 	@echo "  CLEAN   complete."

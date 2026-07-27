@@ -131,7 +131,7 @@ void Cs42l51Init(Cs42l51_t *codec)
     cs42l51_i2c_write(codec, CS42L51_REG_DAC_CTL,
                       CS42L51_DATA_SEL(CS42L51_DATA_SEL_DSP));
 
-    /* 10h/11h: PCMMIX -24dB */
+    /* 10h/11h: PCMMIX +8dB (MUTE=0, VOL=16=+8dB) */
     cs42l51_i2c_write(codec, CS42L51_REG_PCMMIXA_VOL, 0x10);
     cs42l51_i2c_write(codec, CS42L51_REG_PCMMIXB_VOL, 0x10);
 
@@ -139,7 +139,7 @@ void Cs42l51Init(Cs42l51_t *codec)
     cs42l51_i2c_write(codec, CS42L51_REG_AOUTA_VOL, CS42L51_AOUT_MUTE);
     cs42l51_i2c_write(codec, CS42L51_REG_AOUTB_VOL, CS42L51_AOUT_MUTE);
 
-    /* 21h: 电荷泵频率保持复位值 */
+    /* 21h: 电荷泵频率 = 960kHz (复位值 0x05, 8kHz/256Fs 适用) */
     cs42l51_i2c_write(codec, CS42L51_REG_CHARGE_PUMP, 0x05);
 
     /* 缓存音量 = 0 (MUTE) */
@@ -155,7 +155,7 @@ void Cs42l51Init(Cs42l51_t *codec)
     cs42l51_i2c_write(codec, CS42L51_REG_POWER_CTL1, 0x00);     /* PDN=0 再确认 */
     cs42l51_i2c_write(codec, CS42L51_REG_DAC_CTL,
                       CS42L51_DATA_SEL(CS42L51_DATA_SEL_DSP));  /* DATA_SEL=DSP */
-    cs42l51_i2c_write(codec, CS42L51_REG_PCMMIXA_VOL, 0x10);    /* PCMMIX -24dB */
+    cs42l51_i2c_write(codec, CS42L51_REG_PCMMIXA_VOL, 0x10);    /* PCMMIX +8dB */
     cs42l51_i2c_write(codec, CS42L51_REG_PCMMIXB_VOL, 0x10);
     cs42l51_i2c_write(codec, CS42L51_REG_AOUTA_VOL, CS42L51_AOUT_MUTE);  /* 保持静音 */
     cs42l51_i2c_write(codec, CS42L51_REG_AOUTB_VOL, CS42L51_AOUT_MUTE);

@@ -164,6 +164,23 @@ void SaiCfgFillI2S(SaiCfg_t *cfg, uint32_t ker_ck_hz,
 
 
 /**
+ * @brief 使能 SAI DMA 请求
+ */
+void SaiDmaEnable(SaiRegs_t *sai, SaiBlock_t block)
+{
+    sai->Block[block].CR1 |= CR1_DMAEN;
+}
+
+/**
+ * @brief 关闭 SAI DMA 请求
+ */
+void SaiDmaDisable(SaiRegs_t *sai, SaiBlock_t block)
+{
+    sai->Block[block].CR1 &= ~CR1_DMAEN;
+}
+
+
+/**
  * @brief SAI 寄存器初始化 (配置完后不使能)
  * @param sai    SAI 外设基址
  * @param block  子块 A/B
@@ -206,6 +223,7 @@ void SaiInit(SaiRegs_t *sai, SaiBlock_t block, const SaiCfg_t *cfg)
     cr1 |= cfg->nodiv   ? CR1_NODIV   : 0;
     cr1 |= CR1_OUTDRIV;                         /* 使能后立即驱动输出 */
     cr1 |= cfg->mono    ? CR1_MONO    : 0;
+    cr1 |= ((uint32_t)cfg->syncen << CR1_SYNCEN_POS) & CR1_SYNCEN_Msk;
     cr1 |= cfg->ckstr   ? CR1_CKSTR   : 0;
     cr1 |= cfg->lsbfirst ? CR1_LSBFIRST : 0;
     cr1 |= ((uint32_t)cfg->data_size << CR1_DS_POS) & CR1_DS_Msk;

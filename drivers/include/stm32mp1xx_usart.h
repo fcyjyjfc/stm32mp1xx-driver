@@ -81,6 +81,8 @@ extern void UsartRead(volatile UsartRegs_t *const usart_reg, uint8_t *dat, const
 extern uint32_t UsartReadOne(volatile UsartRegs_t *const usart_reg, uint8_t *dat);
 extern uint8_t UsartReadAll(volatile UsartRegs_t *const usart_reg);
 
+extern void UsartSetBaud(volatile UsartRegs_t *usart, uint32_t ker_ck_hz, uint32_t baud);
+
 
 #include "stm32mp1xx_dma.h"
 

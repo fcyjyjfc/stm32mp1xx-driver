@@ -126,6 +126,18 @@ void DmaClearTcif(volatile DmaRegs_t *dma, uint32_t stream)
 }
 
 
+void DmaClearHtif(volatile DmaRegs_t *dma, uint32_t stream)
+{
+    uint32_t s = stream % 4;
+    uint32_t shift = (s / 2) * 16 + (s % 2) * 6;
+    uint32_t mask = (1u << 4) << shift;
+    if (stream < 4)
+        dma->LIFCR = mask;
+    else
+        dma->HIFCR = mask;
+}
+
+
 void DmaDisable(volatile DmaRegs_t *dma, uint32_t stream)
 {
     dma->STREAM[stream].CR &= ~1u;

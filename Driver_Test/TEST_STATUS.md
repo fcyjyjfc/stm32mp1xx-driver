@@ -626,12 +626,29 @@ SdmmcPowerOn (400kHz, 1-bit)
 | Mute 切换 (m 命令) | 通过 | Cs42l51SetVolume(0x80), 恢复上次音量 |
 | 状态显示 (s 命令) | 通过 | 读回 AOUT/PCMMIX/09h 寄存器原始值 |
 
+### 子测试
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 1. Interactive I2S play + volume control | 通过 | 正弦波, +/-/v/p/m/s/q 交互命令 |
+| 2. Happy Birthday melody | 通过 | 12 音符旋律表, SaiSendBlocking 轮询 |
+| 3. PCM Stream (DMA ping-pong 460800bd) | **待实测** | DMA 乒乓缓冲, UART 流式接收, 需 PC 端 pcm_sender.py |
+| 4. Self-loopback (MIC→ADC→DAC→HP) | 通过 | DATA_SEL=ADC, MIC2+30dB, 无需 SAI Block B |
+| 5. Digital loopback (A RX → B TX) | 通过 | Block A Master RX + Block B Slave TX sync, MCU 中转 |
+
 ### 驱动接口
 
 | 函数 | 说明 |
 |------|------|
 | `Cs42l51AoutHalfDbToReg(half_db)` | half-dB → AOUT 寄存器值 (0~24 → 0x00~0x18) |
 | `Cs42l51PcmmixHalfDbToReg(half_db)` | half-dB → PCMMIX 寄存器值 (正=0x00~0x18 增益, 负=0x19~0x7F 衰减) |
+| `Cs42l51Reg_t` 枚举 | CS42L51 全部寄存器地址 (02h~21h) 统一枚举 |
+| `CS42L51_REG_MIC_CTL` 位域 | 05h MIC 控制: `CS42L51_MIC_GAIN_30dB` / `CS42L51_MIC2_SEL` / `CS42L51_BIAS_EN` |
+| `CS42L51_REG_ADC_INPUT_SEL` 位域 | 07h ADC 输入选择: `CS42L51_AINA_SEL(s)` / `CS42L51_AINB_SEL(s)` / `CS42L51_IN_SEL_MIC2` |
+| `CS42L51_REG_ADCMIXA/B_VOL` | 0Eh/0Fh ADCMIX 音量: `CS42L51_ADCMIX_VOL_12dB` / `CS42L51_ADCMIX_MUTE` |
+| `SaiCfg_t.syncen` | SAI 子块同步模式 (0=async, 1=sync_int, 2=sync_ext), 通过 SaiInit 配置 |
+| `SaiDmaEnable/Disable` | SAI DMA 请求使能/关闭 (CR1_DMAEN) |
+| `UsartSetBaud` | USART 波特率单独设置 (BRR 寄存器) |
 
 ### CS42L51 编码细节
 
@@ -661,3 +678,4 @@ SdmmcPowerOn (400kHz, 1-bit)
 | I2C 连续写入寄存器值不对 | CS42L51 需 ~1ms 间隔, 连续写入时后一帧被忽略 | cs42l51_i2c_write 末尾加 cs42l51_delay_ms(1) |
 | AOUT 寄存器 0x19~0x33 无效 | unsigned binary 编码在 0x19~0x33 区间无有效映射, 写入后芯片静音 | Cs42l51AoutHalfDbToReg 截断至 0x18, 不支持 AOUT 衰减 |
 | PCMMIX 20 比 10 和 40 都小 | PCMMIX 用 7-bit signed 编码, 0x20=(-96)×0.5=-48dB, 0x10=(+16)×0.5=+8dB(增益), 0x40=(-64)×0.5=-32dB | 驱动提供 Cs42l51PcmmixHalfDbToReg 统一换算 |
+| 某些寄存器用魔术数字 | sai_test.c 中 0x05/0x07/0x0E/0x0F 等寄存器地址直接写数字 | 补全 `Cs42l51Reg_t` 枚举 + 位域宏定义, 全部替换为命名常量 |

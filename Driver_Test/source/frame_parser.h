@@ -7,9 +7,10 @@
 #define FRAME_HDR2_VAL  0x55
 #define FRAME_DATA_MAX  254
 
-#define FRAME_CMD_MENU  0x01
-#define FRAME_CMD_BACK  0x02
-#define FRAME_CMD_ECHO  0x03
+#define FRAME_CMD_MENU      0x01
+#define FRAME_CMD_BACK      0x02
+#define FRAME_CMD_ECHO      0x03
+#define FRAME_CMD_PCM_DATA  0x10
 
 typedef struct {
     uint8_t cmd;

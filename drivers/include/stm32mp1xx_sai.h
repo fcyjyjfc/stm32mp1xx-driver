@@ -111,6 +111,7 @@ typedef struct {
     // 其他
     uint8_t       mono  : 1;
     uint8_t       tris  : 1;
+    uint8_t       syncen : 2;     // SYNCEN[1:0]: 0=async, 1=sync_int, 2=sync_ext
     uint8_t       fth;            // FIFO 阈值 (FTH[2:0])
 } SaiCfg_t;
 
@@ -132,6 +133,9 @@ extern void SaiSendBlocking(SaiRegs_t *sai, SaiBlock_t block,
                             const uint32_t *data, uint32_t cnt);
 extern void SaiRecvBlocking(SaiRegs_t *sai, SaiBlock_t block,
                             uint32_t *data, uint32_t cnt);
+
+extern void SaiDmaEnable(SaiRegs_t *sai, SaiBlock_t block);
+extern void SaiDmaDisable(SaiRegs_t *sai, SaiBlock_t block);
 
 
 #endif /* STM32MP1XX_SAI_H_ */
