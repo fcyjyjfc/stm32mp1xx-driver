@@ -316,6 +316,91 @@ typedef struct {
     volatile uint32_t SIDR;          // size ID register
 } RccRegs_t;
 
+/* ── OCENSETR / OCENCLRR bits ── */
+#define RCC_OCEN_HSION      (0) /* 待填 */
+#define RCC_OCEN_CSION      (0) /* 待填 */
+#define RCC_OCEN_DIGBYP     (1u << 7)
+#define RCC_OCEN_HSEON      (1u << 8)
+#define RCC_OCEN_HSEKERON   (1u << 9)
+#define RCC_OCEN_HSEBYP     (1u << 10)
+
+/* ── OCRDYR bits ── */
+#define RCC_OCRDY_HSIRDY    (0) /* 待填 */
+#define RCC_OCRDY_CSIRDY    (0) /* 待填 */
+#define RCC_OCRDY_HSERDY    (1u << 8)
+
+/* ── BDCR bits ── */
+#define RCC_BDCR_LSEON      (1u << 0)
+#define RCC_BDCR_LSEBYP     (1u << 1)
+#define RCC_BDCR_LSERDY     (1u << 2)
+#define RCC_BDCR_LSEDRV_0   (1u << 4)
+#define RCC_BDCR_LSEDRV_1   (1u << 5)
+#define RCC_BDCR_LSION      (0) /* 待填 */
+#define RCC_BDCR_LSIRDY     (0) /* 待填 */
+
+/* ── HSE 模式 ── */
+typedef enum {
+    RCC_HSE_MODE_CRYSTAL = 0,
+    RCC_HSE_MODE_BYPASS_ANALOG,
+    RCC_HSE_MODE_BYPASS_DIGITAL
+} RccHseMode_t;
+
+/* ── 时钟树快照 ── */
+typedef struct {
+    uint32_t hse;       /* 外部高速振荡器      */
+    uint32_t hsi;       /* 内部高速振荡器      */
+    uint32_t csi;       /* 内部低速振荡器(CSI) */
+    uint32_t lse;       /* 外部低速振荡器      */
+    uint32_t lsi;       /* 内部低速振荡器      */
+    uint32_t pll1_p;    /* PLL1 DIVP 输出       */
+    uint32_t pll1_q;    /* PLL1 DIVQ 输出       */
+    uint32_t pll1_r;    /* PLL1 DIVR 输出       */
+    uint32_t pll2_p;    /* PLL2 DIVP 输出       */
+    uint32_t pll2_q;    /* PLL2 DIVQ 输出       */
+    uint32_t pll2_r;    /* PLL2 DIVR 输出       */
+    uint32_t pll3_p;    /* PLL3 DIVP 输出       */
+    uint32_t pll3_q;    /* PLL3 DIVQ 输出       */
+    uint32_t pll3_r;    /* PLL3 DIVR 输出       */
+    uint32_t pll4_p;    /* PLL4 DIVP 输出       */
+    uint32_t pll4_q;    /* PLL4 DIVQ 输出       */
+    uint32_t pll4_r;    /* PLL4 DIVR 输出       */
+    uint32_t mpu;       /* MPU 子系统时钟      */
+    uint32_t axi;       /* AXI 子系统时钟      */
+    uint32_t mcu;       /* MCU 子系统时钟      */
+    uint32_t apb1;      /* APB1 总线时钟       */
+    uint32_t apb2;      /* APB2 总线时钟       */
+    uint32_t apb3;      /* APB3 总线时钟       */
+    uint32_t apb4;      /* APB4 总线时钟       */
+    uint32_t apb5;      /* APB5 总线时钟       */
+    uint32_t ahb2;      /* AHB2 总线时钟       */
+    uint32_t ahb3;      /* AHB3 总线时钟       */
+    uint32_t ahb4;      /* AHB4 总线时钟       */
+    uint32_t ahb5;      /* AHB5 总线时钟       */
+    uint32_t ahb6;      /* AHB6 总线时钟       */
+} RccClkTree_t;
+
+/* ── LSE 驱动能力 ── */
+typedef enum {
+    RCC_LSE_DRV_LOW = 0,
+    RCC_LSE_DRV_MED,
+    RCC_LSE_DRV_HIGH
+} RccLseDrv_t;
+
 extern volatile RccRegs_t *const RCC;
+
+/* 振荡器 */
+int  RccHseInit(RccHseMode_t mode);
+void RccHseDisable(void);
+int  RccHsiInit(void);
+void RccHsiDisable(void);
+int  RccCsiInit(void);
+void RccCsiDisable(void);
+int  RccLseInit(int bypass, RccLseDrv_t drv);
+void RccLseDisable(void);
+int  RccLsiInit(void);
+void RccLsiDisable(void);
+
+/* 时钟树回读 */
+void RccClkDump(RccClkTree_t *tree);
 
 #endif /* STM32MP1XX_RCC_H_ */
