@@ -679,3 +679,50 @@ SdmmcPowerOn (400kHz, 1-bit)
 | AOUT 寄存器 0x19~0x33 无效 | unsigned binary 编码在 0x19~0x33 区间无有效映射, 写入后芯片静音 | Cs42l51AoutHalfDbToReg 截断至 0x18, 不支持 AOUT 衰减 |
 | PCMMIX 20 比 10 和 40 都小 | PCMMIX 用 7-bit signed 编码, 0x20=(-96)×0.5=-48dB, 0x10=(+16)×0.5=+8dB(增益), 0x40=(-64)×0.5=-32dB | 驱动提供 Cs42l51PcmmixHalfDbToReg 统一换算 |
 | 某些寄存器用魔术数字 | sai_test.c 中 0x05/0x07/0x0E/0x0F 等寄存器地址直接写数字 | 补全 `Cs42l51Reg_t` 枚举 + 位域宏定义, 全部替换为命名常量 |
+
+## RCC (Reset and Clock Control)
+
+硬件配置: RCC 基址 0x50000000, RM0436 §10. HSE=24MHz(晶振), HSI=64MHz, CSI=4MHz, LSE=32768Hz, LSI=32000Hz.
+
+> **注意** 当前阶段仍运行在 U-Boot 配好的时钟树之上，以下"通过"均指代码逻辑正确、寄存器读写正确，但尚未在纯裸机下实际切换时钟并验证系统稳定运行。真正裸机阶段再做完整时钟配置验证。
+
+### 时钟树回读 (菜单 20) — 实测通过
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| RccClkDump 全部 25 个节点 | **实测通过** | 振荡器×5 + PLL×12 + 系统×3 + AHB×5 + APB×5 |
+| 振荡器回读 (HSE/HSI/CSI/LSE/LSI) | 实测通过 | OCRDYR + BDCR + RDLSICR |
+| PLL 回读 (4×P/Q/R) | 实测通过 | PLLRDY→读 CFGR1/CFGR2/FRACR |
+| 小数模式回读 (PLL3) | 实测通过 | boot ROM 配的小数频率 208877929Hz 正确 |
+| 系统时钟回读 (MPU/AXI/MCU) | 实测通过 | 源选择 + MPUDIV/AXIDIV/MCUDIV |
+| AHB 总线回读 (AHB2~6) | 实测通过 | AHB2/3/4=MCU, AHB5/6=AXI |
+| APB 总线回读 (APB1~5) | 实测通过 | APB1/2=MCU/2, APB3=MCU/2, APB4=AXI/2, APB5=AXI/4 |
+| 64 位除法 | 实测通过 | libgcc 已链接, 不再复位 |
+
+### 复位原因 — 实测通过
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| RccResetCauseGet + Clear | 实测通过 | 读 MP_RSTSCLRR, 写 1 清 0 |
+| PrintResetCause (开机打印) | 实测通过 | main() 早期调用, POR/PDR + VDDCORE + MPU CPU0 Boot |
+
+### 时钟配置 API — 代码完成, 待裸机实测
+
+全部函数寄存器逻辑已实现, 约束检查、超时等待、返回值完整。当前仅回读验证了寄存器位定义正确 (dump 值与 U-Boot 配置吻合), 未实际切换时钟。
+
+| 模块 | 函数 | 说明 |
+|------|------|------|
+| 振荡器 | RccHseInit/Disable (3 模式), RccHsiInit/Disable, RccCsiInit/Disable | OCENSETR/OCENCLRR/OCRDYR |
+| 振荡器 | RccLseInit/Disable (晶振+旁路, 3×DRV), RccLsiInit/Disable | BDCR (LSE), RDLSICR (LSI) |
+| PLL 源 | RccPll12SrcSelect, RccPll3SrcSelect, RccPll4SrcSelect | RCK12/3/4SELR |
+| PLL1/2 | RccPll1/2Init (整数+小数), RccPll1/2Disable | DIVN 25~100, DIVP 奇数拒绝, FRACLE |
+| PLL3/4 | RccPll3/4Init (整数+小数), RccPll3/4Disable | DIVN 25~200, IFRGE 输入范围 |
+| 系统时钟 | RccMpuClkCfg, RccAxiSrcSelect, RccMcuSrcSelect | 枚举编码分频 |
+| 分频器 | RccAxiDivSet, RccMcuDivSet, RccApb1~5DivSet | 各 DIVR 寄存器 |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| LSI 回读始终 0 | `RccLsiInit` / `RccClkDump` 操作 BDCR, 但 LSI 位于 RDLSICR (0x144) | 改为 RDLSICR, bit0=LSION, bit1=LSIRDY |
+| 64 位除法导致复位 | libgcc 未链接, `__aeabi_uldivmod` 跳飞 | 修复链接后正常 |

@@ -317,16 +317,16 @@ typedef struct {
 } RccRegs_t;
 
 /* ── OCENSETR / OCENCLRR bits ── */
-#define RCC_OCEN_HSION      (0) /* 待填 */
-#define RCC_OCEN_CSION      (0) /* 待填 */
+#define RCC_OCEN_HSION      (1u << 0)
+#define RCC_OCEN_CSION      (1u << 4)
 #define RCC_OCEN_DIGBYP     (1u << 7)
 #define RCC_OCEN_HSEON      (1u << 8)
 #define RCC_OCEN_HSEKERON   (1u << 9)
 #define RCC_OCEN_HSEBYP     (1u << 10)
 
 /* ── OCRDYR bits ── */
-#define RCC_OCRDY_HSIRDY    (0) /* 待填 */
-#define RCC_OCRDY_CSIRDY    (0) /* 待填 */
+#define RCC_OCRDY_HSIRDY    (1u << 0)
+#define RCC_OCRDY_CSIRDY    (1u << 4)
 #define RCC_OCRDY_HSERDY    (1u << 8)
 
 /* ── BDCR bits ── */
@@ -335,8 +335,10 @@ typedef struct {
 #define RCC_BDCR_LSERDY     (1u << 2)
 #define RCC_BDCR_LSEDRV_0   (1u << 4)
 #define RCC_BDCR_LSEDRV_1   (1u << 5)
-#define RCC_BDCR_LSION      (0) /* 待填 */
-#define RCC_BDCR_LSIRDY     (0) /* 待填 */
+#define RCC_BDCR_DIGBYP     (1u << 3)  /* BDCR bit3: LSE 数字旁路 */
+
+#define RCC_RDLSICR_LSION   (1u << 0)
+#define RCC_RDLSICR_LSIRDY  (1u << 1)
 
 /* ── HSE 模式 ── */
 typedef enum {
@@ -395,12 +397,99 @@ typedef struct {
 #define RCC_RSTC_MPUP1RSTF    (1U << 14)  /* MPU 处理器 1 复位 (BOOTROM 置位) */
 #define RCC_RSTC_SPARE        (1U << 15)  /* 保留位, 软件可读写 */
 
+/* ── RCKxSELR 通用位 (PLL 参考时钟选择, 三寄存器相同) ── */
+#define RCC_RCK_SRC_MASK    (3u << 0)
+#define RCC_RCK_SRCRDY      (1u << 31)
+
+/* ── MPU 时钟源 ── */
+#define RCC_MPCK_SRC_MASK   (3u << 0)
+#define RCC_MPCK_SRCRDY     (1u << 31)
+
+/* ── MPCKDIVR 位 ── */
+#define RCC_MPCKDIVR_MPUDIV_Pos   0
+#define RCC_MPCKDIVR_MPUDIV_Msk   (7u << 0)
+#define RCC_MPCKDIVR_MPUDIVRDY    (1u << 31)
+
+typedef enum {
+    RCC_MPUSRC_HSI        = 0,
+    RCC_MPUSRC_HSE        = 1,
+    RCC_MPUSRC_PLL1       = 2,
+    RCC_MPUSRC_PLL1_DIV2  = 3,  /* PLL1 /2  */
+    RCC_MPUSRC_PLL1_DIV4  = 4,  /* PLL1 /4  */
+    RCC_MPUSRC_PLL1_DIV8  = 5,  /* PLL1 /8  */
+    RCC_MPUSRC_PLL1_DIV16 = 6,  /* PLL1 /16 */
+} RccMpuSrc_t;
+
+/* ── PLL 参考时钟源 ── */
+typedef enum {
+    RCC_PLLSRC_HSI       = 0,
+    RCC_PLLSRC_HSE       = 1,
+    RCC_PLLSRC_CSI       = 2,
+    RCC_PLLSRC_I2S_CKIN  = 3  /* PLL4 用; PLL3 传此值=关断 */
+} RccPllSrc_t;
+
 /* ── LSE 驱动能力 ── */
 typedef enum {
     RCC_LSE_DRV_LOW = 0,
     RCC_LSE_DRV_MED,
     RCC_LSE_DRV_HIGH
 } RccLseDrv_t;
+
+/* ── PLLxCR 通用位 ── */
+#define RCC_PLLCR_PLLON     (1u << 0)
+#define RCC_PLLCR_PLLRDY    (1u << 1)
+#define RCC_PLLCR_SSCG_CTRL (1u << 2)
+#define RCC_PLLCR_DIVPEN    (1u << 4)
+#define RCC_PLLCR_DIVQEN    (1u << 5)
+#define RCC_PLLCR_DIVREN    (1u << 6)
+
+/* ── PLLxCFGR1 通用位 ── */
+#define RCC_PLLCFGR1_DIVN_Pos    0
+#define RCC_PLLCFGR1_DIVN_Msk    (0x1FFu << 0)
+#define RCC_PLLCFGR1_DIVM_Pos    16
+#define RCC_PLLCFGR1_DIVM_Msk    (0x3Fu << 16)
+
+/* ── PLLxCFGR2 通用位 ── */
+#define RCC_PLLCFGR2_DIVP_Pos    0
+#define RCC_PLLCFGR2_DIVP_Msk    (0x7Fu << 0)
+#define RCC_PLLCFGR2_DIVQ_Pos    8
+#define RCC_PLLCFGR2_DIVQ_Msk    (0x7Fu << 8)
+#define RCC_PLLCFGR2_DIVR_Pos    16
+#define RCC_PLLCFGR2_DIVR_Msk    (0x7Fu << 16)
+
+/* ── PLLxFRACR 通用位 ── */
+#define RCC_PLLFRACR_FRACV_Pos   3
+#define RCC_PLLFRACR_FRACLE      (1u << 16)
+
+/* ── PLL3/4 CFGR1 额外位 ── */
+#define RCC_PLLCFGR1_IFRGE_Pos   24
+
+/* ── PLL1/2 配置 ── */
+typedef struct {
+    uint32_t divm;   /* 0=bypass, 1=/2, ... 63=/64 */
+    uint32_t divn;   /* 25~100 (整数), 4~512 (小数) */
+    uint32_t divp;   /* 0=bypass, 1=/2, ... 127=/128 */
+    uint32_t divq;   /* 同上 */
+    uint32_t divr;   /* 同上 */
+    uint32_t fracv;  /* 0=整数模式, 1~8191=小数模式 */
+    int      en_p;
+    int      en_q;
+    int      en_r;
+} RccPll12Cfg_t;
+
+/* ── PLL3/4 配置 ── */
+typedef struct {
+    uint32_t divm;   /* 0=bypass, 1=/2, ... 63=/64 */
+    uint32_t divn;   /* 25~200 (整数), 4~512 (小数) */
+    uint32_t divp;   /* 0=bypass, 1=/2, ... 127=/128 */
+    uint32_t divq;   /* 同上 */
+    uint32_t divr;   /* 同上 */
+    uint32_t fracv;  /* 0=整数模式, 1~8191=小数模式 */
+    uint32_t ifrge;  /* 0: Fref 4~8MHz, 1: Fref 8~16MHz */
+    int      en_p;
+    int      en_q;
+    int      en_r;
+} RccPll34Cfg_t;
 
 extern volatile RccRegs_t *const RCC;
 
@@ -418,6 +507,57 @@ void RccLsiDisable(void);
 
 /* 时钟树回读 */
 void RccClkDump(RccClkTree_t *tree);
+
+/* ── 子系统/总线分频器 通用位 ── */
+#define RCC_DIVR_DIV_Pos    0
+#define RCC_DIVR_DIV_Msk3   (7u << 0)   /* 3-bit: AXI, APBx */
+#define RCC_DIVR_DIV_Msk4   (0xFu << 0) /* 4-bit: MCU */
+#define RCC_DIVR_DIVRDY     (1u << 31)
+
+/* ── AXI 时钟源 ── */
+#define RCC_AXISS_SRC_MASK  (7u << 0)
+#define RCC_AXISS_SRCRDY    (1u << 31)
+
+typedef enum {
+    RCC_AXISRC_HSI  = 0,
+    RCC_AXISRC_HSE  = 1,
+    RCC_AXISRC_PLL2 = 2,
+} RccAxiSrc_t;
+
+/* ── MCU 时钟源 ── */
+typedef enum {
+    RCC_MCUSRC_HSI  = 0,
+    RCC_MCUSRC_HSE  = 1,
+    RCC_MCUSRC_CSI  = 2,
+    RCC_MCUSRC_PLL3 = 3,
+} RccMcuSrc_t;
+
+/* 子系统时钟选择 */
+int  RccMpuClkCfg(RccMpuSrc_t src);
+int  RccAxiSrcSelect(RccAxiSrc_t src);
+int  RccAxiDivSet(uint32_t div);
+int  RccMcuSrcSelect(RccMcuSrc_t src);
+int  RccMcuDivSet(uint32_t div);
+int  RccApb1DivSet(uint32_t div);
+int  RccApb2DivSet(uint32_t div);
+int  RccApb3DivSet(uint32_t div);
+int  RccApb4DivSet(uint32_t div);
+int  RccApb5DivSet(uint32_t div);
+
+/* PLL 参考时钟选择 */
+int  RccPll12SrcSelect(RccPllSrc_t src);
+int  RccPll3SrcSelect(RccPllSrc_t src);
+int  RccPll4SrcSelect(RccPllSrc_t src);
+
+/* PLL 配置 */
+int  RccPll1Init(RccPll12Cfg_t *cfg);
+void RccPll1Disable(void);
+int  RccPll2Init(RccPll12Cfg_t *cfg);
+void RccPll2Disable(void);
+int  RccPll3Init(RccPll34Cfg_t *cfg);
+void RccPll3Disable(void);
+int  RccPll4Init(RccPll34Cfg_t *cfg);
+void RccPll4Disable(void);
 
 /* 复位原因 (RCC_MP_RSTSCLRR) */
 uint32_t RccResetCauseGet(void);

@@ -124,6 +124,10 @@ typedef struct {
 /* WKUP 引脚范围 */
 #define PWR_WKUP_PIN_MAX        6
 
+
+extern volatile PwrRegs_t *const PWR;
+
+
 /* ======================== 函数声明 ======================== */
 
 /**
