@@ -218,3 +218,25 @@ void RccLsiDisable(void)
 {
     RCC->BDCR &= ~RCC_BDCR_LSION;
 }
+
+/* ==================== 复位原因 ==================== */
+
+/**
+ * @brief  读取 MPU 复位原因
+ * @return 复位标志位组合 (RCC_RSTC_PORRSTF | RCC_RSTC_BORRSTF | ...)
+ * @note   读完后需调用 RccResetCauseClear 清除, 否则下次读仍包含旧标志
+ */
+uint32_t RccResetCauseGet(void)
+{
+    return RCC->MP_RSTSCLRR;
+}
+
+/**
+ * @brief  清除指定复位标志
+ * @param  mask  要清除的标志位组合 (写1清0)
+ * @note   通常调用方式: RccResetCauseClear(RccResetCauseGet())
+ */
+void RccResetCauseClear(uint32_t mask)
+{
+    RCC->MP_RSTSCLRR = mask;
+}

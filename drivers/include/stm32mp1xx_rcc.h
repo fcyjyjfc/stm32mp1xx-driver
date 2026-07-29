@@ -379,6 +379,22 @@ typedef struct {
     uint32_t ahb6;      /* AHB6 总线时钟       */
 } RccClkTree_t;
 
+/* ── MP_RSTSCLRR bits (MPU 复位状态清除, 写1清对应位) ── */
+#define RCC_RSTC_PORRSTF      (1U << 0)   /* POR/PDR 上电复位 */
+#define RCC_RSTC_BORRSTF      (1U << 1)   /* BOR 掉电复位 */
+#define RCC_RSTC_PADRSTF      (1U << 2)   /* NRST 引脚复位 */
+#define RCC_RSTC_HCSSRSTF     (1U << 3)   /* HSE CSS 失效复位 */
+#define RCC_RSTC_VCORERSTF    (1U << 4)   /* VDDCORE 欠压复位 */
+#define RCC_RSTC_MPSYSRSTF    (1U << 6)   /* MPU 系统复位 */
+#define RCC_RSTC_MCSYSRSTF    (1U << 7)   /* MCU 系统复位 */
+#define RCC_RSTC_IWDG1RF      (1U << 8)   /* IWDG1 复位 */
+#define RCC_RSTC_IWDG2RF      (1U << 9)   /* IWDG2 复位 */
+#define RCC_RSTC_STDBYRSTF    (1U << 11)  /* Standby 唤醒 (应用层替代 SBF) */
+#define RCC_RSTC_CSTDBYRSTF   (1U << 12)  /* CStandby 唤醒 (应用层替代 SBFMPU) */
+#define RCC_RSTC_MPUP0RSTF    (1U << 13)  /* MPU 处理器 0 复位 (BOOTROM 置位) */
+#define RCC_RSTC_MPUP1RSTF    (1U << 14)  /* MPU 处理器 1 复位 (BOOTROM 置位) */
+#define RCC_RSTC_SPARE        (1U << 15)  /* 保留位, 软件可读写 */
+
 /* ── LSE 驱动能力 ── */
 typedef enum {
     RCC_LSE_DRV_LOW = 0,
@@ -402,5 +418,9 @@ void RccLsiDisable(void);
 
 /* 时钟树回读 */
 void RccClkDump(RccClkTree_t *tree);
+
+/* 复位原因 (RCC_MP_RSTSCLRR) */
+uint32_t RccResetCauseGet(void);
+void     RccResetCauseClear(uint32_t mask);
 
 #endif /* STM32MP1XX_RCC_H_ */
