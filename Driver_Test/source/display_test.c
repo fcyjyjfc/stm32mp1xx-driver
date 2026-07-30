@@ -275,12 +275,14 @@ static void TestDisplayHdmi(void)
         avi[0] = 0x00;  /* Y=RGB, A0=active */
         avi[1] = 0x00;  /* C=No data, M=No data */
         avi[2] = 0x00;  /* ITC=0 */
-        avi[3] = 0x10;  /* VIC=16 = 720p60 */
+        avi[3] = 4;     /* VIC=4 = 720p60 */
         SiiSetAVIInfoFrame(&sii, avi, 13);
     }
 
-    /* ---- 8. 使能 TMDS 输出 ---- */
+    /* ---- 8. 使能 TMDS 输出 + HDMI 模式 ---- */
     SiiTmdsOutput(&sii, 1);
+    SiiRegWrite(&sii, SII_TPI_SYS_CTRL,
+                SiiRegRead(&sii, SII_TPI_SYS_CTRL) | SII_SYS_HDMI_MODE);
 
     PRINT("Display active.\r\n");
     PRINT("Press any key to stop...\r\n");
