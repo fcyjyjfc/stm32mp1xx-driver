@@ -16,7 +16,8 @@
             ],
             "serverpath": "${env:STM32DEVTOOL_ROOT}/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
             "serverArgs": [
-                "-c", "stm32mp15x.cm4 configure -defer-examine"
+                "-c",
+                "stm32mp15x.cm4 configure -defer-examine"
             ],
             "gdbPath": "${env:STM32DEVTOOL_ROOT}/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin/arm-none-eabi-gdb.exe",
             "gdbTarget": "localhost:3334",
@@ -25,6 +26,17 @@
                 "load"
             ],
             "runToEntryPoint": "main"
+        },
+        {
+            "name": "(Windows) 启动",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "输入程序名称，例如 ${workspaceFolder}/a.exe",
+            "args": [],
+            "stopAtEntry": false,
+            "cwd": "${fileDirname}",
+            "environment": [],
+            "console": "internalConsole"
         }
     ]
 }

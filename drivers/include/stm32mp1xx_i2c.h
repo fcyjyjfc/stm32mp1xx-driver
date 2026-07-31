@@ -52,6 +52,7 @@ extern volatile I2cRegs_t *const I2C1;
 
 
 extern void I2cCfg(volatile I2cRegs_t *const i2c);
+extern int  I2cPollFlag(volatile I2cRegs_t *i2c, uint32_t mask, uint32_t timeout);
 extern void I2cMstWrite(volatile I2cRegs_t *const, const uint16_t, const uint8_t *, const uint32_t, const I2cBusStart_t start, const I2cBusStop_t);
 extern void I2cMstRead(volatile I2cRegs_t *const, const uint16_t, uint8_t *, const uint32_t, const I2cBusStart_t start, const I2cBusStop_t);
 

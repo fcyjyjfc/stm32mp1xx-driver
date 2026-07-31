@@ -292,8 +292,8 @@ int RccPll1Init(RccPll12Cfg_t *cfg)
     if (cfg->divn < 25 || cfg->divn > 100) return -1;
     if (cfg->divp != 0 && (cfg->divp & 1)) return -3;
 
-    /* 1. 关 PLL (先关 DIVPEN) */
-    RCC->PLL1CR &= ~RCC_PLLCR_DIVPEN;
+    /* 1. 关 PLL (先关所有输出) */
+    RCC->PLL1CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL1CR &= ~RCC_PLLCR_PLLON;
 
     /* 2. 等 PLLRDY=0 */
@@ -334,7 +334,7 @@ int RccPll1Init(RccPll12Cfg_t *cfg)
  */
 void RccPll1Disable(void)
 {
-    RCC->PLL1CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL1CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL1CR &= ~RCC_PLLCR_PLLON;
 }
 
@@ -353,7 +353,7 @@ int RccPll2Init(RccPll12Cfg_t *cfg)
     if (cfg->divn < 25 || cfg->divn > 100) return -1;
     if (cfg->divp != 0 && (cfg->divp & 1)) return -3;
 
-    RCC->PLL2CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL2CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL2CR &= ~RCC_PLLCR_PLLON;
 
     timeout = 100000;
@@ -389,7 +389,7 @@ int RccPll2Init(RccPll12Cfg_t *cfg)
  */
 void RccPll2Disable(void)
 {
-    RCC->PLL2CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL2CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL2CR &= ~RCC_PLLCR_PLLON;
 }
 
@@ -409,7 +409,7 @@ int RccPll3Init(RccPll34Cfg_t *cfg)
 
     if (cfg->divn < 25 || cfg->divn > 200) return -1;
 
-    RCC->PLL3CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL3CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL3CR &= ~RCC_PLLCR_PLLON;
 
     timeout = 100000;
@@ -446,7 +446,7 @@ int RccPll3Init(RccPll34Cfg_t *cfg)
  */
 void RccPll3Disable(void)
 {
-    RCC->PLL3CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL3CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL3CR &= ~RCC_PLLCR_PLLON;
 }
 
@@ -464,8 +464,7 @@ int RccPll4Init(RccPll34Cfg_t *cfg)
 
     if (cfg->divn < 25 || cfg->divn > 200) return -1;
 
-    RCC->PLL4CR &= ~RCC_PLLCR_DIVPEN;
-    RCC->PLL4CR &= ~RCC_PLLCR_PLLON;
+    RCC->PLL4CR = 0;
 
     timeout = 100000;
     while ((RCC->PLL4CR & RCC_PLLCR_PLLRDY) && --timeout);
@@ -501,7 +500,7 @@ int RccPll4Init(RccPll34Cfg_t *cfg)
  */
 void RccPll4Disable(void)
 {
-    RCC->PLL4CR &= ~RCC_PLLCR_DIVPEN;
+    RCC->PLL4CR &= ~(RCC_PLLCR_DIVPEN | RCC_PLLCR_DIVQEN | RCC_PLLCR_DIVREN);
     RCC->PLL4CR &= ~RCC_PLLCR_PLLON;
 }
 

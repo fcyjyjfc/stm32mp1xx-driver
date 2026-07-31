@@ -8,10 +8,14 @@ void SiiRegWrite(Sii9022a_t *dev, uint8_t reg, uint8_t val)
     I2cMstWrite(dev->i2c, dev->addr, buf, 2, I2C_BUS_START, I2C_BUS_STOP);
 }
 
-uint8_t SiiRegRead(Sii9022a_t *dev, uint8_t reg)
+int SiiRegRead(Sii9022a_t *dev, uint8_t reg)
 {
     uint8_t val;
+    int ret;
+
     I2cMstWrite(dev->i2c, dev->addr, &reg, 1, I2C_BUS_START, I2C_BUS_NO_STOP);
+    ret = I2cPollFlag(dev->i2c, 1u << 6, 10000000);
+    if (ret) return -1;
     I2cMstRead(dev->i2c, dev->addr, &val, 1, I2C_BUS_RESTART, I2C_BUS_STOP);
     return val;
 }
@@ -36,7 +40,7 @@ void SiiIdxWrite(Sii9022a_t *dev, uint8_t page, uint8_t offset, uint8_t val)
     SiiRegWrite(dev, SII_TPI_IDX_DATA, val);
 }
 
-uint8_t SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset)
+int SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset)
 {
     SiiRegWrite(dev, SII_TPI_IDX_PAGE, page);
     SiiRegWrite(dev, SII_TPI_IDX_ADDR, offset);
@@ -47,21 +51,31 @@ uint8_t SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset)
 
 int SiiDetect(Sii9022a_t *dev)
 {
-    return (SiiRegRead(dev, SII_TPI_DEVICE_ID) == 0xB0) ? 0 : -1;
+    int val;
+    int i;
+
+    SiiRegWrite(dev, SII_TPI_TPI_MODE, 0x00);
+
+    for (i = 0; i < 20; i++) {
+        val = SiiRegRead(dev, SII_TPI_DEVICE_ID);
+        if (val == 0xB0) return 0;
+        if (val < 0) return -1;
+        {
+            volatile int d;
+            for (d = 0; d < 500000; d++);
+        }
+    }
+    return -1;
 }
 
 int SiiInit(Sii9022a_t *dev)
 {
-    uint8_t val;
-
-    SiiRegWrite(dev, SII_TPI_TPI_MODE, 0x00);
-
-    if (SiiRegRead(dev, SII_TPI_DEVICE_ID) != 0xB0)
-        return -1;
+    int val;
 
     SiiRegWrite(dev, SII_TPI_POWER_STATE, SII_POWER_D0);
 
     val = SiiIdxRead(dev, SII_IDX_PAGE0, SII_IDX_SRC_TERM);
+    if (val < 0) return -1;
     SiiIdxWrite(dev, SII_IDX_PAGE0, SII_IDX_SRC_TERM, val | 1);
 
     SiiRegWrite(dev, SII_TPI_INPUT_BUS,
@@ -83,7 +97,8 @@ void SiiSetPowerState(Sii9022a_t *dev, uint8_t state)
 
 void SiiTmdsOutput(Sii9022a_t *dev, int enable)
 {
-    uint8_t ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
+    int ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
+    if (ctrl < 0) return;
 
     if (enable)
         ctrl &= ~SII_SYS_TMDS_PD;
@@ -146,7 +161,9 @@ void SiiSetSyncPolarity(Sii9022a_t *dev, int hsync_neg, int vsync_neg)
 
 int SiiIsConnected(Sii9022a_t *dev)
 {
-    return (SiiRegRead(dev, SII_TPI_INT_STATUS) & SII_INT_HPD_STATE) ? 1 : 0;
+    int val = SiiRegRead(dev, SII_TPI_INT_STATUS);
+    if (val < 0) return 0;
+    return (val & SII_INT_HPD_STATE) ? 1 : 0;
 }
 
 void SiiClearInterrupt(Sii9022a_t *dev, uint8_t mask)
@@ -156,14 +173,17 @@ void SiiClearInterrupt(Sii9022a_t *dev, uint8_t mask)
 
 int SiiReadEDID(Sii9022a_t *dev, uint8_t *edid, int len)
 {
-    uint8_t ctrl;
+    int ctrl;
     int i;
 
     ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
+    if (ctrl < 0) return -1;
     SiiRegWrite(dev, SII_TPI_SYS_CTRL, ctrl | SII_SYS_DDC_REQ);
 
     for (i = 0; i < 100; i++) {
-        if (SiiRegRead(dev, SII_TPI_SYS_CTRL) & (1 << 1))
+        ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
+        if (ctrl < 0) return -1;
+        if (ctrl & (1 << 1))
             break;
     }
     if (i >= 100) return -1;
@@ -172,7 +192,11 @@ int SiiReadEDID(Sii9022a_t *dev, uint8_t *edid, int len)
 
     {
         uint8_t addr = 0;
+        int ret;
+
         I2cMstWrite(dev->i2c, 0x50, &addr, 1, I2C_BUS_START, I2C_BUS_NO_STOP);
+        ret = I2cPollFlag(dev->i2c, 1u << 6, 100000);
+        if (ret) return -1;
         I2cMstRead(dev->i2c, 0x50, edid, len, I2C_BUS_RESTART, I2C_BUS_STOP);
     }
 
@@ -180,6 +204,7 @@ int SiiReadEDID(Sii9022a_t *dev, uint8_t *edid, int len)
 
     for (i = 0; i < 100; i++) {
         ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
+        if (ctrl < 0) return -1;
         if (!(ctrl & (SII_SYS_DDC_REQ | (1 << 1))))
             break;
     }
@@ -198,7 +223,8 @@ void SiiAudioSpdifInit(Sii9022a_t *dev)
 
 void SiiAudioSpdifMute(Sii9022a_t *dev, int mute)
 {
-    uint8_t ctrl = SiiRegRead(dev, SII_TPI_AUDIO_CTRL);
+    int ctrl = SiiRegRead(dev, SII_TPI_AUDIO_CTRL);
+    if (ctrl < 0) return;
 
     if (mute)
         ctrl |= SII_AUDIO_MUTE;

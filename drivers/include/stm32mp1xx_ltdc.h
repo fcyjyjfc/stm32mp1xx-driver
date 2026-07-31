@@ -217,31 +217,31 @@ typedef struct {
  * @param  tim   时序配置, 含极性/背景色/抖动
  * @return 0 成功, -1 参数错误
  */
-int  LtdcInit(LtdcRegs_t *ltdc, const LtdcTimingConfig_t *tim);
+int  LtdcInit(volatile LtdcRegs_t *ltdc, const LtdcTimingConfig_t *tim);
 
 /**
  * @brief  使能 LTDC 控制器
  * @param  ltdc  LTDC 寄存器基址指针
  */
-void LtdcEnable(LtdcRegs_t *ltdc);
+void LtdcEnable(volatile LtdcRegs_t *ltdc);
 
 /**
  * @brief  关闭 LTDC 控制器
  * @param  ltdc  LTDC 寄存器基址指针
  */
-void LtdcDisable(LtdcRegs_t *ltdc);
+void LtdcDisable(volatile LtdcRegs_t *ltdc);
 
 /**
  * @brief  立即重载影子寄存器
  * @param  ltdc  LTDC 寄存器基址指针
  */
-void LtdcReloadImmediate(LtdcRegs_t *ltdc);
+void LtdcReloadImmediate(volatile LtdcRegs_t *ltdc);
 
 /**
  * @brief  垂直消隐期重载影子寄存器 (防撕裂)
  * @param  ltdc  LTDC 寄存器基址指针
  */
-void LtdcReloadVBlank(LtdcRegs_t *ltdc);
+void LtdcReloadVBlank(volatile LtdcRegs_t *ltdc);
 
 /**
  * @brief  配置图层参数
@@ -250,7 +250,7 @@ void LtdcReloadVBlank(LtdcRegs_t *ltdc);
  * @param  cfg    图层配置
  * @return 0 成功, -1 参数错误
  */
-int  LtdcLayerConfig(LtdcRegs_t *ltdc, int layer,
+int  LtdcLayerConfig(volatile LtdcRegs_t *ltdc, int layer,
                      const LtdcLayerConfig_t *cfg);
 
 /**
@@ -258,14 +258,14 @@ int  LtdcLayerConfig(LtdcRegs_t *ltdc, int layer,
  * @param  ltdc   LTDC 寄存器基址指针
  * @param  layer  图层编号 (1 或 2)
  */
-void LtdcLayerEnable(LtdcRegs_t *ltdc, int layer);
+void LtdcLayerEnable(volatile LtdcRegs_t *ltdc, int layer);
 
 /**
  * @brief  关闭指定图层
  * @param  ltdc   LTDC 寄存器基址指针
  * @param  layer  图层编号 (1 或 2)
  */
-void LtdcLayerDisable(LtdcRegs_t *ltdc, int layer);
+void LtdcLayerDisable(volatile LtdcRegs_t *ltdc, int layer);
 
 /**
  * @brief  加载 CLUT 颜色查找表
@@ -274,7 +274,7 @@ void LtdcLayerDisable(LtdcRegs_t *ltdc, int layer);
  * @param  rgb    RGB 颜色数组, 每项 3 字节
  * @param  count  颜色项数 (最大 256)
  */
-void LtdcLayerClutLoad(LtdcRegs_t *ltdc, int layer,
+void LtdcLayerClutLoad(volatile LtdcRegs_t *ltdc, int layer,
                        const uint8_t rgb[][3], int count);
 
 /**
@@ -282,35 +282,35 @@ void LtdcLayerClutLoad(LtdcRegs_t *ltdc, int layer,
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  中断掩码 (LTDC_INT_*_IE 组合)
  */
-void LtdcIntEnable(LtdcRegs_t *ltdc, uint32_t mask);
+void LtdcIntEnable(volatile LtdcRegs_t *ltdc, uint32_t mask);
 
 /**
  * @brief  关闭中断
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  中断掩码 (LTDC_INT_*_IE 组合)
  */
-void LtdcIntDisable(LtdcRegs_t *ltdc, uint32_t mask);
+void LtdcIntDisable(volatile LtdcRegs_t *ltdc, uint32_t mask);
 
 /**
  * @brief  读取中断状态
  * @param  ltdc  LTDC 寄存器基址指针
  * @return 中断标志位 (LTDC_INT_*_IF 组合)
  */
-uint32_t LtdcIntStatus(LtdcRegs_t *ltdc);
+uint32_t LtdcIntStatus(volatile LtdcRegs_t *ltdc);
 
 /**
  * @brief  清除中断标志
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  要清除的标志 (LTDC_INT_C* 组合)
  */
-void LtdcIntClear(LtdcRegs_t *ltdc, uint32_t mask);
+void LtdcIntClear(volatile LtdcRegs_t *ltdc, uint32_t mask);
 
 /**
  * @brief  设置行中断位置
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  line  行号 (0-4095)
  */
-void LtdcLineIntSetPos(LtdcRegs_t *ltdc, uint32_t line);
+void LtdcLineIntSetPos(volatile LtdcRegs_t *ltdc, uint32_t line);
 
 /**
  * @brief  读取当前扫描位置
@@ -318,14 +318,14 @@ void LtdcLineIntSetPos(LtdcRegs_t *ltdc, uint32_t line);
  * @param  x     输出 X 坐标, 可 NULL
  * @param  y     输出 Y 坐标, 可 NULL
  */
-void LtdcGetPosition(LtdcRegs_t *ltdc, uint32_t *x, uint32_t *y);
+void LtdcGetPosition(volatile LtdcRegs_t *ltdc, uint32_t *x, uint32_t *y);
 
 /**
  * @brief  读取当前显示阶段状态
  * @param  ltdc  LTDC 寄存器基址指针
  * @return CDSR 寄存器低 4 位 (LTDC_CDSR_*)
  */
-uint32_t LtdcGetDisplayStatus(LtdcRegs_t *ltdc);
+uint32_t LtdcGetDisplayStatus(volatile LtdcRegs_t *ltdc);
 
 extern volatile LtdcRegs_t *const LTDC;
 

@@ -30,6 +30,6 @@ void AT24C_Read(uint16_t addr, uint8_t *dat, uint32_t len)
     buf[1] = addr & 0xFF;
 
     I2cMstWrite(AT24C_I2C, AT24C_Slave, buf, 2, I2C_BUS_START, I2C_BUS_NO_STOP);
-    while ((AT24C_I2C->ISR & (1 << 6)) == 0);
+    if (I2cPollFlag(AT24C_I2C, 1u << 6, 100000)) return;
     I2cMstRead(AT24C_I2C, AT24C_Slave, dat, len, I2C_BUS_RESTART, I2C_BUS_STOP);
 }

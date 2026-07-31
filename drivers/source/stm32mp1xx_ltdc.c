@@ -31,7 +31,7 @@ static int LtdcBpp(uint32_t pf)
  * 配置 SSCR/BPCR/AWCR/TWCR 四个时序寄存器及 GCR(极性/抖动)/BCCR。
  * 初始配置不会使能 LTDC, 需后续调用 LtdcEnable。
  */
-int LtdcInit(LtdcRegs_t *ltdc, const LtdcTimingConfig_t *tim)
+int LtdcInit(volatile LtdcRegs_t *ltdc, const LtdcTimingConfig_t *tim)
 {
     uint32_t hsw, hbp, hfp, aw, vsw, vbp, vfp, ah;
     uint32_t gcr;
@@ -76,7 +76,7 @@ int LtdcInit(LtdcRegs_t *ltdc, const LtdcTimingConfig_t *tim)
  * @param  ltdc  LTDC 寄存器基址指针
  * @note   配置完图层并触发重载后再调用此函数
  */
-void LtdcEnable(LtdcRegs_t *ltdc)
+void LtdcEnable(volatile LtdcRegs_t *ltdc)
 {
     if (ltdc) ltdc->GCR |= LTDC_GCR_LTDCEN;
 }
@@ -86,7 +86,7 @@ void LtdcEnable(LtdcRegs_t *ltdc)
  * @param  ltdc  LTDC 寄存器基址指针
  * @note   关闭后时序复位到最后像素, FIFO 刷空, 输出消隐信号
  */
-void LtdcDisable(LtdcRegs_t *ltdc)
+void LtdcDisable(volatile LtdcRegs_t *ltdc)
 {
     if (ltdc) ltdc->GCR &= ~LTDC_GCR_LTDCEN;
 }
@@ -96,7 +96,7 @@ void LtdcDisable(LtdcRegs_t *ltdc)
  * @param  ltdc  LTDC 寄存器基址指针
  * @note   所有影子寄存器修改完成后触发, 硬件自动清除此位
  */
-void LtdcReloadImmediate(LtdcRegs_t *ltdc)
+void LtdcReloadImmediate(volatile LtdcRegs_t *ltdc)
 {
     if (ltdc) ltdc->SRCR |= LTDC_SRCR_IMR;
 }
@@ -106,7 +106,7 @@ void LtdcReloadImmediate(LtdcRegs_t *ltdc)
  * @param  ltdc  LTDC 寄存器基址指针
  * @note   在每帧消隐期开始时刻重载, 可防止画面撕裂
  */
-void LtdcReloadVBlank(LtdcRegs_t *ltdc)
+void LtdcReloadVBlank(volatile LtdcRegs_t *ltdc)
 {
     if (ltdc) ltdc->SRCR |= LTDC_SRCR_VBR;
 }
@@ -121,7 +121,7 @@ void LtdcReloadVBlank(LtdcRegs_t *ltdc)
  * 配置窗口位置/像素格式/帧缓冲地址/alpha/混合因子/颜色键等。
  * 写入后需调用 LtdcReloadImmediate 或 LtdcReloadVBlank 使配置生效。
  */
-int LtdcLayerConfig(LtdcRegs_t *ltdc, int layer,
+int LtdcLayerConfig(volatile LtdcRegs_t *ltdc, int layer,
                     const LtdcLayerConfig_t *cfg)
 {
     volatile uint32_t *cr, *whpcr, *wvpcr, *ckcr, *pfcr;
@@ -209,7 +209,7 @@ int LtdcLayerConfig(LtdcRegs_t *ltdc, int layer,
  * @param  ltdc   LTDC 寄存器基址指针
  * @param  layer  图层编号 (1 或 2)
  */
-void LtdcLayerEnable(LtdcRegs_t *ltdc, int layer)
+void LtdcLayerEnable(volatile LtdcRegs_t *ltdc, int layer)
 {
     if (!ltdc) return;
     if (layer == 1)      ltdc->L1CR |= LTDC_LxCR_LEN;
@@ -221,7 +221,7 @@ void LtdcLayerEnable(LtdcRegs_t *ltdc, int layer)
  * @param  ltdc   LTDC 寄存器基址指针
  * @param  layer  图层编号 (1 或 2)
  */
-void LtdcLayerDisable(LtdcRegs_t *ltdc, int layer)
+void LtdcLayerDisable(volatile LtdcRegs_t *ltdc, int layer)
 {
     if (!ltdc) return;
     if (layer == 1)      ltdc->L1CR &= ~LTDC_LxCR_LEN;
@@ -236,7 +236,7 @@ void LtdcLayerDisable(LtdcRegs_t *ltdc, int layer)
  * @param  count  颜色项数 (最大 256)
  * @note   须在消隐期或图层禁用时调用
  */
-void LtdcLayerClutLoad(LtdcRegs_t *ltdc, int layer,
+void LtdcLayerClutLoad(volatile LtdcRegs_t *ltdc, int layer,
                        const uint8_t rgb[][3], int count)
 {
     volatile uint32_t *clutwr;
@@ -256,7 +256,7 @@ void LtdcLayerClutLoad(LtdcRegs_t *ltdc, int layer,
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  中断掩码 (LTDC_INT_*_IE 组合)
  */
-void LtdcIntEnable(LtdcRegs_t *ltdc, uint32_t mask)
+void LtdcIntEnable(volatile LtdcRegs_t *ltdc, uint32_t mask)
 {
     if (ltdc) ltdc->IER |= (mask & 0x0F);
 }
@@ -266,7 +266,7 @@ void LtdcIntEnable(LtdcRegs_t *ltdc, uint32_t mask)
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  中断掩码 (LTDC_INT_*_IE 组合)
  */
-void LtdcIntDisable(LtdcRegs_t *ltdc, uint32_t mask)
+void LtdcIntDisable(volatile LtdcRegs_t *ltdc, uint32_t mask)
 {
     if (ltdc) ltdc->IER &= ~(mask & 0x0F);
 }
@@ -276,7 +276,7 @@ void LtdcIntDisable(LtdcRegs_t *ltdc, uint32_t mask)
  * @param  ltdc  LTDC 寄存器基址指针
  * @return 中断标志位 (LTDC_INT_*_IF 组合)
  */
-uint32_t LtdcIntStatus(LtdcRegs_t *ltdc)
+uint32_t LtdcIntStatus(volatile LtdcRegs_t *ltdc)
 {
     return ltdc ? ltdc->ISR & 0x0F : 0;
 }
@@ -286,7 +286,7 @@ uint32_t LtdcIntStatus(LtdcRegs_t *ltdc)
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  mask  要清除的标志 (LTDC_INT_C* 组合)
  */
-void LtdcIntClear(LtdcRegs_t *ltdc, uint32_t mask)
+void LtdcIntClear(volatile LtdcRegs_t *ltdc, uint32_t mask)
 {
     if (ltdc) ltdc->ICR = mask & 0x0F;
 }
@@ -296,7 +296,7 @@ void LtdcIntClear(LtdcRegs_t *ltdc, uint32_t mask)
  * @param  ltdc  LTDC 寄存器基址指针
  * @param  line  行号 (0-4095)
  */
-void LtdcLineIntSetPos(LtdcRegs_t *ltdc, uint32_t line)
+void LtdcLineIntSetPos(volatile LtdcRegs_t *ltdc, uint32_t line)
 {
     if (ltdc) ltdc->LIPCR = line & 0xFFF;
 }
@@ -307,7 +307,7 @@ void LtdcLineIntSetPos(LtdcRegs_t *ltdc, uint32_t line)
  * @param  x     输出 X 坐标, 可 NULL
  * @param  y     输出 Y 坐标, 可 NULL
  */
-void LtdcGetPosition(LtdcRegs_t *ltdc, uint32_t *x, uint32_t *y)
+void LtdcGetPosition(volatile LtdcRegs_t *ltdc, uint32_t *x, uint32_t *y)
 {
     if (!ltdc) return;
     if (x) *x = (ltdc->CPSR >> 16) & 0xFFFF;
@@ -323,7 +323,7 @@ void LtdcGetPosition(LtdcRegs_t *ltdc, uint32_t *x, uint32_t *y)
  * @retval LTDC_CDSR_HDES   水平有效数据阶段
  * @retval LTDC_CDSR_VDES   垂直有效数据阶段
  */
-uint32_t LtdcGetDisplayStatus(LtdcRegs_t *ltdc)
+uint32_t LtdcGetDisplayStatus(volatile LtdcRegs_t *ltdc)
 {
     return ltdc ? (ltdc->CDSR & 0x0F) : 0;
 }

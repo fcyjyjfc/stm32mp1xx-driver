@@ -99,10 +99,10 @@ typedef struct {
 
 /* I2C 读写 */
 void    SiiRegWrite(Sii9022a_t *dev, uint8_t reg, uint8_t val);
-uint8_t SiiRegRead(Sii9022a_t *dev, uint8_t reg);
+int     SiiRegRead(Sii9022a_t *dev, uint8_t reg);
 void    SiiRegWriteBurst(Sii9022a_t *dev, uint8_t reg, const uint8_t *data, int len);
 void    SiiIdxWrite(Sii9022a_t *dev, uint8_t page, uint8_t offset, uint8_t val);
-uint8_t SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset);
+int     SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset);
 
 /* 初始化与控制 */
 int     SiiInit(Sii9022a_t *dev);

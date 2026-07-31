@@ -30,6 +30,18 @@ void I2cCfg(volatile I2cRegs_t *const i2c)
 }
 
 
+/** @brief 轮询 ISR 标志位, 超时返回 -1
+ *  @param  i2c     I2C 寄存器基址
+ *  @param  mask    要等的标志位组合
+ *  @param  timeout 最大轮询次数
+ *  @return 0 成功 (标志置位), -1 超时
+ */
+int I2cPollFlag(volatile I2cRegs_t *i2c, uint32_t mask, uint32_t timeout)
+{
+    while (--timeout && !(i2c->ISR & mask));
+    return timeout ? 0 : -1;
+}
+
 void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const uint8_t *dat, const uint32_t len, const I2cBusStart_t start, const I2cBusStop_t stop)
 {
     if (start == I2C_BUS_START)
@@ -84,7 +96,11 @@ void I2cMstWrite(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, const 
         {
             while ((i2c_reg->ISR & (1 << 1)) == 0) // 等待TXDR为空
             {
-                ;
+                if (i2c_reg->ISR & (1 << 4)) // NACK
+                {
+                    i2c_reg->ICR = 1 << 4;
+                    return;
+                }
             }
             i2c_reg->TXDR = dat[total_wr_len + index]; // 写入发送数据
         }
@@ -172,7 +188,11 @@ void I2cMstRead(volatile I2cRegs_t *const i2c_reg, const uint16_t slave, uint8_t
         {
             while ((i2c_reg->ISR & (1 << 2)) == 0) // 等待RXDR不为空
             {
-                ;
+                if (i2c_reg->ISR & (1 << 4)) // NACK
+                {
+                    i2c_reg->ICR = 1 << 4;
+                    return;
+                }
             }
             dat[total_rd_len + index] = i2c_reg->RXDR; // 读取接收数据
         }
