@@ -6,7 +6,9 @@ OUTPUT_DIR = out
 CFLAGS += -g -Wall -O0 -mabi=aapcs -mfpu=neon -mfloat-abi=softfp -fno-builtin \
 				-nostdinc -std=c99 -I../drivers/include -I../devices/include
 
-XPACK_PATH = C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1
+# 工具链根路径: 自动检测 C/D 盘 (双电脑共用), 也可用环境变量或命令行 STM32DEVTOOL_ROOT 覆盖
+STM32DEVTOOL_ROOT ?= $(if $(wildcard C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64),C:/Stm32DevTool,D:/Stm32DevTool)
+XPACK_PATH = $(STM32DEVTOOL_ROOT)/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1
 
 CROSS_COMPILE = $(XPACK_PATH)/bin/arm-none-eabi-
 CC	= $(CROSS_COMPILE)gcc

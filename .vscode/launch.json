@@ -12,13 +12,13 @@
                 "board/st/stm32mp157f-dk2.cfg"
             ],
             "searchDir": [
-                "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/openocd/scripts"
+                "${env:STM32DEVTOOL_ROOT}/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/openocd/scripts"
             ],
-            "serverpath": "C:/Stm32DevTool/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
+            "serverpath": "${env:STM32DEVTOOL_ROOT}/xpack-openocd-0.12.0-7-win32-x64/xpack-openocd-0.12.0-7/bin/openocd.exe",
             "serverArgs": [
                 "-c", "stm32mp15x.cm4 configure -defer-examine"
             ],
-            "gdbPath": "C:/Stm32DevTool/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin/arm-none-eabi-gdb.exe",
+            "gdbPath": "${env:STM32DEVTOOL_ROOT}/xpack-arm-none-eabi-gcc-15.2.1-1.1-win32-x64/xpack-arm-none-eabi-gcc-15.2.1-1.1/bin/arm-none-eabi-gdb.exe",
             "gdbTarget": "localhost:3334",
             "preAttachCommands": [
                 "monitor halt",
