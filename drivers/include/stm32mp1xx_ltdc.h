@@ -109,7 +109,7 @@ typedef struct {
 /* =================== GCR 位定义 =================== */
 #define LTDC_GCR_HSPOL      (1U << 31)  /* HSYNC 极性: 1=高有效 */
 #define LTDC_GCR_VSPOL      (1U << 30)  /* VSYNC 极性: 1=高有效 */
-#define LTDC_GCR_DEPOL      (1U << 29)  /* DE 极性: 1=高有效 */
+#define LTDC_GCR_DEPOL      (1U << 29)  /* Not DE 极性 (RM0436): 1=Not DE 高有效, 即 DE 低有效 */
 #define LTDC_GCR_PCPOL      (1U << 28)  /* 像素时钟极性: 1=高有效 */
 #define LTDC_GCR_DEN        (1U << 16)  /* 抖动使能 */
 #define LTDC_GCR_DRW_POS    12          /* 抖动红色宽度位偏移 (只读) */

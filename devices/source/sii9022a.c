@@ -2,6 +2,17 @@
 
 /* ======================== I2C 底层 ======================== */
 
+/**
+ * @brief  事务间稳定延时
+ * @note   TMDS 输出开启后 TPI 变忙, 寄存器访问需留稳定时间,
+ *         实测无延时写 SYS_CTRL 不生效 (回读仍是旧值)。
+ */
+static void SiiSettle(void)
+{
+    volatile int d;
+    for (d = 0; d < 2000000; d++);
+}
+
 void SiiRegWrite(Sii9022a_t *dev, uint8_t reg, uint8_t val)
 {
     uint8_t buf[2] = { reg, val };
@@ -36,14 +47,19 @@ void SiiRegWriteBurst(Sii9022a_t *dev, uint8_t reg, const uint8_t *data, int len
 void SiiIdxWrite(Sii9022a_t *dev, uint8_t page, uint8_t offset, uint8_t val)
 {
     SiiRegWrite(dev, SII_TPI_IDX_PAGE, page);
+    SiiSettle();
     SiiRegWrite(dev, SII_TPI_IDX_ADDR, offset);
+    SiiSettle();
     SiiRegWrite(dev, SII_TPI_IDX_DATA, val);
+    SiiSettle();
 }
 
 int SiiIdxRead(Sii9022a_t *dev, uint8_t page, uint8_t offset)
 {
     SiiRegWrite(dev, SII_TPI_IDX_PAGE, page);
+    SiiSettle();
     SiiRegWrite(dev, SII_TPI_IDX_ADDR, offset);
+    SiiSettle();
     return SiiRegRead(dev, SII_TPI_IDX_DATA);
 }
 
@@ -144,6 +160,7 @@ void SiiSetAVIInfoFrame(Sii9022a_t *dev, const uint8_t *data, int len)
     checksum = 0x100 - checksum;
 
     SiiRegWrite(dev, SII_TPI_AVI_DBYTE0, checksum);
+    SiiSettle();
     SiiRegWriteBurst(dev, SII_TPI_AVI_DBYTE1, data, len);
 }
 
@@ -155,6 +172,42 @@ void SiiSetSyncPolarity(Sii9022a_t *dev, int hsync_neg, int vsync_neg)
     if (vsync_neg) val |= SII_DE_VS_NEG;
 
     SiiRegWrite(dev, SII_TPI_DE_CTRL, val);
+}
+
+/**
+ * @brief  使能内部 DE 生成器, 由 HS/VS 合成 DE 信号
+ * @param  dev      驱动上下文
+ * @param  de_dly   HSYNC 宽度+HBP (像素), 10-bit
+ * @param  de_top   VSYNC 宽度+VBP (行), 7-bit
+ * @param  de_cnt   有效宽度 (像素), 12-bit
+ * @param  de_lin   有效高度 (行), 11-bit
+ * @return 0 成功, -1 参数错误
+ * @note   外部 DE 通路异常时可借此排除 DE 路由问题。
+ *         极性位保持正极性 (本工程 LTDC 输出正极性 HS/VS)。
+ *         每笔写之间留稳定时间: 实测无间隔的 7 笔连写全部丢失 (回读 0),
+ *         而带间隔的索引写 (SiiIdxWrite) 全部锁存。间隔具体是覆盖芯片
+ *         内部忙窗口还是 I2C 控制器状态尚未定位, 先按已验证的模式处理。
+ */
+int SiiSetDeGenerator(Sii9022a_t *dev, uint16_t de_dly, uint16_t de_top,
+                      uint16_t de_cnt, uint16_t de_lin)
+{
+    if (!dev) return -1;
+
+    SiiSettle();
+    SiiRegWrite(dev, SII_TPI_DE_DLY, de_dly & 0xFF);
+    SiiSettle();
+    SiiRegWrite(dev, SII_TPI_DE_TOP, de_top & 0x7F);
+    SiiSettle();
+    SiiRegWrite(dev, SII_TPI_DE_CNT, de_cnt & 0xFF);
+    SiiSettle();
+    SiiRegWrite(dev, 0x67, (de_cnt >> 8) & 0x0F);
+    SiiSettle();
+    SiiRegWrite(dev, SII_TPI_DE_LIN, de_lin & 0xFF);
+    SiiSettle();
+    SiiRegWrite(dev, 0x69, (de_lin >> 8) & 0x07);
+    SiiSettle();
+    SiiRegWrite(dev, SII_TPI_DE_CTRL, SII_DE_GEN_EN | ((de_dly >> 8) & 0x03));
+    return 0;
 }
 
 /* ======================== 热插拔 & EDID ======================== */
@@ -179,16 +232,19 @@ int SiiReadEDID(Sii9022a_t *dev, uint8_t *edid, int len)
     ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
     if (ctrl < 0) return -1;
     SiiRegWrite(dev, SII_TPI_SYS_CTRL, ctrl | SII_SYS_DDC_REQ);
+    SiiSettle();
 
     for (i = 0; i < 100; i++) {
         ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
         if (ctrl < 0) return -1;
         if (ctrl & (1 << 1))
             break;
+        SiiSettle();
     }
     if (i >= 100) return -1;
 
     SiiRegWrite(dev, SII_TPI_SYS_CTRL, SII_SYS_DDC_REQ | (1 << 1));
+    SiiSettle();
 
     {
         uint8_t addr = 0;
@@ -201,12 +257,14 @@ int SiiReadEDID(Sii9022a_t *dev, uint8_t *edid, int len)
     }
 
     SiiRegWrite(dev, SII_TPI_SYS_CTRL, 0x00);
+    SiiSettle();
 
     for (i = 0; i < 100; i++) {
         ctrl = SiiRegRead(dev, SII_TPI_SYS_CTRL);
         if (ctrl < 0) return -1;
         if (!(ctrl & (SII_SYS_DDC_REQ | (1 << 1))))
             break;
+        SiiSettle();
     }
 
     return 0;

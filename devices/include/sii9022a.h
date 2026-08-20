@@ -28,6 +28,12 @@
 #define SII_TPI_INT_STATUS      (0x3D)
 #define SII_TPI_SYNC_CTRL       (0x60)
 #define SII_TPI_DE_CTRL         (0x63)
+#define SII_TPI_DE_DLY          (0x62)
+#define SII_TPI_DE_TOP          (0x64)
+#define SII_TPI_DE_CNT          (0x66)
+#define SII_TPI_DE_LIN          (0x68)
+#define SII_TPI_H_RES           (0x6A)
+#define SII_TPI_V_RES           (0x6C)
 #define SII_TPI_IDX_PAGE        (0xBC)
 #define SII_TPI_IDX_ADDR        (0xBD)
 #define SII_TPI_IDX_DATA        (0xBE)
@@ -70,6 +76,7 @@
 #define SII_SYNC_EXTERNAL       (0)
 
 /* 0x63 - DECtrl */
+#define SII_DE_GEN_EN           (1 << 6)
 #define SII_DE_VS_NEG           (1 << 5)
 #define SII_DE_HS_NEG           (1 << 4)
 
@@ -115,6 +122,8 @@ void    SiiSetVideoMode(Sii9022a_t *dev, const SiiVideoMode_t *vm);
 void    SiiSetColorFormat(Sii9022a_t *dev, uint8_t input_cs, uint8_t output_cs);
 void    SiiSetAVIInfoFrame(Sii9022a_t *dev, const uint8_t *data, int len);
 void    SiiSetSyncPolarity(Sii9022a_t *dev, int hsync_neg, int vsync_neg);
+int     SiiSetDeGenerator(Sii9022a_t *dev, uint16_t de_dly, uint16_t de_top,
+                          uint16_t de_cnt, uint16_t de_lin);
 
 /* 热插拔 & EDID */
 int     SiiIsConnected(Sii9022a_t *dev);

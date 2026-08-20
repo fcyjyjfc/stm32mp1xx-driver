@@ -6,6 +6,7 @@
 #include "stm32mp1xx_rcc.h"
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_i2c.h"
+#include "stm32mp1xx_iwdg.h"
 #include "sii9022a.h"
 #include "common_test.h"
 
@@ -47,76 +48,28 @@ static void DisplayTest_ClockCfg(void)
     RccPll4SrcSelect(RCC_PLLSRC_HSE);
 
     /* PLL4: 24MHz HSE → 74.25MHz (720p60 pixel clock)
-     *   DIVM=5 → /6, DIVN=73 → ×74, fracv=2048 → VCO=297MHz
-     *   DIVP=3 → /4 → PLL4_P = 74.25MHz
-     *   VCO = 24 × (73+1) / (5+1) = 297MHz
-     *   POUT = 297 / (3+1) = 74.25MHz */
+     *   Fref = 24 / (5+1) = 4MHz
+     *   DIVN=147, fracv=4096 → ×148.5 → VCO=594MHz (规格 400-800MHz 内)
+     *   DIVQ=7 → /8 → PLL4_Q = 74.25MHz
+     *   LTDC ker_ck 来自 PLL4_Q (RM0436 时钟树), 不是 PLL4_P */
     pll4.divm   = 5;
-    pll4.divn   = 73;
-    pll4.fracv  = 2048;
-    pll4.divp   = 3;
-    pll4.en_p   = 1;
-    pll4.divq   = 0;
-    pll4.en_q   = 0;
+    pll4.divn   = 147;
+    pll4.fracv  = 4096;
+    pll4.divp   = 7;
+    pll4.en_p   = 0;
+    pll4.divq   = 7;
+    pll4.en_q   = 1;
     pll4.divr   = 0;
     pll4.en_r   = 0;
     pll4.ifrge  = 0;
     RccPll4Init(&pll4);
 
+    RCC->APB4RSTCLRR = (1 << 0);
     /* LTDC 时钟 + 复位释放 */
     RCC->MP_APB4ENSETR |= (1 << 0);
-    RCC->APB4RSTCLRR = (1 << 0);
+    
     // i2c5时钟使能
     RCC->MP_APB1ENSETR |= (1 << 24);
-
-    /* PLL4 时钟确认 */
-    {
-        RccClkTree_t t;
-        RccClkDump(&t);
-        PRINT("PLL4 check:\r\n");
-        PrintU32("  PLL4_P (LTDC pixel)", t.pll4_p);
-        PrintU32("  PLL4_Q", t.pll4_q);
-        PrintU32("  PLL4_R", t.pll4_r);
-    }
-
-    /* 调试：确认 LTDC 复位状态 */
-    PRINT("LTDC reset debug:\r\n");
-    PrintU32("  MP_APRSTCR", RCC->MP_APRSTCR);
-    PrintU32("  MP_APRSTSR", RCC->MP_APRSTSR);
-    PrintU32("  MP_APB4ENSETR", RCC->MP_APB4ENSETR);
-    PrintU32("  APB4RSTSETR", RCC->APB4RSTSETR);
-
-    /* 尝试直接读 LTDC ID 寄存器 (0x5A001000 + 0x00) */
-    {
-        volatile uint32_t *ltdc_base = (volatile uint32_t *)0x5A001000;
-        PrintU32("  LTDC_ID (raw)", ltdc_base[0]);
-        PrintU32("  LTDC_ID+0x0C", ltdc_base[3]);
-    }
-
-    /* ETZPC DECPROT 检查 + 尝试解锁 LTDC */
-    {
-        volatile uint32_t *etzpc = (volatile uint32_t *)0x5C007000;
-        volatile uint32_t *ltdc_raw = (volatile uint32_t *)0x5A001000;
-        uint32_t decprot0_save;
-
-        decprot0_save = etzpc[0x10 / 4];
-        PrintU32("  ETZPC_DECPROT0 (orig)", decprot0_save);
-        PrintU32("  ETZPC_DECPROT1", etzpc[0x14 / 4]);
-        PrintU32("  ETZPC_DECPROT2", etzpc[0x18 / 4]);
-
-        /* 尝试写 0 到 DECPROT0，看 non-secure 能否修改 */
-        etzpc[0x10 / 4] = 0;
-        __asm__ volatile("mcr p15, 0, %0, c7, c10, 4" :: "r"(0) : "memory");
-        PrintU32("  DECPROT0 after write 0", etzpc[0x10 / 4]);
-        PrintU32("  LTDC_ID after unlock", ltdc_raw[0]);
-
-        /* 尝试只写 DECPROT0 (不加DSB) */
-        etzpc[0x10 / 4] = 0;
-        PrintU32("  LTDC_ID after 2nd write", ltdc_raw[0]);
-
-        /* 恢复原值 */
-        etzpc[0x10 / 4] = decprot0_save;
-    }
 }
 
 
@@ -243,7 +196,9 @@ static void TestDisplayHdmi(void)
     }
     PRINT("  SiI9022A detected.\r\n");
 
-    SiiInit(&sii);
+    ret = SiiInit(&sii);
+    if (ret != 0)
+        PRINT("  SiiInit failed!\r\n");
 
     /* ---- 4. LTDC 时序配置 ---- */
     PRINT("LTDC init...\r\n");
@@ -255,29 +210,32 @@ static void TestDisplayHdmi(void)
     tim.vbp        = TIM_VBP;
     tim.vfp        = TIM_VFP;
     tim.active_h   = TIM_ACTIVE_H;
-    /* 720p60: HSYNC+、VSYNC+、DE+、像素时钟驱动下降沿 */
+    /* 720p60: HSYNC+、VSYNC+、DE+、PCPOL=1 (RM0436: active high =
+     * 上升沿有效), 与 SiI9022A 上升沿锁存 (0x08[4]=1, 默认) 匹配。
+     * 注意 DEPOL 语义: RM0436 该位是 "Not data enable polarity",
+     * 0 = Not DE 低有效 (即 DE 高有效), 1 = DE 被反相! */
     tim.hspol      = 1;
     tim.vspol      = 1;
-    tim.depol      = 1;
+    tim.depol      = 0;
     tim.pcpol      = 1;
     tim.bg_rgb888  = 0x000000;
     tim.dither_en  = 0;
 
     LtdcInit(LTDC, &tim);
 
-    /* ---- 5. 填充帧缓冲: 8 色竖条 ---- */
+    /* ---- 5. 填充帧缓冲: 彩虹 7 色竖条 + 白 ---- */
     {
         uint32_t bar_w = TIM_ACTIVE_W / 8;
         uint32_t x, y;
         static const uint16_t colors[8] = {
-            0xF800, /* 红 */
-            0x07E0, /* 绿 */
-            0x001F, /* 蓝 */
+            0xF800, /* 赤 */
+            0xFD20, /* 橙 */
             0xFFE0, /* 黄 */
-            0xF81F, /* 紫 */
+            0x07E0, /* 绿 */
             0x07FF, /* 青 */
+            0x001F, /* 蓝 */
+            0xF81F, /* 紫 */
             0xFFFF, /* 白 */
-            0x0000, /* 黑 */
         };
         for (y = 0; y < TIM_ACTIVE_H; y++) {
             for (x = 0; x < TIM_ACTIVE_W; x++) {
@@ -319,7 +277,22 @@ static void TestDisplayHdmi(void)
     vm.vfreq       = 60;
 
     SiiSetVideoMode(&sii, &vm);
+
+    /* video mode 写后留空闲时间, 保证随后第一笔写 (SyncPolarity)
+     * 落在空闲窗口里 (后续每笔写之间由设备层自行 settle)。 */
+    {
+        uint32_t t;
+        for (t = 0; t < 5000000; t++) {
+            if ((t & 0x7FFFF) == 0) IwdgKickDog(IWDG2);
+        }
+    }
+
     SiiSetSyncPolarity(&sii, 0, 0);
+
+    /* 外部 DE (PK7) 直连, 不使用内部 DE 生成器:
+     * 实测画面正常 — 之前"外部 DE 故障"的根因是 LTDC GCR DEPOL=1
+     * 把 DE 反相 (RM0436: DEPOL 是 "Not data enable polarity"),
+     * depol 改为 0 后外部 DE 通路完好, DE gen 方案废弃。 */
 
     /* AVI InfoFrame */
     {
@@ -331,33 +304,29 @@ static void TestDisplayHdmi(void)
         SiiSetAVIInfoFrame(&sii, avi, 13);
     }
 
-    /* ---- 8. 清除 HPD 事件 + 重写 D0 + 使能 TMDS + HDMI 模式 ---- */
+    /* ---- 8. 清除 HPD 事件 + 重写 D0 + 使能 TMDS + HDMI 模式 ----
+     * 注意: TPI 忙窗口内背靠背写会被静默丢弃 (回读旧值)。实测紧跟 D0
+     * 的 SYS_CTRL 写不生效, 需留空闲窗口再写并回读确认。 */
     SiiClearInterrupt(&sii, 0x03);
     SiiRegWrite(&sii, SII_TPI_POWER_STATE, SII_POWER_D0);
-    SiiRegWrite(&sii, SII_TPI_SYS_CTRL, 0x01);
 
-    /* 回读验证关键寄存器 */
-    PRINT("SiI9022A reg dump:\r\n");
+    /* D0 切换后留空闲窗口, 再写 SYS_CTRL 使能 TMDS 输出 */
     {
-        int v;
-        v = SiiRegRead(&sii, SII_TPI_SYS_CTRL);
-        PrintU32("  SYS_CTRL(0x1A)", v);
-        v = SiiRegRead(&sii, SII_TPI_INT_STATUS);
-        PrintU32("  INT_STAT(0x3D)", v);
-        v = SiiRegRead(&sii, SII_TPI_SYNC_CTRL);
-        PrintU32("  SYNC_CTRL(0x60)", v);
-        v = SiiRegRead(&sii, SII_TPI_INPUT_BUS);
-        PrintU32("  INPUT_BUS(0x08)", v);
+        uint32_t t;
+
+        for (t = 0; t < 5000000; t++) {
+            if ((t & 0x7FFFF) == 0) IwdgKickDog(IWDG2);
+        }
+        SiiRegWrite(&sii, SII_TPI_SYS_CTRL, 0x01);
+        for (t = 0; t < 5000000; t++) {
+            if ((t & 0x7FFFF) == 0) IwdgKickDog(IWDG2);
+        }
+        if (SiiRegRead(&sii, SII_TPI_SYS_CTRL) != 0x01)
+            PRINT("  SYS_CTRL TMDS enable failed (dropped write)\r\n");
     }
-    PRINT("LTDC status:\r\n");
-    PrintU32("  CDSR", LtdcGetDisplayStatus(LTDC));
-    PrintU32("  ISR",  LtdcIntStatus(LTDC));
-    {
-        uint32_t x, y;
-        LtdcGetPosition(LTDC, &x, &y);
-        PrintU32("  CPSR_X", x);
-        PrintU32("  CPSR_Y", y);
-    }
+
+    /* 注: EDID 读取未实现 — DDC 授权成功后 0x50 事务会卡在 I2C 驱动的
+     * 无超时等待 (stm32mp1xx_i2c.c), 10 秒后 IWDG2 看门狗复位整板 */
 
     PRINT("Display active.\r\n");
     PRINT("Press any key to stop...\r\n");

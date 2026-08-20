@@ -726,3 +726,60 @@ SdmmcPowerOn (400kHz, 1-bit)
 |------|------|------|
 | LSI 回读始终 0 | `RccLsiInit` / `RccClkDump` 操作 BDCR, 但 LSI 位于 RDLSICR (0x144) | 改为 RDLSICR, bit0=LSION, bit1=LSIRDY |
 | 64 位除法导致复位 | libgcc 未链接, `__aeabi_uldivmod` 跳飞 | 修复链接后正常 |
+
+## LTDC + SiI9022A HDMI 显示 (菜单 21)
+
+硬件配置: LTDC @0x5A001000, ker_ck=PLL4_Q(74.25MHz), 720p60 (1650×750, HSW40/HBP220/HFP110, VSW5/VBP20/VFP5). 引脚: HSYNC=PI12, VSYNC=PI13, CLK=PI14, DEN=PK7, R[7:1]=PJ[6:0], R0=PI15, G[4:0]=PJ[11:7], G[7:5]=PK[2:0], B[3:0]=PJ[15:12], B[7:4]=PK[6:3] (全 AF14). SiI9022A: I2C5 (PA11/PA12 AF4), TPI 地址 0x72, 设备 ID=0xB0, HDMI_RST=PA13.
+
+### 基本功能
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| PLL4_Q 像素时钟 (74.25MHz) | 通过 | DIVN=147 + fracv=4096 → VCO=594MHz, DIVQ=7 → PLL4_Q=74.25MHz; LTDC ker_ck 来自 PLL4_Q (RM0436 时钟树), 不是 PLL4_P |
+| LTDC 时序配置 (720p60) | 通过 | SSCR/BPCR/AWCR/TWCR, 总时序 1650×750, 刷新率 = 74.25M/1650/750 = 60.00Hz |
+| GCR 极性 | 通过 | HSYNC+/VSYNC+/DE+ (depol=0)/PCPOL=1, 与 SiI9022A 上升沿锁存 (0x08[4]=1) 匹配 |
+| 图层配置 (Layer 1, RGB565) | 通过 | 全屏窗口 (0,0)-(1279,719), const_alpha=255 不透明, 单图层 (Layer 2 未用) |
+| 帧缓冲 8 色竖条 | 通过 | 彩虹 7 色 (赤橙黄绿青蓝紫) + 白, 1280×720 RGB565 |
+| SiI9022A 探测 | 通过 | TPI 设备 ID 回读 0xB0 |
+| SiI9022A 初始化 | 通过 | 源端接 SRC_TERM、输入总线 TCLK_X1/FULL、RGB 8-bit、外部同步 |
+| 视频模式设置 | 通过 | 像素时钟 74.25MHz, htotal 1650, vtotal 750, 60Hz |
+| AVI InfoFrame | 通过 | VIC=4 (720p60), RGB, 校验和正确 |
+| TMDS 输出使能 | 通过 | SYS_CTRL bit0 (HDMI 模式), 空闲窗口后写入 + 回读确认 |
+| 显示器识别 | 通过 | 识别为 1280×720@60Hz (4K 显示器整屏缩放显示) |
+| 实际输出验证 | 通过 | 色条满屏正常; 引脚 DE 有效占比实测 73.1% ≈ 720/750 = 74.5% |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| LTDC 寄存器无法读写 | 看错时钟树: LTDC ker_ck 来自 PLL4_Q 而非 PLL4_P, Q 未使能 → 外设无时钟"没电", 寄存器访问失败 | 重配 PLL4: VCO 提至 594MHz (同时拉回 400-800MHz 规格内), DIVQ=7 + en_q=1 输出 74.25MHz, en_p=0 |
+| DE 生成器寄存器回读 0 / SYS_CTRL 写不生效 | SiI9022A TPI 忙窗口内背靠背写被静默丢弃 | 每笔写间加 SiiSettle 稳定延时; TMDS 使能写前留空闲窗口, 写后回读确认 |
+| 外部 DE 显示黑屏 (曾误判 DE 通路损坏) | LTDC GCR DEPOL 语义误读: RM0436 该位是 "Not data enable polarity", 1=DE 反相 | depol=0, 头文件注释改正 (RM0436 p1787 验证); 内部 DE 生成器方案废弃 |
+| 调试中整板看门狗复位 | I2C 驱动无超时等待卡死 + 长循环不喂狗超 IWDG2 10s | 长循环内 IwdgKickDog; 移除会卡死的 EDID 读取 |
+| AVI InfoFrame VIC 码错误 | VIC 写成 0x10 (1080p60), 实际 720p60 应为 4 | VIC=4 |
+| HDMI/DVI 模式未设 | SYS_CTRL bit0 未置位 → DVI 模式, AVI InfoFrame 不发送 | SYS_CTRL 写 0x01 开启 HDMI 模式 |
+| EDID 读取未实现 | I2C 驱动缺陷 (BSF 忙检查静默返回/NACK 无 STOP/无超时等待), 0x50 事务卡死整板 | 暂缓, 待 I2C 驱动修复 |
+
+### 排查思路 1: LTDC 寄存器无法读写 → 时钟源选错 (PLL4_P vs PLL4_Q)
+
+| 步骤 | 操作 | 结论 |
+|------|------|------|
+| 1 | 现象: LTDC 寄存器读写全失败 | 外设"没电" (无时钟), 寄存器访问直接失败 |
+| 2 | 读同 APB4 总线上其他外设寄存器 | 可正常读写 → 总线没问题 |
+| 3 | 固化 u-boot 启动 Linux, 显示器正常 | LTDC 硬件 IP + 外围电路没问题 (注意: Linux 显示走 MIPI DSI 屏, 只证明 LTDC 链路, **不覆盖** SiI9022A HDMI 路径) |
+| 4 | 怀疑 ETZPC 把 LTDC 配成安全世界 | 查手册: LTDC 不在 DECPROT 可配置列表, 根本无法配成安全 → 排除 |
+| 5 | 回到时钟树查 RM0436 | LTDC ker_ck 来自 **PLL4_Q** 不是 PLL4_P → 看错手册 |
+
+**教训**: 外设寄存器访问异常, 第一嫌疑是**外设时钟没配** (无时钟外设像断电, 寄存器访问直接失败); 硬件层面用 Linux 当参照物一锤定音, 避免在好硬件上反复排查软件。
+
+### 排查思路 2: 黑屏 → DE 极性 (DEPOL) 误配
+
+| 步骤 | 操作 | 结论 |
+|------|------|------|
+| 1 | 外部 DE (PK7) 直连时画面消失 | 怀疑 SiI9022A 外部 DE 通路损坏 |
+| 2 | 改用 SiI9022A 内部 DE 生成器绕过 | 画面恢复 → **误判**"外部 DE 坏了" (A/B 开关测试加深误判) |
+| 3 | 质疑 "PK7 配置了" → 回头核查 | GPIO mux AF14 正确; 引脚采样 PK7 电平正常翻转; GCR 回读与配置一致 → 引脚/复用/寄存器写入全排除 |
+| 4 | 唯一矛盾: DE 反相, 而 HSYNC/VSYNC 同为 "1=高有效" 语义却正常 | 查 RM0436 p1787: DEPOL 是 **"Not data enable polarity"**, 1 = Not DE 高有效 = **DE 低有效 (反相)** |
+| 5 | 头文件注释 "DE 极性: 1=高有效" 是误读 | depol=0 → 画面正常, DE 占比实测 73.1% ≈ 720/750, DE 生成器方案废弃 |
+
+**教训**: 位语义以手册原文为准, 不能信项目内注释; 怀疑"硬件通路损坏"前, 先穷尽"配置语义"的可能性; 实测手段 (引脚采样/寄存器回读) 用于收窄矛盾, 最终收敛到唯一解释。

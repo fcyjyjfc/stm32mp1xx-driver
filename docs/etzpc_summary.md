@@ -149,15 +149,27 @@ ETZPC 可将资源限定为仅 Cortex-M4 域访问。隔离域除 M4 外，可�
 - 例外：GPIOZ 静默失败（Tz-aware 不报错）
 - 写已锁定的 ETZPC 配置静默忽略
 
-### Table 94 — DECPROT 分配 (前段)
+### Table 94 — DECPROT 分配 (全表, RM0436 Rev7 p1123-1127)
 
-DECPROT0[1:0]~[23:22]，全部默认 0b00 (RW secure)，全部 type 1：
+索引 0-12 (DECPROT0, type 1, 默认 0b00=RW secure):
 STGENC, BKPSRAM, IWDG1, USART1, SPI6, I2C4, I2C6, RNG1, HASH1, CRYP1, DDRCTRL, DDRPHYC
 
-(表 94 未完，后续有 GPIO/TIM/LTDC 等)
+索引 16-47 (DECPROT1/2, type 2, 默认 0b11=non-secure, 仅 MCU 隔离):
+TIM2/3/4/5/6/7/12/13/14, LPTIM1, WWDG1, SPI2/3, SPDIFRX, USART2/3, UART4/5,
+I2C1/2/3/5, CEC, DAC, UART7/8, MDIOS
 
-## 对本项目的影响
+索引 48-63 (DECPROT3, type 2, 默认 0b11):
+TIM1, TIM8, USART6, SPI1/4/5, TIM15/16/17, SAI1/2/3, DFSDM, FDCAN
 
-- LTDC、I2C5、GPIOA-K 不在任何安全表内 = 普通 non-secure 外设，M4 直接访问
-- 代码在 DDR (0xC2000040)，DDR 地址空间由 TZC 过滤，FSBL 通常配成 non-secure
-- 坑：FSBL 若把 SRAM1-4 配成 secure-only，M4 从 SYSRAM 启动会直接跑飞
+索引 64-78 (DECPROT4, type 2, 默认 0b11):
+LPTIM2/3/4/5, SAI4, VREFBUF, DCMI, CRC2, ADC, HASH2, RNG2, CRYP2
+
+索引 80-95 (DECPROT5):
+SRAM1-4, RETRAM (type 3, 默认 0b11); OTG, SDMMC3, DLYBSD3, DMA1/2, DMAMUX,
+FMC, QSPI, DLYBQ, ETH1 (type 2, 默认 0b11)
+
+索引 13-15/43/63/79 为 Reserved。
+
+注意: **LTDC、DSI、GPIO 均不在 Table 94 中** (GPIOZ 属 Tz-aware, 见 Table 87)。
+DECPROT1/2 读回 0xFFFFFFFF 是 TIM 系列 type 2 的默认值, 不代表被操作过。
+
