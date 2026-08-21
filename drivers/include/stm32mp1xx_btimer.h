@@ -45,6 +45,7 @@ extern uint32_t Tim6UifCnt;
 extern uint32_t Tim7UifCnt;
 
 extern void BasicTimerCfg(volatile BasicTimerRegs_t *const tim_reg, const BasicTimerCfg_t *const cfg);
+extern void BasicTimerClkEnable(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerStart(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerStop(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerUg(volatile BasicTimerRegs_t *const tim_reg);

@@ -6,3 +6,5 @@ Driver_Test/*.o
 *.pdf
 *.kvdat
 *.txt
+
+tools/__pycache__/

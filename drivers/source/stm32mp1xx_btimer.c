@@ -7,6 +7,7 @@
 
 
 #include "stm32mp1xx_btimer.h"
+#include "stm32mp1xx_rcc.h"
 
 
 volatile BasicTimerRegs_t *const TIM6 = (void *)0x40004000;
@@ -98,3 +99,12 @@ void BasicTimerInit(void)
     BasicTimerCfg(TIM6, &Tim6Cfg);
 }
 
+
+// 外设时钟使能 (TIM6=APB1 bit4, TIM7=APB1 bit5)
+void BasicTimerClkEnable(volatile BasicTimerRegs_t *const tim_reg)
+{
+    if (tim_reg == TIM6)
+        RCC->MP_APB1ENSETR |= (1u << 4);
+    else if (tim_reg == TIM7)
+        RCC->MP_APB1ENSETR |= (1u << 5);
+}
