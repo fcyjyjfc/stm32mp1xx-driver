@@ -31,6 +31,17 @@
 #define TIM_VFP            5
 #define TIM_ACTIVE_H       720
 
+/* 分辨率 1080p30 (CEA-861 VIC 20, 像素时钟同为 74.25MHz;
+ * LTDC 像素时钟上限 90MHz, 1080p60 的 148.5MHz 不可达) */
+#define FHD_HSW            44
+#define FHD_HBP            148
+#define FHD_HFP            88
+#define FHD_ACTIVE_W       1920
+#define FHD_VSW            5
+#define FHD_VBP            36
+#define FHD_VFP            4
+#define FHD_ACTIVE_H       1080
+
 
 /* ================================================================== */
 /*  帧缓冲 (RGB565, ~1.8MB)                                           */
@@ -52,6 +63,23 @@ static uint8_t g_img_fb[TIM_ACTIVE_W * TIM_ACTIVE_H * 3] __attribute__((aligned(
 
 static uint8_t g_slide_fb[SLIDE_COUNT][TIM_ACTIVE_W * TIM_ACTIVE_H * 3]
     __attribute__((aligned(32)));
+
+/* ================================================================== */
+/*  1080p30 帧缓冲 (RGB888, ~6.2MB)                                   */
+/* ================================================================== */
+
+static uint8_t g_fhd_fb[FHD_ACTIVE_W * FHD_ACTIVE_H * 3] __attribute__((aligned(32)));
+
+/* ================================================================== */
+/*  双图层测试: 文字条图层 2 (ARGB8888, 1280x160, ~0.8MB)              */
+/* ================================================================== */
+
+#define TXT2_W   1280
+#define TXT2_H   160
+#define TXT2_X   320     /* = (1920 - 1280) / 2, 与照片层同宽对齐 */
+#define TXT2_Y   740     /* 照片窗口底部 899 - 160 + 1 */
+
+static uint8_t g_txt2_fb[TXT2_W * TXT2_H * 4] __attribute__((aligned(32)));
 
 
 /* ================================================================== */
@@ -170,9 +198,19 @@ static void DisplayTest_GpioInit(void)
 }
 
 
+/* 显示分辨率 (决定 LTDC 时序, 像素时钟同为 PLL4_Q 74.25MHz) */
+typedef enum {
+    DISP_RES_720P60,
+    DISP_RES_1080P30,
+} DisplayRes_t;
+
+/* AVI InfoFrame VIC (CEA-861) */
+#define AVI_VIC_720P60    4
+#define AVI_VIC_1080P30   20
+
 /* ---- 公共初始化: 时钟 + GPIO + I2C + SiI9022A + LTDC 时序 ----
- * 返回 0=成功; 非 0=SiI9022A 未检测到 */
-static int DisplayHdmiInit(LtdcTimingConfig_t *tim, Sii9022a_t *sii)
+ * res 选择分辨率; 返回 0=成功; 非 0=SiI9022A 未检测到 */
+static int DisplayHdmiInit(LtdcTimingConfig_t *tim, Sii9022a_t *sii, DisplayRes_t res)
 {
     uint32_t i;
     int      ret;
@@ -211,14 +249,28 @@ static int DisplayHdmiInit(LtdcTimingConfig_t *tim, Sii9022a_t *sii)
 
     /* ---- LTDC 时序配置 ---- */
     PRINT("LTDC init...\r\n");
-    tim->hsw        = TIM_HSW;
-    tim->hbp        = TIM_HBP;
-    tim->hfp        = TIM_HFP;
-    tim->active_w   = TIM_ACTIVE_W;
-    tim->vsw        = TIM_VSW;
-    tim->vbp        = TIM_VBP;
-    tim->vfp        = TIM_VFP;
-    tim->active_h   = TIM_ACTIVE_H;
+    if (res == DISP_RES_720P60)
+    {
+        tim->hsw        = TIM_HSW;
+        tim->hbp        = TIM_HBP;
+        tim->hfp        = TIM_HFP;
+        tim->active_w   = TIM_ACTIVE_W;
+        tim->vsw        = TIM_VSW;
+        tim->vbp        = TIM_VBP;
+        tim->vfp        = TIM_VFP;
+        tim->active_h   = TIM_ACTIVE_H;
+    }
+    else
+    {
+        tim->hsw        = FHD_HSW;
+        tim->hbp        = FHD_HBP;
+        tim->hfp        = FHD_HFP;
+        tim->active_w   = FHD_ACTIVE_W;
+        tim->vsw        = FHD_VSW;
+        tim->vbp        = FHD_VBP;
+        tim->vfp        = FHD_VFP;
+        tim->active_h   = FHD_ACTIVE_H;
+    }
     /* 720p60: HSYNC+、VSYNC+、DE+、PCPOL=1 (RM0436: active high =
      * 上升沿有效), 与 SiI9022A 上升沿锁存 (0x08[4]=1, 默认) 匹配。
      * 注意 DEPOL 语义: RM0436 该位是 "Not data enable polarity",
@@ -237,8 +289,8 @@ static int DisplayHdmiInit(LtdcTimingConfig_t *tim, Sii9022a_t *sii)
 
 
 /* ---- 视频模式启动: 模式时序 + 同步极性 + AVI + D0 + TMDS 使能 ----
- * 各显示测试共用 (显示时序已由 DisplayHdmiInit 配置) */
-static void DisplayHdmiVideoStart(Sii9022a_t *sii, const SiiVideoMode_t *vm)
+ * 各显示测试共用 (显示时序已由 DisplayHdmiInit 配置, avi_vic 为 AVI VIC) */
+static void DisplayHdmiVideoStart(Sii9022a_t *sii, const SiiVideoMode_t *vm, uint8_t avi_vic)
 {
     SiiSetVideoMode(sii, vm);
 
@@ -259,7 +311,7 @@ static void DisplayHdmiVideoStart(Sii9022a_t *sii, const SiiVideoMode_t *vm)
         avi[0] = 0x00;  /* Y=RGB, A0=active */
         avi[1] = 0x00;  /* C=No data, M=No data */
         avi[2] = 0x00;  /* ITC=0 */
-        avi[3] = 4;     /* VIC=4 = 720p60 */
+        avi[3] = avi_vic;
         SiiSetAVIInfoFrame(sii, avi, 13);
     }
 
@@ -299,7 +351,7 @@ static void TestDisplayHdmi(void)
 
     PRINT("\r\n===== LTDC + SiI9022A HDMI Display Test =====\r\n");
 
-    if (DisplayHdmiInit(&tim, &sii) != 0)
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_720P60) != 0)
         return;
 
     /* ---- 5. 填充帧缓冲: 彩虹 7 色竖条 + 白 ---- */
@@ -453,11 +505,12 @@ static void TestDisplayUartImage(void)
     uint32_t           off = 0;
 
     PRINT("\r\n===== UART Image Display (RGB888) =====\r\n");
+
     PRINT("  UART switched to 460800 baud\r\n");
     PRINT("  Run img_sender.py on PC to stream image\r\n");
     PRINT("  Press 0 to stop\r\n\r\n");
 
-    if (DisplayHdmiInit(&tim, &sii) != 0)
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_720P60) != 0)
         return;
 
     /* ---- 图层 RGB888 全屏, 始终使能: 收多少显示多少 ----
@@ -756,7 +809,7 @@ static void TestDisplaySlideshow(void)
     PRINT("  6 patterns, 500ms each\r\n");
     PRINT("  Press 0 to stop\r\n\r\n");
 
-    if (DisplayHdmiInit(&tim, &sii) != 0)
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_720P60) != 0)
         return;
 
     /* ---- 预生成 6 张图案 ---- */
@@ -886,7 +939,8 @@ exit:
 
 
 /* ================================================================== */
-/*  串口打字器 — 串口输入文本, LTDC 逐字显示 (16x16 汉字 + 8x16 ASCII)*/
+/*  串口打字器 — 串口输入文本, 1080p30 逐字显示                        */
+/*    (16x16 汉字 + 8x16 ASCII, 一屏 240 列 x 67 行)                   */
 /*                                                                    */
 /*   字库: font_gbk16.c (宋体, GB2312 全字库)                         */
 /*   输入: PC 端 tools/typewriter.py 发 UTF-8→GB2312 帧 (命令 0x12)  */
@@ -894,22 +948,23 @@ exit:
 /*   命令 (帧 data 字段): 0 / BACK — 停止返回菜单                     */
 /* ================================================================== */
 
-static uint8_t g_txt_fb[TIM_ACTIVE_W * TIM_ACTIVE_H * 3] __attribute__((aligned(32)));
-
 #define TXT_CELL_W       8     /* 半宽列宽: ASCII 一列, 汉字两列 */
 #define TXT_CELL_H       16
-#define TXT_COLS         (TIM_ACTIVE_W / TXT_CELL_W)   /* 160 半宽列 */
-#define TXT_ROWS         (TIM_ACTIVE_H / TXT_CELL_H)   /* 45 行 */
 
+static uint8_t *g_txt_fb;       /* 文本帧缓冲 (TxtScreenSet 指定, 复用 g_fhd_fb) */
+static uint16_t g_txt_w;        /* 屏幕宽 (像素) */
+static uint16_t g_txt_h;        /* 屏幕高 (像素) */
+static uint16_t g_txt_cols;     /* 半宽列数 = 宽 / 8 */
 static uint16_t g_txt_x;        /* 光标 x, 半宽列单位 */
 static uint16_t g_txt_y;        /* 光标 y, 像素 */
 static uint8_t  g_txt_last_w;   /* 上一字符占的半宽列数 (退格用) */
+static uint8_t  g_txt_bpp;      /* 每像素字节数: 3=RGB888, 4=ARGB8888 (白字透明底) */
 
 /* 单色点阵 (w8 像素宽 x 16 行, 每行位图 MSB 为最左) 画到帧缓冲 */
 static void TxtDrawGlyph(uint16_t x8, uint16_t y, const uint8_t *glyph, uint8_t w8)
 {
     uint16_t row, col;
-    uint32_t base = (uint32_t)y * TIM_ACTIVE_W * 3 + (uint32_t)x8 * 8 * 3;
+    uint32_t base = (uint32_t)y * g_txt_w * g_txt_bpp + (uint32_t)x8 * 8 * g_txt_bpp;
 
     for (row = 0; row < TXT_CELL_H; row++)
     {
@@ -917,40 +972,52 @@ static void TxtDrawGlyph(uint16_t x8, uint16_t y, const uint8_t *glyph, uint8_t 
         {
             uint8_t v = ((glyph[row * (w8 / 8) + (col / 8)] >> (7 - (col % 8))) & 1)
                         ? 255 : 0;
-            uint8_t *p = &g_txt_fb[base + row * TIM_ACTIVE_W * 3 + col * 3];
-            p[0] = v;
-            p[1] = v;
-            p[2] = v;
+            uint8_t *p = &g_txt_fb[base + row * g_txt_w * g_txt_bpp + col * g_txt_bpp];
+            uint8_t i;
+            for (i = 0; i < g_txt_bpp; i++)
+                p[i] = v;   /* RGB888: BGR 全 v; ARGB8888: 全 v (白字/全透明) */
         }
     }
 }
 
 static void TxtNewline(void)
 {
+    uint32_t line_bytes = (uint32_t)g_txt_w * g_txt_bpp * TXT_CELL_H;
+
     g_txt_x = 0;
     g_txt_y += TXT_CELL_H;
-    if (g_txt_y > (TXT_ROWS - 1) * TXT_CELL_H)
+    if (g_txt_y > g_txt_h - TXT_CELL_H)
     {
-        /* 整屏上滚一行: 帧缓冲上移 16 像素, 末行清黑 */
-        memmove(g_txt_fb, &g_txt_fb[TIM_ACTIVE_W * 3 * TXT_CELL_H],
-                (TIM_ACTIVE_H - TXT_CELL_H) * TIM_ACTIVE_W * 3);
-        memset(&g_txt_fb[(TIM_ACTIVE_H - TXT_CELL_H) * TIM_ACTIVE_W * 3], 0,
-               TXT_CELL_H * TIM_ACTIVE_W * 3);
-        g_txt_y = (TXT_ROWS - 1) * TXT_CELL_H;
+        /* 整屏上滚一行: 帧缓冲上移 16 像素, 末行清透明 */
+        memmove(g_txt_fb, &g_txt_fb[line_bytes],
+                (uint32_t)g_txt_w * g_txt_bpp * (g_txt_h - TXT_CELL_H));
+        memset(&g_txt_fb[(uint32_t)g_txt_w * g_txt_bpp * (g_txt_h - TXT_CELL_H)], 0, line_bytes);
+        g_txt_y = g_txt_h - TXT_CELL_H;
     }
 }
 
 static void TxtClear(void)
 {
-    memset(g_txt_fb, 0, sizeof(g_txt_fb));
+    memset(g_txt_fb, 0, (uint32_t)g_txt_w * g_txt_h * g_txt_bpp);
     g_txt_x = 0;
     g_txt_y = 0;
     g_txt_last_w = 1;
 }
 
+/* 绑定文本缓冲、屏幕尺寸与每像素字节数 (同时清屏) */
+static void TxtScreenSet(uint8_t *fb, uint16_t w, uint16_t h, uint8_t bpp)
+{
+    g_txt_fb  = fb;
+    g_txt_w   = w;
+    g_txt_h   = h;
+    g_txt_bpp = bpp;
+    g_txt_cols = w / TXT_CELL_W;
+    TxtClear();
+}
+
 static void TxtPutAscii(uint8_t ch)
 {
-    if (g_txt_x + 1 > TXT_COLS)
+    if (g_txt_x + 1 > g_txt_cols)
         TxtNewline();
     TxtDrawGlyph(g_txt_x, g_txt_y, &g_ascii8x16_font[ch * 16], 8);
     g_txt_x += 1;
@@ -959,7 +1026,7 @@ static void TxtPutAscii(uint8_t ch)
 
 static void TxtPutGb(uint8_t a, uint8_t p)
 {
-    if (g_txt_x + 2 > TXT_COLS)
+    if (g_txt_x + 2 > g_txt_cols)
         TxtNewline();
     TxtDrawGlyph(g_txt_x, g_txt_y, &g_gbk16_font[GBK16_INDEX(a, p)], 16);
     g_txt_x += 2;
@@ -974,11 +1041,11 @@ static void TxtBackspace(void)
 
     if (g_txt_x == 0)
         return;
-    /* 擦除该字格 (画黑) */
+    /* 擦除该字格 (清透明) */
     for (row = 0; row < TXT_CELL_H; row++)
     {
-        memset(&g_txt_fb[(uint32_t)(g_txt_y + row) * TIM_ACTIVE_W * 3
-                        + (uint32_t)x * 8 * 3], 0, (uint32_t)w * 8 * 3);
+        memset(&g_txt_fb[(uint32_t)(g_txt_y + row) * g_txt_w * g_txt_bpp
+                        + (uint32_t)x * 8 * g_txt_bpp], 0, (uint32_t)w * 8 * g_txt_bpp);
     }
     g_txt_x = x;
     g_txt_last_w = 1;
@@ -1026,24 +1093,24 @@ static void TestDisplayTypewriter(void)
     SiiVideoMode_t     vm;
     Frame_t            fr;
 
-    PRINT("\r\n===== Serial Typewriter =====\r\n");
+    PRINT("\r\n===== Serial Typewriter (1080p30) =====\r\n");
     PRINT("  Run tools/typewriter.py on PC, type + Enter\r\n");
     PRINT("  /clr clear  /quit exit  (or send 0)\r\n\r\n");
 
-    if (DisplayHdmiInit(&tim, &sii) != 0)
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_1080P30) != 0)
         return;
 
-    /* ---- 文本图层 RGB888 全屏 ---- */
+    /* ---- 文本图层 RGB888 全屏 (缓冲复用 g_fhd_fb, 与测试 5 互斥运行) ---- */
     lay.enable       = 1;
     lay.win_x1       = 0;
     lay.win_y1       = 0;
-    lay.win_x2       = TIM_ACTIVE_W - 1;
-    lay.win_y2       = TIM_ACTIVE_H - 1;
+    lay.win_x2       = FHD_ACTIVE_W - 1;
+    lay.win_y2       = FHD_ACTIVE_H - 1;
     lay.pixel_fmt    = LTDC_PF_RGB888;
-    lay.fb_addr      = (uint32_t)g_txt_fb;
-    lay.pitch        = TIM_ACTIVE_W * 3;
-    lay.width        = TIM_ACTIVE_W;
-    lay.height       = TIM_ACTIVE_H;
+    lay.fb_addr      = (uint32_t)g_fhd_fb;
+    lay.pitch        = FHD_ACTIVE_W * 3;
+    lay.width        = FHD_ACTIVE_W;
+    lay.height       = FHD_ACTIVE_H;
     lay.clut_en      = 0;
     lay.const_alpha  = 255;
     lay.def_color    = 0;
@@ -1054,16 +1121,16 @@ static void TestDisplayTypewriter(void)
 
     LtdcLayerConfig(LTDC, 1, &lay);
     LtdcReloadImmediate(LTDC);
-    TxtClear();
+    TxtScreenSet(g_fhd_fb, FHD_ACTIVE_W, FHD_ACTIVE_H, 3);
     LtdcEnable(LTDC);
 
     /* ---- 视频模式 + AVI + D0 + TMDS (共用流程) ---- */
     vm.pixel_clock = 74250000;
-    vm.htotal      = TIM_HSW + TIM_HBP + TIM_ACTIVE_W + TIM_HFP;
-    vm.vtotal      = TIM_VSW + TIM_VBP + TIM_ACTIVE_H + TIM_VFP;
-    vm.vfreq       = 60;
+    vm.htotal      = FHD_HSW + FHD_HBP + FHD_ACTIVE_W + FHD_HFP;  /* 2200 */
+    vm.vtotal      = FHD_VSW + FHD_VBP + FHD_ACTIVE_H + FHD_VFP;  /* 1125 */
+    vm.vfreq       = 30;
 
-    DisplayHdmiVideoStart(&sii, &vm);
+    DisplayHdmiVideoStart(&sii, &vm, AVI_VIC_1080P30);
 
     /* ---- 切波特率, 接收文本 ---- */
     UsartSetBaud(USART4, 64000000, IMG_BAUD);
@@ -1090,6 +1157,219 @@ static void TestDisplayTypewriter(void)
 
 
 /* ================================================================== */
+/*  1080p30 HDMI — 1920x1080@30Hz (CEA-861 VIC 20), PC 发真图         */
+/*    LTDC 像素时钟上限 90MHz, 1080p60 的 148.5MHz 不可达;             */
+/*    1080p30/25/24 与 720p60 同为 74.25MHz, PLL4 无需重配             */
+/*    PC 端: python tools/img_sender.py <图> COMx --width 1920 --height 1080 */
+/*    (460800 baud 下 6.2MB 约需 2 分钟)                              */
+/* ================================================================== */
+
+static void TestDisplayHdmi1080p30(void)
+{
+    LtdcTimingConfig_t tim;
+    LtdcLayerConfig_t  lay;
+    Sii9022a_t         sii;
+    SiiVideoMode_t     vm;
+    Frame_t            fr;
+    const uint32_t     img_size = FHD_ACTIVE_W * FHD_ACTIVE_H * 3;
+    uint32_t           off = 0;
+
+    PRINT("\r\n===== HDMI 1080p30 (1920x1080) =====\r\n");
+
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_1080P30) != 0)
+        return;
+
+    /* ---- 黑屏打底: 图片随接收逐行显现 ---- */
+    memset(g_fhd_fb, 0, img_size);
+
+    /* ---- 图层 RGB888 全屏 ---- */
+    lay.enable       = 1;
+    lay.win_x1       = 0;
+    lay.win_y1       = 0;
+    lay.win_x2       = FHD_ACTIVE_W - 1;
+    lay.win_y2       = FHD_ACTIVE_H - 1;
+    lay.pixel_fmt    = LTDC_PF_RGB888;
+    lay.fb_addr      = (uint32_t)g_fhd_fb;
+    lay.pitch        = FHD_ACTIVE_W * 3;
+    lay.width        = FHD_ACTIVE_W;
+    lay.height       = FHD_ACTIVE_H;
+    lay.clut_en      = 0;
+    lay.const_alpha  = 255;
+    lay.def_color    = 0;
+    lay.blend_f1     = LTDC_BF1_CONST_ALPHA;
+    lay.blend_f2     = LTDC_BF2_1_MINUS_CONST;
+    lay.color_key_en = 0;
+    lay.color_key    = 0;
+
+    LtdcLayerConfig(LTDC, 1, &lay);
+    LtdcReloadImmediate(LTDC);
+    LtdcEnable(LTDC);
+
+    /* ---- 视频模式 + AVI + D0 + TMDS ---- */
+    vm.pixel_clock = 74250000;
+    vm.htotal      = FHD_HSW + FHD_HBP + FHD_ACTIVE_W + FHD_HFP;  /* 2200 */
+    vm.vtotal      = FHD_VSW + FHD_VBP + FHD_ACTIVE_H + FHD_VFP;  /* 1125 */
+    vm.vfreq       = 30;
+
+    DisplayHdmiVideoStart(&sii, &vm, AVI_VIC_1080P30);
+
+    /* ---- 切波特率, 接收 1080p 图片 ---- */
+    UsartSetBaud(USART4, 64000000, IMG_BAUD);
+
+    PRINT("1080p30 active.\r\n");
+    PRINT("Receiving 1920x1080 image (about 2 min)...\r\n");
+    PRINT("Press 0 to stop\r\n\r\n");
+
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        if (!FramePoll(&fr))
+            continue;
+
+        if (fr.cmd == FRAME_CMD_IMG_DATA)
+        {
+            if (off + fr.data_len <= img_size)
+            {
+                memcpy(&g_fhd_fb[off], fr.data, fr.data_len);
+                off += fr.data_len;
+                if (off >= img_size)
+                    PRINT("1080p image complete.\r\n");
+            }
+        }
+        else if (fr.cmd == FRAME_CMD_BACK
+                 || (fr.data_len >= 1 && fr.data[0] == '0'))
+            break;
+    }
+
+    /* ---- 清理 ---- */
+    SiiTmdsOutput(&sii, 0);
+    LtdcDisable(LTDC);
+    PRINT("1080p30 stopped.\r\n");
+}
+
+
+/* ================================================================== */
+/*  双图层 + 背景色 (1080p30):                                        */
+/*    Layer1 照片 1280x720 居中 (320,180)-(1599,899), RGB888           */
+/*    Layer2 文字条 1280x160 贴照片底部 (320,740)-(1599,899), ARGB8888 */
+/*    逐像素 alpha: 白字不透明, 底透明 → 照片上浮字; 四边露 BCCR 底色  */
+/*    PC 端: 先 tools/img_sender.py <图> COMx (默认 1280x720),         */
+/*           再 tools/typewriter.py COMx                               */
+/* ================================================================== */
+
+static void TestDisplayLayers(void)
+{
+    LtdcTimingConfig_t tim;
+    LtdcLayerConfig_t  lay1, lay2;
+    Sii9022a_t         sii;
+    SiiVideoMode_t     vm;
+    Frame_t            fr;
+    const uint32_t     img_size = TIM_ACTIVE_W * TIM_ACTIVE_H * 3;
+    uint32_t           off = 0;
+
+    PRINT("\r\n===== Dual Layer (photo + text bar) =====\r\n");
+    PRINT("  First run img_sender.py, then typewriter.py\r\n");
+    PRINT("  Back color shows around the layers\r\n\r\n");
+
+    if (DisplayHdmiInit(&tim, &sii, DISP_RES_1080P30) != 0)
+        return;
+
+    /* ---- 背景色 BCCR: 四边露出的底色; 非影子寄存器, 重配即生效 ---- */
+    tim.bg_rgb888 = 0x3030A0;   /* 深蓝 */
+    LtdcInit(LTDC, &tim);
+
+    /* ---- Layer 1: 照片 1280x720 居中, 启动先用板载渐变占位 ---- */
+    SlideGenGradient(g_img_fb);
+
+    lay1.enable       = 1;
+    lay1.win_x1       = TXT2_X;
+    lay1.win_y1       = 180;
+    lay1.win_x2       = TXT2_X + TXT2_W - 1;
+    lay1.win_y2       = 180 + TIM_ACTIVE_H - 1;
+    lay1.pixel_fmt    = LTDC_PF_RGB888;
+    lay1.fb_addr      = (uint32_t)g_img_fb;
+    lay1.pitch        = TIM_ACTIVE_W * 3;
+    lay1.width        = TIM_ACTIVE_W;
+    lay1.height       = TIM_ACTIVE_H;
+    lay1.clut_en      = 0;
+    lay1.const_alpha  = 255;
+    lay1.def_color    = 0;
+    lay1.blend_f1     = LTDC_BF1_CONST_ALPHA;
+    lay1.blend_f2     = LTDC_BF2_1_MINUS_CONST;
+    lay1.color_key_en = 0;
+    lay1.color_key    = 0;
+
+    /* ---- Layer 2: 文字条, ARGB8888 逐像素 alpha (白字不透明/底透明) ---- */
+    lay2.enable       = 1;
+    lay2.win_x1       = TXT2_X;
+    lay2.win_y1       = TXT2_Y;
+    lay2.win_x2       = TXT2_X + TXT2_W - 1;
+    lay2.win_y2       = TXT2_Y + TXT2_H - 1;
+    lay2.pixel_fmt    = LTDC_PF_ARGB8888;
+    lay2.fb_addr      = (uint32_t)g_txt2_fb;
+    lay2.pitch        = TXT2_W * 4;
+    lay2.width        = TXT2_W;
+    lay2.height       = TXT2_H;
+    lay2.clut_en      = 0;
+    lay2.const_alpha  = 255;
+    lay2.def_color    = 0;
+    lay2.blend_f1     = LTDC_BF1_PIXALPHA_CONST;
+    lay2.blend_f2     = LTDC_BF2_1_MINUS_PIXA;
+    lay2.color_key_en = 0;
+    lay2.color_key    = 0;
+
+    LtdcLayerConfig(LTDC, 1, &lay1);
+    LtdcLayerConfig(LTDC, 2, &lay2);
+    LtdcReloadImmediate(LTDC);
+    TxtScreenSet(g_txt2_fb, TXT2_W, TXT2_H, 4);
+    LtdcEnable(LTDC);
+
+    /* ---- 视频模式 + AVI + D0 + TMDS ---- */
+    vm.pixel_clock = 74250000;
+    vm.htotal      = FHD_HSW + FHD_HBP + FHD_ACTIVE_W + FHD_HFP;
+    vm.vtotal      = FHD_VSW + FHD_VBP + FHD_ACTIVE_H + FHD_VFP;
+    vm.vfreq       = 30;
+
+    DisplayHdmiVideoStart(&sii, &vm, AVI_VIC_1080P30);
+
+    /* ---- 切波特率: 照片流入 Layer1, 文本流入 Layer2 ---- */
+    UsartSetBaud(USART4, 64000000, IMG_BAUD);
+
+    PRINT("Dual layer active.\r\n");
+    PRINT("Receiving 1280x720 photo...\r\n");
+    PRINT("Press 0 to stop\r\n\r\n");
+
+    while (1)
+    {
+        IwdgKickDog(IWDG2);
+        if (!FramePoll(&fr))
+            continue;
+
+        if (fr.cmd == FRAME_CMD_IMG_DATA)
+        {
+            if (off + fr.data_len <= img_size)
+            {
+                memcpy(&g_img_fb[off], fr.data, fr.data_len);
+                off += fr.data_len;
+                if (off >= img_size)
+                    PRINT("Photo complete. Type text now!\r\n");
+            }
+        }
+        else if (fr.cmd == FRAME_CMD_TXT_DATA)
+            TxtFeed(fr.data, fr.data_len);
+        else if (fr.cmd == FRAME_CMD_BACK
+                 || (fr.data_len >= 1 && fr.data[0] == '0'))
+            break;
+    }
+
+    /* ---- 清理 ---- */
+    SiiTmdsOutput(&sii, 0);
+    LtdcDisable(LTDC);
+    PRINT("Dual layer stopped.\r\n");
+}
+
+
+/* ================================================================== */
 /*  子测试菜单 + 入口                                                   */
 /* ================================================================== */
 
@@ -1097,7 +1377,9 @@ static const MenuEntry_t g_display_menu[] = {
     { "1", "HDMI output (720p60 color bars)", TestDisplayHdmi },
     { "2", "Image via UART (RGB888 stream)",  TestDisplayUartImage },
     { "3", "Slideshow (on-board 6 images)",   TestDisplaySlideshow },
-    { "4", "Typewriter (serial text input)",  TestDisplayTypewriter },
+    { "4", "Typewriter 1080p30 (text input)", TestDisplayTypewriter },
+    { "5", "HDMI 1080p30 (photo via UART)",   TestDisplayHdmi1080p30 },
+    { "6", "Dual layer (photo + text bar)",   TestDisplayLayers },
 };
 
 void DisplayTest(void)

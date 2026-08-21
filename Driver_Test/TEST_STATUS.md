@@ -188,6 +188,7 @@
 | TIM6 时钟使能 | 通过 | RCC->MP_APB1ENSETR bit4 |
 | BasicTimerCfg 配置 | 通过 | psc=15999, arr=5000, arpe=1, opm=0, urs=0, udis=0 |
 | BasicTimerStart/Stop | 通过 | CEN 位单独启停，退出时自动 Stop |
+| BasicTimerClkEnable 接口 | 通过 | 驱动新增接口，PSC=63999 → CNT 1kHz；幻灯片轮播定时用（STGEN 安全世界不可访问） |
 | UIF 轮询 | 通过 | 检测 SR.0，清 UIF 后打印计数、翻转 GPIOZ6/Z7 LED |
 | 串口退出 | 通过 | 收到任意字符即停止 |
 | 主菜单入口 | 通过 | 按 8 进入 BTIMER 测试 |
@@ -731,6 +732,8 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 硬件配置: LTDC @0x5A001000, ker_ck=PLL4_Q(74.25MHz), 720p60 (1650×750, HSW40/HBP220/HFP110, VSW5/VBP20/VFP5). 引脚: HSYNC=PI12, VSYNC=PI13, CLK=PI14, DEN=PK7, R[7:1]=PJ[6:0], R0=PI15, G[4:0]=PJ[11:7], G[7:5]=PK[2:0], B[3:0]=PJ[15:12], B[7:4]=PK[6:3] (全 AF14). SiI9022A: I2C5 (PA11/PA12 AF4), TPI 地址 0x72, 设备 ID=0xB0, HDMI_RST=PA13.
 
+分辨率档位: `DisplayHdmiInit(tim, sii, res)` 按 DisplayRes_t 参数化 — 720p60 (AVI VIC=4) / 1080p30 (VIC=20, 总 2200×1125, 刷新率 74.25M/2200/1125 = 30.00Hz)。LTDC 像素时钟上限 90MHz (datasheet)，1080p60 需 148.5MHz 不可达；1080p30/25/24 同为 74.25MHz 可行，PLL4 无需改动，只换时序/VIC/帧缓冲。`DisplayHdmiVideoStart(sii, vm, avi_vic)` 统一视频模式+AVI InfoFrame+D0+TMDS 使能启动流程。
+
 ### 基本功能
 
 | 测试项 | 状态 | 说明 |
@@ -748,6 +751,56 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 显示器识别 | 通过 | 识别为 1280×720@60Hz (4K 显示器整屏缩放显示) |
 | 实际输出验证 | 通过 | 色条满屏正常; 引脚 DE 有效占比实测 73.1% ≈ 720/750 = 74.5% |
 
+### 测试 2: UART 图片流 (RGB888 零转换)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 帧协议扩展 (FRAME_CMD_IMG_DATA 0x11) | 通过 | PC 发原始像素字节, LTDC 图层选 RGB888 直显 |
+| 内存字节序 (RGB888 = BGR) | 通过 | LTDC 内存序 @+0=B (docs/ltdc_overview.md), 与 BMP24 原生匹配; PC 端 Pillow 加载后一次 R/B 对调, 固件零像素转换 |
+| tools/img_sender.py | 通过 | 任意格式 (JPG/PNG/BMP) 加载, 非目标尺寸自动缩放 (--width/--height), 帧协议流式发送 |
+| 460800 baud DMA RX 边收边显 | 通过 | DMA RX 环形缓冲 + FramePoll 处理, 传输中实时显示 |
+
+### 测试 3: 板载幻灯片 (6 张图案 500ms 轮播)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 固件自生成 6 图案 | 通过 | 彩虹条/对角渐变/棋盘格/纯色/几何图形/同心圆环 (手写整数开方, 不用 libm) |
+| VBlank 零拷贝切换 | 通过 | SRCR.VBR 重载图层 fb 指针, 无撕裂 |
+| 轮播定时 | 通过 | TIM6 PSC=63999 → CNT 1kHz (STGEN 安全世界不可访问), 应用层只用驱动接口 |
+| 看门狗喂狗 | 通过 | 6 个 SlideGen* 循环内每行 IwdgKickDog, 轮播不再复位 |
+
+### 测试 4: 串口打字器 1080p30 (16x16 汉字 + 8x16 ASCII)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 字库生成管线 | 通过 | tools/font_gen.py 从宋体 simsun.ttc 渲染 16×16 单色点阵 → source/font_gbk16.c/.h (生成物, 换字体/加字重跑脚本, 勿手改) |
+| GB2312 全字库 | 通过 | 87 区×94 位 (7445 字, 261,696B), 空字位补零, GBK16_INDEX(区码,位码) 直接查表 |
+| ASCII 8×16 半宽 | 通过 | 256 项 (4,096B), 超宽字符 BOX 滤波缩放 |
+| 文本引擎 | 通过 | 光标/换行/退格/清屏/满屏上滚, 白字黑底; 尺寸驱动 TxtScreenSet(fb,w,h,bpp) 绑定缓冲+清屏 (bpp=3/4 支持 ARGB 透明底) |
+| FRAME_CMD_TXT_DATA 0x12 | 通过 | 载荷为 GB2312 字节流, UTF-8→GB2312 在 PC 端 (tools/typewriter.py, /clr 清屏 /quit 返回菜单) |
+| 1080p30 显示效果 | 通过 | 4K 显示器点对点, 16px 字 2× 上采样, 锯齿较 720p (3×) 明显减少 |
+
+### 测试 5: HDMI 1080p30 图片 (UART 真图)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 1080p30 时序 | 通过 | 总 2200×1125 (HSW44/HBP148/HFP88, VSW5/VBP36/VFP4), CEA-861 VIC 20, 刷新率 74.25M/2200/1125 = 30.00Hz |
+| FHD 帧缓冲 | 通过 | g_fhd_fb 6,220,800B (1920×1080×3) 32B 对齐, 图层 RGB888 全屏 |
+| 参数化初始化 | 通过 | DisplayHdmiInit(DISP_RES_1080P30) + DisplayHdmiVideoStart(AVI_VIC_1080P30), 与 720p60 共用流程 |
+| UART 收真图 | 通过 | 64000000 源时钟分频 UsartSetBaud, 460800 baud 边收边显, BACK/'0' 返回菜单 |
+
+### 测试 6: 双图层 (照片 + 文字条 + BCR 背景色)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 背景色 BCCR | 通过 | 深蓝 0x3030A0 打底, 四边露出; BCCR 非影子寄存器, 直接生效; DisplayHdmiInit 默认 0x000000, 测试内改 tim.bg_rgb888 后重调 LtdcInit |
+| 图层窗口 (LxWHPCR/LxWVPCR) | 通过 | Layer1 照片 1280×720 居中 (320,180)-(1599,899) RGB888, 复用 g_img_fb 2.7MB; Layer2 文字条 1280×160 (320,740)-(1599,899) 贴照片底部, ARGB8888 0.8MB |
+| 逐像素 alpha 混合 | 通过 | 混合顺序固定 BG→Layer1→Layer2; Layer2 BF1=逐像素×常量, BF2=1-逐像素×常量 (常量 255): 白字 0xFFFFFFFF 不透明/底全 0 透明, 照片上浮字 |
+| 启动占位背景 | 通过 | SlideGenGradient 预填照片层, UART 图片 (img_sender 默认 1280×720, 无需参数) 流入后覆盖 |
+| 文本引擎 bpp 参数化 | 通过 | TxtScreenSet(fb,w,h,bpp): 绘制/换行/上滚/退格全部按 g_txt_bpp; ARGB 白字 4 字节全 0xFF, 字节序无关; 测试 4 改传 3 无回归 |
+| 内存占用 | 通过 | 2.7MB + 0.8MB = 3.5MB, 对比全屏 ARGB 叠层 8.3MB 省 4.8MB |
+| 上板验证 | 通过 | img_sender 发图 → typewriter 打字: 照片上浮字 + 四边露底色正常 |
+
 ### 已知问题/修复记录
 
 | 问题 | 原因 | 修复 |
@@ -759,6 +812,7 @@ SdmmcPowerOn (400kHz, 1-bit)
 | AVI InfoFrame VIC 码错误 | VIC 写成 0x10 (1080p60), 实际 720p60 应为 4 | VIC=4 |
 | HDMI/DVI 模式未设 | SYS_CTRL bit0 未置位 → DVI 模式, AVI InfoFrame 不发送 | SYS_CTRL 写 0x01 开启 HDMI 模式 |
 | EDID 读取未实现 | I2C 驱动缺陷 (BSF 忙检查静默返回/NACK 无 STOP/无超时等待), 0x50 事务卡死整板 | 暂缓, 待 I2C 驱动修复 |
+| 幻灯片轮播整板复位 | MPU 未配时钟跑 24MHz HSI, Rings 生成 (92 万次开方) 约 6s > IWDG2 10s 窗口 → 看门狗复位 | 6 个 SlideGen* 生成循环内每行 IwdgKickDog (720 次/图, 开销可忽略), 轮播正常 |
 
 ### 排查思路 1: LTDC 寄存器无法读写 → 时钟源选错 (PLL4_P vs PLL4_Q)
 
