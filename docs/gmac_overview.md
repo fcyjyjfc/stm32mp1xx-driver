@@ -346,3 +346,303 @@ MAC 负责以太网协议处理：发送 = 从 MTL 取数据传给 PHY 接口；
 支持最多两个 VLAN 标签（内层/外层）处理：
 - Tx：插入/替换/删除最多两个 VLAN 标签
 - Rx：基于任一个标签过滤和剥离；剥离最多两个标签并随接收状态提供
+
+#### Tx 路径特性 (Table 495)
+
+| 特性 | 描述 |
+|------|------|
+| C-VLAN 和 S-VLAN 标签类型 | 内/外层标签可为 C-VLAN 或 S-VLAN，类型分别由 ETH_MACVIR.CSVL 和 ETH_MACIVIR 指定；支持任意内/外层序列，但不支持 "外层 C-VLAN + 内层 S-VLAN" 序列；MAC 不检查包中 VLAN 序列合法性，应用必须保证正确序列 |
+| VLAN 标签删除 | 通过 ETH_MACVIR/ETH_MACIVIR 的 VLC 字段使能内或外层标签删除；只有单标签时视为外层标签，若仅使能内层删除则单标签包不删除 |
+| VLAN 标签插入/替换 | 通过 VLC 字段使能内或外层插入/替换；由前一寄存器的 VLTI 位决定标签取自寄存器还是控制字 |
+
+#### Rx 路径特性 (Table 496)
+
+- 基于外层或内层 VLAN 标签过滤：ETH_MACVTR.ERIVLT
+- 基于 C-VLAN 或 S-VLAN 类型过滤：ETH_MACVTR.ERSVLM
+- 剥离外层/内层 VLAN 标签：ETH_MACVTR.EVLS / EIVLS
+- Rx 状态中提供 16 位外/内层 VLAN 标签与类型：ETH_MACVTR.EVLRXS / EIVLRXS
+- 禁用/跳过外层 VLAN 标签类型检查：ETH_MACVTR.DOVLTC
+
+### 63.5.2 源地址和 VLAN 插入、替换或删除
+
+#### 源地址 (SA) 插入或替换
+
+- 插入：将 MAC 地址寄存器内容填入 SA 字段（发送包中不得带 SA 字段）
+- 替换：用 MAC 地址寄存器内容替换 SA 字段（发送包中必须带 SA 字段，替换 DA 之后的六个字节）
+- 对所有包使能：编程 ETH_MACCR.SARC 字段
+- 对选择性包使能：在包的首个发送描述符 TDES3 的 SA 插入控制字段 (bits[25:23]) 中编程；TDES3 位 25=1 用 MAC 地址 1 寄存器，=0 用 MAC 地址 0 寄存器
+- MAC 地址 1 寄存器未使能时，无论该位如何，一律使用 MAC 地址 0 寄存器
+
+#### VLAN 插入、替换或删除
+
+- 删除：删去 VLAN Type 和 VLAN Tag 字段
+- 插入/替换：按 ETH_MACVIR.VLTI 位决定（Table 497）：
+
+| 条件 | 描述 |
+|------|------|
+| VLTI=1 | 插入/替换 VLAN Type 字段 (CSVL 指定 C/S-VLAN) + 标签取自包发送上下文描述符的 VT 字段 |
+| VLTI=0 | 插入/替换 VLAN Type 字段 + 标签取自 ETH_MACVIR.VLT 字段 |
+
+- 替换或删除时 MAC 会检查发送包 DA/SA 后两字节是否为 VLAN Type (0x8100 或 0x88A8)，未检测到则不执行；插入时不检查，直接插入
+- 对所有包使能：编程 ETH_MACVIR 的 VLC/VLP 字段；对选择性包使能：编程 TDES2 的 VTIR 字段，且 ETH_MACVIR/ETH_MACIVIR 的 VLP 位必须复位
+
+### 63.5.3 包过滤
+
+支持三类过滤，可级联：
+- MAC 源/目的地址过滤：地址过滤模块 (AFM) 检查每包 SA/DA
+- VLAN 过滤：VLAN 标签过滤 + VLAN Hash 过滤
+- L3/L4 过滤：IP 源/目的地址过滤、TCP/UDP 源/目的端口过滤
+
+过滤顺序 (Figure 777)：以太网 DA/SA 过滤 → VLAN 过滤 → IP 过滤 → TCP/UDP 过滤 → 通过则交付主机，任一失败则丢弃
+- 未使能的过滤器被旁路，后续过滤器继续应用
+- 被丢弃的包可按寄存器控制转发给主机：ETH_MACPFR.RA=1 时所有丢弃包均转发给主机（状态字指示具体哪个过滤器失败）；RA=0 时由 VTFE/IPFE 位控制 VLAN 过滤和 L3/L4 过滤失败的包是否丢弃或转发
+
+#### MAC 源或目的地址过滤
+
+单播 DA 过滤：
+- 完美过滤 (HUC=0，默认)：支持 4 个 MAC 地址，比较接收单播地址全部 48 位，任一匹配即通过；MacAddr0 始终使能，MacAddr1-3 各自有位使能
+- 逐字节掩码：ETH_MACAxHR 的掩码字节控制位可使对应字节不参与比较（用于组地址过滤）
+- Hash 过滤 (HUC=1)：64 位 Hash 表非完美过滤，取接收 DA 的 CRC 高 6 位索引 Hash 表寄存器位 0-63，对应位=1 则通过
+
+多播 DA 过滤：
+- ETH_MACPFR.PM=1 时放行所有多播包
+- PM=0 时由 HMC 位决定：完美模式用 MAC 地址寄存器比较（支持组地址过滤）；Hash 模式用 64 位 Hash 表（CRC 高 6 位索引）
+
+Hash 或完美过滤 (HPF)：同时置 HPF 和 HUC/HMC 位时，DA 匹配任一过滤器即通过；HPF=0 时只应用其中一种
+
+广播地址过滤：默认不过滤广播包；置 ETH_MACPFR.DBF 拒绝所有广播包
+
+单播 SA 过滤：
+- 默认将 SA 与寄存器值比较；置 ETH_MACAxHR 位 30 后该寄存器改为与 SA 比较
+- 支持按字节掩码的组过滤
+- ETH_MACPFR.SAF=1 时丢弃 SA 过滤失败的包（此时 SA/DA 过滤结果相与决定去留）；否则 SA 过滤结果只作为接收状态字中的状态位 (Table 499)
+
+#### 反向过滤
+
+- 置 ETH_MACPFR.DAIF 反转 DA 过滤最终结果（单播/多播均适用）；置 SAIF 反转 SA 过滤结果
+
+#### DA/SA 过滤总结 (Table 498, Table 499)
+
+DA 过滤 (Table 498)，PR=混杂模式 (Promiscuous)，X=任意值：
+
+| 包类型 | PR | HPF | HUC | DAIF | HMC | PM | DBF | DA 过滤操作 |
+|--------|----|----|-----|------|-----|----|-----|-------------|
+| 广播 | 1 | X | X | X | X | X | X | 通过 |
+| 广播 | 0 | X | X | X | X | X | 0 | 通过 |
+| 广播 | 0 | X | X | X | X | X | 1 | 丢弃 |
+| 单播 | 1 | X | X | X | X | X | X | 通过全部 |
+| 单播 | 0 | X | 0 | 0 | X | X | X | 完美/组过滤匹配则通过 |
+| 单播 | 0 | X | 0 | 1 | X | X | X | 完美/组过滤匹配则丢弃 |
+| 单播 | 0 | 0 | 1 | 0 | X | X | X | Hash 匹配则通过 |
+| 单播 | 0 | 0 | 1 | 1 | X | X | X | Hash 匹配则丢弃 |
+| 单播 | 0 | 1 | 1 | 0 | X | X | X | Hash 或完美/组匹配则通过 |
+| 单播 | 0 | 1 | 1 | 1 | X | X | X | Hash 或完美/组匹配则丢弃 |
+| 多播 | 1 | X | X | X | X | X | X | 通过全部 |
+| 多播 | X | X | X | X | X | 1 | X | 通过全部 |
+| 多播 | 0 | X | X | 0 | 0 | 0 | X | 完美/组过滤匹配则通过 (PCF=0x 时丢弃 Pause 包) |
+| 多播 | 0 | 0 | X | 0 | 1 | 0 | X | Hash 匹配则通过 (同上) |
+| 多播 | 0 | 1 | X | 0 | 1 | 0 | X | Hash 或完美/组匹配则通过 (同上) |
+| 多播 | 0 | X | X | 1 | 0 | 0 | X | 完美/组过滤匹配则丢弃 (同上) |
+| 多播 | 0 | 0 | X | 1 | 1 | 0 | X | Hash 匹配则丢弃 (同上) |
+| 多播 | 0 | 1 | X | 1 | 1 | 0 | X | Hash 或完美/组匹配则丢弃 (同上) |
+
+SA 过滤 (Table 499)，PR=1 时全部通过：
+
+| PR | SAIF | SAF | SA 过滤操作 |
+|----|------|-----|-------------|
+| 1 | X | X | 通过全部 |
+| 0 | 0 | 0 | 完美/组过滤匹配则给出通过状态，但不丢弃失败的包 |
+| 0 | 1 | 0 | 匹配则给出失败状态，不丢包 |
+| 0 | 0 | 1 | 匹配则通过，丢弃失败的包 |
+| 0 | 1 | 1 | 匹配则丢弃，失败也丢弃 |
+
+RA=1 时所有包都转发给系统，地址过滤结果正确反映在 Rx 状态中。
+
+#### VLAN 过滤
+
+完美过滤：
+- 比较接收包 VLAN 标签（按配置比较低 12 位或全部 16 位）提供 VLAN 匹配状态；不匹配的 VLAN 包被丢弃
+- ETH_MACVTR.VTIM 使能反向匹配；ESVL 使能在默认 C-VLAN 外同时匹配 S-VLAN 包
+- VLAN 匹配状态由 RDES0 位 10 (VLAN 包状态位) 指示
+- 源/目的地址过滤优先于 VLAN 过滤：DA/SA 过滤失败的包直接丢弃，无论 VLAN 过滤结果
+
+Hash 过滤：
+- ETH_MACVTR.VTHM=1 使能；取 VLAN 标签 CRC-32 的最高 4 位索引 ETH_MACVHTR (16 位 VLAN Hash 表)，对应位=1 则通过
+- CRC 计算使用 16 位还是 12 位标签由 ETH_MACVTR.ETV 决定：ETV=0 时 CRC 高 4 位取反后索引；ETV=1 时直接索引
+- 完美与 Hash 同时使能时任一匹配即算匹配；反向匹配模式下两者都失配才转发
+
+特殊规则 (Table 500)：
+- ETH_MACVTR.VL 字段编程为 0 时 (VID=0)，所有 VLAN 包视为完美匹配
+- RA=1 时所有包都接收，VLAN 匹配状态在 RDES2.VF 位；RA=0 且 ETH_MACPFR.VTFE=1 时最终状态为失配的包被丢弃
+
+#### Layer 3 和 Layer 4 过滤
+
+- L3 过滤 = IPv4/IPv6 包 IP 源/目的地址过滤；L4 过滤 = TCP/UDP 源/目的端口过滤
+- 使能 L3/L4 过滤会自动使能 Rx IPC 完整校验和卸载引擎，必须置 ETH_MACCR.IPC
+- 匹配包：转发并带状态（须 IPC=1）；多个过滤器同时匹配时只给最低编号过滤器 (Filter 0 最低) 的状态
+- 不匹配包：丢弃；支持反向匹配（阻断特定 TCP/UDP over IP 字段、转发其余）；aborted/部分包在 MTL Rx FIFO 丢弃——若 Rx FIFO 为阈值 (cut-through) 模式且阈值很小，应用可能收到带 abort 状态的部分包
+- 非 TCP/UDP 的 IP 包默认旁路不过滤，可编程为丢弃
+- DA/SA 与 VLAN 过滤优先于 L3/L4 过滤
+
+L3 过滤：
+- IP 源/目的地址完美或反向匹配；可比较全部位或掩码低位
+- IPv6：寄存器组后 4 个数据寄存器放 128 位源/目的地址（按 IPv6 规范字节序，首字节在寄存器高字节）
+- IPv4：寄存器组第 2/3 个数据寄存器放 32 位源/目的地址，其余 2 个保留
+
+L4 过滤：
+- TCP 或 UDP 同时只能编程一种；第一个数据寄存器低 16 位为源端口、高 16 位为目的端口（首字节在寄存器高字节）
+
+寄存器组：两组独立过滤寄存器
+- 组 0：ETH_MACL3L4C0R + ETH_MACL4A0R + ETH_MACL3A00R/A10R/A20R/A30R
+- 组 1：ETH_MACL3L4C1R + ETH_MACL4A1R + ETH_MACL3A01R/A11R/A21R/A31R
+
+### 63.5.4 IEEE 1588 时间戳支持
+
+IEEE 1588 定义精密时间协议 (PTP)，通过局域网（支持多播消息，如以太网）实现测量与控制系统中时钟的精确同步，异构系统同步精度可达亚微秒级。本章节包含：
+- IEEE 1588 系统时间源
+- IEEE 1588 辅助快照
+- 灵活秒脉冲 (PPS) 输出
+- PTP 时间戳卸载功能
+- One-step 时间戳
+
+#### 特性与版本支持
+
+- 支持 IEEE 1588-2002 (v1，PTP over UDP/IP) 和 IEEE 1588-2008 (v2，PTP over Ethernet)，两者可编程选择
+- 可选快照范围：全部包或仅 PTP 包、仅事件消息、按时钟类型 (普通/边界/E2E 透明/P2P 透明)、可选节点作主或从
+- 识别直接经以太网发送的 PTP 消息类型、版本和载荷并给出状态
+- 可选亚秒时间以数字或二进制格式测量
+- 同一时刻只能对 v1 或 v2 之一打快照：ETH_MACTSCR.TSVER2ENA 选择版本 + 快照模式
+
+#### 时钟类型
+
+- 普通时钟 (Ordinary clock)：单端口、单 PTP 状态；可作 grandmaster 或 slave；维护时间戳数据组
+  - 快照消息 (Table 501)：Master 对 Delay_Req 打快照；Slave 对 SYNC 打快照
+- 边界时钟 (Boundary clock)：多个物理端口；同步/主从层级/信令消息终止在本时钟协议引擎内不转发；数据集和本地时钟为所有端口共享
+- 端到端透明时钟 (E2E TC)：像普通桥/路由器一样转发所有消息；SYNC 的驻留时间 (residence time，入口到出口耗时) 写入对应 Follow_Up 包的修正字段，Delay_Req 的驻留时间写入对应 Delay_Resp 包；入口和出口都需打快照 (Table 502: SYNC、Delay_Req)；ETH_MACTSCR.SNAPTYPSEL=10
+- 对等透明时钟 (P2P TC)：链路延迟基于与对端的 Pdelay_Req/Pdelay_Resp/Pdelay_Resp_Follow_Up 交换计算；Pdelay_Req 与 Pdelay_Resp 的驻留时间之和写入对应 Pdelay_Resp_Follow_Up 的修正字段 (Table 503: SYNC、Pdelay_Req、Pdelay_Resp)；ETH_MACTSCR.SNAPTYPSEL=11
+
+#### 延迟请求-响应机制 (Figure 778)
+
+主从同步流程：
+1. Master 广播 Sync 消息，离开主机系统时刻 t1 被捕获 (在 GMII/MII 接口处)
+2. Slave 接收 Sync 并捕获精确到达时刻 t2
+3. Master 发 Follow_up 消息携带 t1
+4. Slave 发 Delay_Req 消息并记录离开接口时刻 t3
+5. Master 接收 Delay_Req 并捕获进入时刻 t4
+6. Master 经 Delay_Resp 消息把 t4 发给 Slave
+7. Slave 用 t1/t2/t3/t4 四个值同步本地时钟
+
+PTP 大部分实现是 UDP 层之上的软件；硬件的作用仅在包进出 GMII/MII 接口的瞬间捕获精确时间并返回给软件——这是高精度同步的关键。
+
+#### 对等透明时钟 P2P 消息支持 (Figure 779)
+
+P2P TC 传播延迟计算流程：
+1. Port 1 发出 Pdelay_Req 并生成时间戳 t1
+2. Port 2 接收 Pdelay_Req 生成 t2
+3. Port 2 尽快回复 Pdelay_Resp 并生成 t3 (减少两端口频率偏移误差)；t2-t3 差值可放在 Pdelay_Resp 或 Pdelay_Resp_Follow_Up 中，或两个时间戳分开放
+4. Port 1 接收 Pdelay_Resp 生成 t4
+5. Port 1 用四个时间戳计算平均链路延迟
+
+#### 时间戳修正
+
+- 按 IEEE 1588 规范，时间戳应在消息时间戳点（SFD 八位组后紧随的八位组的第一个比特前沿）越过节点与网络边界时捕获
+- MAC 实际在内部某点捕获，偏离真实边界，因此捕获值需修正入/出路径延迟（含 PHY 延迟）及 CDC (时钟域跨越) 采样误差
+
+入向 (Ingress) 修正：捕获时间戳比端口边界晚，需减去入向延迟，软件计算后写入 ETH_MACTSICNR.TSIC，由三个分量组成：
+1. PHY 外部延迟（边界点到核输入）：符合 IEEE 802.3 Clause 45 的 PHY 可从 MMD 寄存器读最大/最小延迟取平均；否则查 PHY 数据手册
+2. 核内部延迟（输入到内部捕获点）：随 PHY 接口和速率而变 (Table 504)
+3. CDC 同步误差：约为 PTP 时钟周期 (clk_ptp_ref_i) 的两倍
+
+写入值必须为负 (二进制补码)：TSCTRLSSR=1 (纳秒十进制格式) 时位 31=1、位 [30:0] 写 "10^9 - 总修正值"，如 -5 ns 写 0xBB9A C9FB；TSCTRLSSR=0 (二进制格式, 粒度 ~0.466 ns) 时写 "2^31 - 总修正值"
+
+出向 (Egress) 修正：捕获时间戳比端口边界早，需补偿出向延迟，写入 ETH_MACTSECNR，三个分量：
+1. PHY 外部延迟（核输出到端口与网络边界）
+2. 核内部延迟（捕获点到核输出）(Table 504)
+3. CDC 同步补偿：EGRESS_SYNC_CORR = (1 - PTP_CLK_PER + 4 x TX_CLK_PER)
+
+Table 504 各 PHY 接口延迟 (ns)：
+
+| PHY 接口 | Egress 延迟 | Ingress 延迟 |
+|----------|-------------|--------------|
+| RGMII 1 Gbps | 12 | 12 |
+| RGMII 100 Mbps | 40 | 40 |
+| RGMII 10 Mbps | 400 | 400 |
+| RMII 100 Mbps | 40 | 120 |
+| RMII 10 Mbps | 400 | 800 |
+
+#### 参考时间时钟 (clk_ptp_ref_i) 频率范围
+
+- 时间戳跨异步时钟域传输，两次连续捕获间至少间隔 4 个 GMII/MII 时钟周期 + 3 个 PTP 时钟周期；间隔不足时第二个包不打快照
+- 最大频率：受参考时间分辨率限制 (100 MHz 时 10 ns)，频率越高同步精度越好
+- 最小频率：由连续两个 SFD 间的最小间隔决定：3 x PTP 周期 + 4 x GMII/MII 周期 <= 最小 SFD 间隔 (Table 505)，1000 Mbps 全双工下最小 PTP 频率 5 MHz，半双工 (碰撞 JAM 场景) 18.75 MHz
+
+#### PTP 消息识别 (Table 506/507/508)
+
+MAC 通过匹配以太网载荷特定字段来识别 PTP 包类型并控制打快照，三种封装方式：
+
+IPv4 over UDP (Table 507)：
+- MAC 包类型 (12,13 字节)：0x0800 IPv4
+- IP 版本/头部长度 (14 字节)：0x45；L4 协议 (23 字节)：0x11 UDP
+- IP 多播地址 (30-33 字节)：v1 用 224.0.1.129/130/131/132 (0xE0,0x00,0x01,0x81-0x84)，v2 主多播 224.0.1.129、Pdelay 多播 224.0.0.107 (0xE0,0x00,0x00,0x6B)
+- UDP 目的端口 (36,37 字节)：0x013F 事件消息、0x0140 普通消息
+- v1 控制字段 (74 字节)：0x00 SYNC / 0x01 Delay_Req / 0x02 Follow_Up / 0x03 Delay_Resp / 0x04 Management
+- v2 消息类型字段 (42 字节低半字节)：0x0 SYNC / 0x1 Delay_Req / 0x2 Pdelay_Req / 0x3 Pdelay_Resp / 0x8 Follow_Up / 0x9 Delay_Resp / 0xA Pdelay_Resp_Follow_Up / 0xB Announce / 0xC Signaling / 0xD Management
+- v2 版本字段 (43 字节低半字节)：0x1 或 0x2
+
+IPv6 over UDP (Table 508)：
+- MAC 包类型 (12,13 字节)：0x86DD IPv6；IP 版本 (14 字节高半字节)：0x6；L4 协议 (20 字节)：0x11 UDP
+- PTP 多播地址 (38-53 字节)：FF0x::181 主多播、FF02::6B Pdelay 多播
+- UDP 目的端口 (56,57 字节)：0x013F/0x0140
+
+PTP 消息头格式 (IEEE 1588-2008, Table 506)：transportSpecific + messageType (偏移 0)、versionPTP (1)、messageLength (2)、domainNumber (4)、flagField (5)、correctionField (8)、sourcePortIdentity (10)、sequenceId (20)、controlField (v1 用, 30)、logMessageInterval (33)
+
+IPv6 续 (Table 508)：v1 控制字段 (94 字节)、v2 消息类型 (62 字节低半字节)、v2 版本 (63 字节低半字节)
+
+以太网直接封装 (Table 509，不用 IP/UDP)：
+- MAC 目的多播地址 (0-5 字节)：01-1B-19-00-00-00 或 01-80-C2-00-00-0E (IEEE 1588-2008 Annex F；01-80-C2 地址不用于 v1)
+- MAC 包类型 (12,13 字节)：0x88F7 PTP
+- v1 控制字段 (46 字节)；v2 消息类型 (14/15 字节半字节)、版本 (15 字节)
+- 置 ETH_MACTSCR.TSENMACADDR 时也匹配编程在 MAC 地址 0-31 中的单播 DA
+
+#### 收发路径打戳功能
+
+Tx 路径：
+- 包 SFD 在 GMII/MII 接口发出的瞬间捕获时间戳
+- 逐包控制：发送描述符 (63.10.3) 中的控制位标记该包是否要打戳——MAC 不分析发送包识别 PTP，由软件指定
+- 64 位时间戳写回对应发送描述符的 TDES0 (低 32 位) 和 TDES1
+
+Rx 路径：
+- 可编程为对所有接收包打戳，或识别有效 PTP 消息后打戳，选项 (ETH_MACTSCR)：全部包 / v1 或 v2 / 直接以太网或 UDP-IP 封装 / IPv4 或 IPv6 / 仅事件消息 (SYNC、Delay_Req、Pdelay_Req、Pdelay_Resp) / 节点作 master 或 slave 并选快照类型
+- 支持带 VLAN 标签的 PTP 消息
+- 打戳消息组合由 SNAPTYPSEL/TSMSTRENA/TSEVNTENA 决定 (Table 510)：
+
+| SNAPTYPSEL | TSMSTRENA | TSEVNTENA | 打快照的 PTP 消息 |
+|------------|-----------|-----------|-------------------|
+| 00 | X | 0 | SYNC、Follow_Up、Delay_Req、Delay_Resp |
+| 00 | 0 | 1 | SYNC |
+| 00 | 1 | 1 | Delay_Req |
+| 01 | X | 0 | SYNC、Follow_Up、Delay_Req、Delay_Resp、Pdelay_Req、Pdelay_Resp、Pdelay_Resp_Follow_Up |
+| 01 | 0 | 1 | SYNC、Pdelay_Req、Pdelay_Resp |
+| 01 | 1 | 1 | Delay_Req、Pdelay_Req、Pdelay_Resp |
+| 10 | X | X | SYNC、Delay_Req |
+| 11 | X | X | Pdelay_Req、Pdelay_Resp |
+
+- 时间戳经对应接收描述符返回：消息状态与 IPC 状态在 RDES1 扩展状态中，快照写入上下文描述符的 RDES0/RDES1 字段 (RDES0 为低 32 位)
+
+### 63.5.5 IEEE 1588 系统时间源
+
+#### 时间戳格式
+
+64 位时间戳（IEEE 1588-2002 格式，2008 为 80 位）：
+- 秒字段：UInteger48，48 位整数秒，如 2.000000001 s 的秒字段 = 0x0000 0000 0002
+- 纳秒字段：UInteger32，两种模式由 ETH_MACTSCR.TSCTRLSSR 选择：
+  - 数字翻转模式：最大值 0x3B9A C9FF (10^9-1)，到 10^9 进位给秒
+  - 二进制翻转模式：到 0x7FFF FFFF 进位，每比特精度约 0.466 ns
+
+#### 系统时间寄存器模块
+
+- 64 位 PTP 时间由参考输入时钟 clk_ptp_ref_i 驱动递增，用作收发帧打快照的时间源
+- 初始化或修正有两种方法：
+  - 粗调 (coarse)：把初始值或偏移值写入时间戳更新寄存器——初始化时直接用该值装载计数器；修正时该值被加到/减到系统时间上，单个时钟周期内完成，时间会跳变
+  - 细调 (fine)：校正从钟相对主钟的频率漂移，在一段时间内逐渐完成，不引入剧烈跳变（避免 Sync 消息间隔内时间抖动）；32 位累加器反复累加 Addend 寄存器内容 (Figure 780)，产生的算术进位脉冲用于递增系统时间计数器——累加器与加数构成高精度频率倍频/分频器
+
