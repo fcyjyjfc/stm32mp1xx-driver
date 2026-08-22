@@ -11,6 +11,8 @@
 #define FRAME_CMD_BACK      0x02
 #define FRAME_CMD_ECHO      0x03
 #define FRAME_CMD_PCM_DATA  0x10
+#define FRAME_CMD_IMG_DATA  0x11
+#define FRAME_CMD_TXT_DATA  0x12
 
 typedef struct {
     uint8_t cmd;
