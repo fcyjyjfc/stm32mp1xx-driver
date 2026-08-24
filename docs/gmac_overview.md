@@ -629,7 +629,7 @@ Rx 路径：
 
 - 时间戳经对应接收描述符返回：消息状态与 IPC 状态在 RDES1 扩展状态中，快照写入上下文描述符的 RDES0/RDES1 字段 (RDES0 为低 32 位)
 
-### 63.5.5 IEEE 1588 系统时间源
+#### IEEE 1588 系统时间源
 
 #### 时间戳格式
 
@@ -645,4 +645,145 @@ Rx 路径：
 - 初始化或修正有两种方法：
   - 粗调 (coarse)：把初始值或偏移值写入时间戳更新寄存器——初始化时直接用该值装载计数器；修正时该值被加到/减到系统时间上，单个时钟周期内完成，时间会跳变
   - 细调 (fine)：校正从钟相对主钟的频率漂移，在一段时间内逐渐完成，不引入剧烈跳变（避免 Sync 消息间隔内时间抖动）；32 位累加器反复累加 Addend 寄存器内容 (Figure 780)，产生的算术进位脉冲用于递增系统时间计数器——累加器与加数构成高精度频率倍频/分频器
+
+细调参数计算 (Figure 780)：
+- 系统时间更新逻辑要求 50 MHz 时钟达到 20 ns 精度；频率分频比 = 参考时钟频率 / 50 MHz
+- 例：clk_ptp_ref_i = 66 MHz，比值 66/50 = 1.32，默认加数值 = 2^32 / 1.32 = 0xC1F0 7C1F
+- 时钟漂移更低 (65 MHz) 时加数 = 2^32/1.30 = 0xC4EC 4EC4；更高 (67 MHz) 时 = 0xBF0B 7672
+- 亚秒寄存器累加的常数为 43 (20 ns 步进)
+- 初始加数 FreqCompensationValue0 = 2^32 / FreqDivisionRatio
+
+频率锁定算法（假设相邻 Sync 的 MasterToSlaveDelay 相同，几个 Sync 周期后锁定）：
+1. 第 n 次 Sync：主钟 MasterSyncTime_n 发出，从钟本地 SlaveClockTime_n 收到，算 MasterClockTime_n = MasterSyncTime_n + MasterToSlaveDelay_n
+2. 主钟计数 MasterClockCount_n = MasterClockTime_n − MasterClockTime_(n−1)
+3. 从钟计数 SlaveClockCount_n = SlaveClockTime_n − SlaveClockTime_(n−1)
+4. 计数差 ClockDiffCount_n = MasterClockTime_n − SlaveClockTime_n
+5. 频率缩放因子 FreqScaleFactor_n = (MasterClockCount_n + ClockDiffCount_n) / SlaveClockCount_n
+6. 新加数 FreqCompensationValue_n = FreqScaleFactor_n × FreqCompensationValue_(n−1)
+
+理论上一个 Sync 周期即可锁定（算法自校正），实际因网络延迟变化需多个周期。
+
+#### IEEE 1588 辅助快照
+
+- 基于外部事件（eth_ptp_trgx 边带信号上升沿，x = 1 到 4）存储系统时间快照
+- 最多 4 个辅助快照输入，最多存 4 个快照，经 FIFO 访问：ETH_MACATSSR (秒) 和 ETH_MACATSNR (纳秒) 读出；各输入快照存于同一 FIFO (仅 64 位)
+- ETH_MACTSSR 指示 FIFO 顶部是哪个输入的快照；存好快照时产生中断通知应用
+- FIFO 满时再触发则不写入，置 ATSSTM (快照触发丢失) 标志；读出后腾出空间
+- ETH_MACACR.ATSFC 清空 FIFO；FIFO 中快照数量在 ETH_MACTSSR bits[27:25]
+
+#### 灵活秒脉冲输出 (PPS)
+
+ETH_PPS_OUT / eth_ptp_pps_out 输出支持固定或灵活模式，默认固定模式（一秒一个脉冲）：
+
+固定模式 (ETH_MACPPSCR.PPSEN0=0)：
+- 所有 PPS 输出由 PPSCTRL_PPSCMD 字段控制，不支持单独控制每个输出
+- 只能通过 PPSCTRL0 字段改变 PPS 输出频率
+- ETH_MACPPSTTSR/PPSTTNR 仅用于产生目标时间到达中断，不用于 PPS 输出
+- TRGTMODSEL0/1/2/3 必须编程为 0
+
+灵活模式 (PPSEN0=1)：
+- 软件可编程脉冲的启动/停止时间、宽度和间隔
+- 启动/停止时间：ETH_MACPPSTTSR (秒) + ETH_MACPPSTTNR (纳秒)
+- 宽度和间隔：ETH_MACPPSWR / ETH_MACPPSIR，以系统时间亚秒增量值的个数为单位
+- 可编程单个脉冲起点、脉冲串的起止点（64 位系统时间）；停止时间可提前编程（早于先前开始时间到达前）
+- 宽度/间隔范围 1 到 2^32-1 个亚秒增量单位；例：PTP 参考时钟 50 MHz 时，宽度 40 ns 写 2、间隔 100 ns 写 5（单位 = 20 ns）；参考时钟越快，粒度越细
+- 先编宽度和间隔，再发触发脉冲/脉冲串的命令
+- 重新编程开始/停止时间仅可在前值同步到 PTP 时钟域后（ETH_MACPPSTTNR 位 31 指示同步完成）
+- 已过期的开始/停止时间：MAC 置错误状态位并产生 Target Time Reached 中断；仅未过期时可取消请求（过期后取消无效）
+- 建议编程超前的系统时间以保证正确输出
+
+#### PTP 时间戳卸载功能 (PTP offload)
+
+- 使 MAC 作为 PTP 网络中特定节点时自动生成 PTP 包：可周期生成、由主机软件触发，或收到特定 PTP 消息后自动应答——卸载部分 PTP 节点功能，精度更高、响应延迟更低
+- 通过 ETH_MACPOCR 选择；80 位 PTP 节点身份由 ETH_MACSPI0R/SPI1R/SPI2R 配置
+- 消息生成条件 (Table 511)：
+
+| 编程 (SNAPTYPSEL/TSMSTRENA/TSEVNTENA) | 模式 | 生成条件 | 生成的包 |
+|----------------------------------------|------|----------|----------|
+| 00/0/1 | 普通或边界从钟 | 收到 SYNC | Delay_Req |
+| 00/0/1 | 同上 | 周期或应用触发 | SYNC、Delay_Resp、Pdelay_Req、Pdelay_Resp |
+| 00/1/1 | 普通或边界主钟 | 收到 Delay_Req | Delay_Resp |
+| 00/1/1 | 同上 | 周期或应用触发 | SYNC、Delay_Req |
+| 01/0/1 | 透明从钟 | 收到 Pdelay_Req | Pdelay_Resp |
+| 01/0/1 | 同上 | 收到 SYNC；周期或应用触发 | Delay_Req、Pdelay_Req |
+| 01/1/1 | 透明主钟 | 收到 Delay_Req | Delay_Resp |
+| 01/1/1 | 同上 | 周期或应用触发 | SYNC、Pdelay_Req |
+| 11/X/X | 对等透明钟 | 周期或应用触发；收到 Pdelay_Req | Pdelay_Req、Pdelay_Resp |
+
+- 其他编程组合对 PTP offload 无效
+- ETH_MACPOCR.DRRDIS：控制是否响应 delay request/response（按 IEEE 1588-2008 对等延迟机制钟不应生成 delay 消息，此位提供灵活性）；如透明从钟模式仅在 DRRDIS=0 时响应收到的 SYNC 生成 Delay_Req
+- 多播模型：生成的 PTP over Ethernet 包 DA 用特殊多播地址——普通消息 0x011B19000000、对等延迟机制消息 0x0180C200000E；应答收到的单播 SYNC/Delay_Req/Pdelay_Req 时，取接收包 SA 作应答包 DA
+- 收到的 PTP 消息仍全部转发给应用，Rx 状态指示该响应是否由 MAC 生成
+- 自动生成的 Pdelay_Req/Delay_Req 出向时间戳在 Tx 时间戳状态 (寄存器 + 中断) 提供
+
+额外匹配字段（除 messageType/versionPTP 外，用于确认收到的 PTP 消息类型）：
+1. domainNumber 与 CSR 编程值匹配
+2. flagField 的 twoStepFlag 检查 one-step 指示 (0b0)
+3. transportSpecific 检查 Default PTP over Ethernet (0b0000) 或 802.1AS 模式 (0b1111)（使能时）
+
+自动生成包格式：公共 PTP 消息头模板见 Table 512（同 Table 506：transportSpecific+messageType、versionPTP、messageLength、domainNumber、flagField、correctionField、sourcePortIdentity、sequenceId、controlField、logMessageInterval）
+
+生成的包头字段规则：
+- messageType 编码：SYNC 0000 / Delay_Req 0001 / Pdelay_Req 0010 / Pdelay_Resp 0011 / Delay_Resp 1001；versionPTP 恒为 2；transportSpecific：Default PTP over Ethernet 0000 或 802.1AS 0001
+- domainNumber 取自 ETH_MACPOCR；flagField：alternateMasterFlag (SYNC/Delay_Resp 为 0)、twoStepFlag (SYNC/Pdelay_Resp 为 0)、unicastFlag (多播 0 / 单播 1)
+- sourcePortIdentity 取自 ETH_MACSPI0R/1R/2R
+- sequenceId：Pdelay_Resp/Delay_Resp 沿用收到的 Pdelay_Req/Delay_Req 的 sequenceId；SYNC/Delay_Req、Pdelay_Req 各自独立计数器，每生成发送一次 +1
+- logMessageInterval：SYNC 用 ETH_MACLMIR 的 logSyncInterval；Delay_Resp 用 DRSYNCR + logSyncInterval (多播) 或 0x7F (单播)；Delay_Req/Pdelay_Req/Pdelay_Resp 为 0x7F
+- logSyncInterval 范围 -15 到 15 (2^-15 = 32.768μs 到 2^15 秒)；Sync 间隔：N 为正时 2^N 秒，N 为负时 2^(30+N) ns (例：1 → 2 秒，-1 → 536 ms，-5 → 33.55 ms)；负值因纳秒字段非二进制性质可能轻微偏离
+- messageLength：34 字节公共头 + 消息体——SYNC/Delay_Req 为 44，Delay_Resp/Pdelay_Req/Pdelay_Resp 为 54
+- 消息特定字段：originTimestamp = SYNC/Delay_Req/Pdelay_Req 的出向时间戳；receiveTimestamp (Delay_Resp) = 对应收到的 Delay_Req 的入向时间戳；requestingPortIdentity (Delay_Resp/Pdelay_Resp) = 收到的 Delay_Req/Pdelay_Req 的 sourcePortIdentity；requestReceiptTimestamp (Pdelay_Resp) = 0
+
+#### One-step 时间戳
+
+- 识别包内偏移，在该偏移处插入应用提供的时间戳
+- Tx 时更新：PTP 头 correctionField，以及 SYNC/Delay_Req/Pdelay_Req 的 originTimestamp 字段
+- 使能：TDES3 上下文描述符位 20 (OSTC)；需更新 correctionField 时把入向时间戳放入 TSSL/TSSH 字段
+- 仅支持 PTP over Ethernet，不支持 PTP over IPv4/IPv6
+- 驻留时间/周转时间 = 出向捕获时间戳 − 入向时间戳
+- TTSE (TDES2) 独立于 OST 功能：置 TTSE 时 MAC 捕获时间戳并返回应用
+- Table 513 各模式 one-step 操作（SNAPTYPSEL/TSMSTRENA/TSEVNTENA → 每包控制 TTSE/OSTC/TTS → 处理的字段）：
+  - 00/X/0 端到端透明：Sync/Delay_Req correctionField (驻留时间 + 入/出向非对称修正)
+  - 00/0/1 普通或边界从钟：Delay_Req originTimestamp 或 correctionField (出向非对称修正)
+  - 00/1/1 普通或边界主钟：Sync originTimestamp 或 correctionField (亚纳秒修正)
+  - 01/X/0 端到端透明支持对等延迟：Sync/Pdelay_Req/Pdelay_Resp correctionField (驻留时间 + 非对称修正)
+  - 01/0/1 从钟带对等延迟或 P2P 透明：Sync correctionField、Delay_Req/Pdelay_Req originTimestamp 或 correctionField、Pdelay_Resp correctionField (周转时间)
+  - 01/1/1 主钟带对等延迟：Sync/Pdelay_Req originTimestamp 或 correctionField、Pdelay_Resp correctionField
+  - 10/X/X 端到端透明：Sync/Delay_Req correctionField (驻留时间)
+  - 11/X/X P2P 透明：Sync correctionField、Pdelay_Req originTimestamp 或 correctionField、Pdelay_Resp correctionField
+
+### 63.5.5 校验和卸载引擎 (COE)
+
+- TCP/UDP over IP 校验和：Tx 路径计算并插入校验和（减轻软件负担、提高吞吐），Rx 路径错误检测
+- Tx 每包控制：TDES3 bits[17:16] (CIC 字段)
+
+#### Tx 校验和的隐含约束
+
+- TCP/UDP/ICMP 校验和必须对完整包计算后再插入头字段 → Tx FIFO 自动以存储转发 (store-and-forward) 模式工作，即使 MAC 配置为阈值 (cut-through) 模式
+- 约束：仅对满足 Packet size < TxQSize − (PBL + 5) × 9 的包使能校验和插入（TxQSize = ETH_MTLTXQxOMR.TQS，PBL = ETH_DMACxTXCR.TxPBL）——FIFO 空间不足时 MTL 提前读包头，校验和插入会失败
+- 参考 RFC 791/793/768/792/2460/4443 (IPv4/TCP/UDP/ICMP/IPv6/ICMPv6)
+
+#### IP 头校验和引擎
+
+- 识别条件：以太网 Type = 0x0800 且 IP 版本 = 0x4；计算 16 位头校验和，忽略输入包的校验和字段并替换为计算值
+- IPv6 头无校验和字段，不改动
+- 结果状态：TDES3 写回格式位 0 (IP Header Error)——以下情况置位：
+  - IPv4：Type=0x0800 但版本 ≠ 0x4；IPv4 头长度字段 < 0x5 (20 字节)；总包长小于头长度字段值
+  - IPv6：Type=0x86DD 但版本 ≠ 0x6；包在 IPv6 头 (40 字节) 或扩展头完整接收前结束
+
+#### TCP/UDP/ICMP 校验和引擎
+
+- 处理 IPv4/IPv6 头（含扩展头）确定载荷是 TCP/UDP/ICMP，计算校验和插入对应字段，两种模式：
+  1. 不包含伪头 (pseudo-header)：假定输入包校验和字段里已有伪头，引擎把校验和字段计入计算后替换
+  2. 包含伪头：忽略校验和字段，把伪头数据计入计算后覆写
+- ICMP-over-IPv4 两种模式下校验和字段必须为 0x0000（无伪头定义），否则插入错误校验和
+- 结果状态：TDES3 写回格式位 12 (Payload Checksum Error)——包在 EOP 写入 FIFO 前就被转发给 MAC 发射机（store-and-forward 下），或包在 IP 头载荷长度字段指示的字节数前结束；包长于载荷长度时多余部分按填充字节忽略不报错；第一类错误不修改 TCP/UDP/ICMP 头，第二类错误仍插入计算值
+
+Table 514 各包类型的校验和插入能力 (摘要)：
+- 非 IPv4/IPv6 包：两者都不插
+- 普通 IPv4 + TCP/UDP/ICMP：都插；带 IP 选项 (头 > 20 字节)：都插；TCP 头带选项：都插
+- IPv4 分片包：只插 IP 头校验和，不插 TCP/UDP
+- IPv4 隧道 (IPv4-in-IPv4 / IPv6-in-IPv4)：只对 IPv4 隧道头插校验和，内层不插；IPv6 隧道：都不插
+- IPv6 各 next header 组合：仅 TCP/UDP/ICMP 或部分扩展头 (hop-by-hop、destination options、routing segment left 0) 支持载荷校验和；带认证头 (Authentication) 等不支持
+- 带 802.3ac VLAN 标签的 IPv4/IPv6：正常支持
+- 带安全特性 (封装安全载荷等) 的帧：不插载荷校验和
 
