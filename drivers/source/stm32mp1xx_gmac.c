@@ -77,7 +77,7 @@ static const uint32_t gmac_mdc_div_tab[6] = {42, 62, 16, 26, 102, 124};
  */
 int GmacSoftReset(volatile GmacRegs_t *gmac)
 {
-    uint32_t timeout = 10000;
+    uint32_t timeout = 1000000;
 
     /* SWR=1 启动复位, 硬件完成后自动清 0 */
     gmac->DMA.DMAMR |= GMAC_DMAMR_SWR;
