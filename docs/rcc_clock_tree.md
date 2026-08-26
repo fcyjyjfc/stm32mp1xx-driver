@@ -464,6 +464,59 @@ Table 56 列出各外设时钟及内核时钟选择控制位（灰色=内核时�
 
 Table 56 查阅指南：每个外设的记录包含：总线接口时钟源及最大频率、内核时钟源选项及 MUX 寄存器字段名和编码值、是否同步。用到具体外设时回头查此表。
 
+#### Ethernet 时钟分发 (pp578-579, Figure 82)
+
+**总体结构**：以太网时钟分三类——总线接口时钟（aclk/hclk6，灰色）、内核时钟 ck_ker_eth 及派生（彩色）、各使能位（MPU/MCU 各一套）。SYSCFG 块提供 ETH_SEL[2:0]（接口类型）、ETH_CLK_SEL、ETH_REF_CLK_SEL、MII_ONLY，决定时钟路径。
+
+**内核时钟 ck_ker_eth（最大 125MHz）**：
+- 源选择：ETHSRC（ETHCKSELR）= pll4_p_ck 或 pll3_q_ck（复位默认 pll4_p_ck）
+- 门控：ETHCKEN / ETHCKLPEN
+- 派生：ETH_CLK 输出引脚（25/50/125MHz 给外部 PHY 做参考）；clk_ptp_ref_i = ck_ker_eth / ETHPTPDIV（1~16，PTP 用）
+
+**RCC_ETHCKSELR 位定义**（RCC §10 寄存器描述）：
+- bit0:1 ETHSRC：0 = pll4_p_ck，1 = pll3_q_ck，最大 125MHz
+- bit4:7 ETHPTPDIV：对 ETHSRC 选源 1~16 分频 → clk_ptp_ref_i（PTP 时钟，不影响 ETH_CLK/eth_clk_fb）
+
+**AHB6 使能位号**（MP_AHB6ENSETR / MC_AHB6ENSETR）：
+- BIT7  ETHCKEN  — 内核时钟 eth_ker_ck 使能
+- BIT8  ETHTXEN  — TX 时钟路径使能（输出 GTX_CLK + clk_tx_i + clk_tx_180_i）
+- BIT9  ETHRXEN  — RX 时钟路径使能（输出 clk_rx_i + clk_rx_180_i）
+- BIT10 ETHMACEN — 总线接口时钟使能（hclk6 + aclk，寄存器访问+DMA）
+
+**SYSCFG 时钟源选择（p1096 §14.2 + SYSCFG_PMCSETR/CLRR 描述）**：
+- BIT16 ETH_CLK_SEL（仅 GMII/RGMII 有用）：0 = 外部 ETH_CLK125（PG5 输入，需 AFMux/AF11）；1 = 内部时钟（ETHCKEN 控制的 ck_ker_eth），无视 AFMux。写 0 无效果，清零用 PMCCLRR
+- BIT17 ETH_REF_CLK_SEL（RMII 50MHz 选择）：0 = 外部 ETH_RX_CLK/ETH_REF_CLK（PA1 输入，需 AFMux），可用于所有 PHY；1 = 内部时钟 ETH_CLK1（eth_clk_fb，路径 1 输出），**只能用于 RMII PHY**。写 0 无效果，清零用 PMCCLRR
+- Bits 23:21 ETH_SEL[2:0]（PHY 接口类型）：000 = GMII/MII，001 = RGMII，100 = RMII，其余保留。**必须在 ETH 处于复位期间、使能 ETH 时钟之前配置**（板级 RGMII → 001）
+- PA1 双复用：AF0 = ETH_CLK（RCC 输出，RMII 下 50MHz 参考给 PHY），AF11 = RX_CLK/REF_CLK（输入）；由 AFMux/ETH_REF_CLK_SEL 选
+- PG5 AF11 = CLK125（GMII/RGMII 的 125MHz 输入）
+- clk_tx_180_i：TX 时钟 180° 相移版（与 clk_tx_i 反相，同频），RGMII 双沿采样内部对齐用，软件不用管
+
+**三条时钟路径（RGMII 视角）**：
+1. **内核/总线**：ETHCKEN(BIT7) → ck_ker_eth；ETHMACEN(BIT10) → hclk6/aclk。ETH_CLK/eth_clk_fb 从这里出
+2. **TX**：ETH_CLK_SEL(BIT16) 选源（内部 125MHz 或 PG5 外部）→ ETH_SEL=001 → ETHTXEN(BIT8) → GTX_CLK + clk_tx_i + clk_tx_180_i
+3. **RX**：ETH_REF_CLK_SEL(BIT17) 选源（外部 PA1 或内部 eth_clk_fb，内部仅 RMII）→ ETH_SEL=001 → ETHRXEN(BIT9) → clk_rx_i + clk_rx_180_i；clk_rmii_i 同路径无独立控制位，ETHTXEN/ETHRXEN 任一使能即输出（RMII 用，图标 50MHz）
+
+**TX 时钟路径**（接口类型由 SYSCFG ETH_SEL[2:0] 决定）：
+- MII：外部 PHY 从 ETH_TX_CLK 引脚输入（2.5/25MHz）；ETH_CLK 可输出 25MHz 给 PHY
+- GMII：内部 RCC 或 ETH_CLK125 引脚（ETH_CLK_SEL 选），固定 125MHz；GTX_CLK 输出给 PHY
+- RGMII：同 GMII 源选择，频率按 mac_speed_o[1:0] 动态 2.5/25/125MHz；GTX_CLK 输出
+- RMII：内部 RCC 或 ETH_REF_CLK 引脚（ETH_REF_CLK_SEL 选），50MHz 参考，频率按 mac_speed_o[0] 动态 2.5/25MHz
+
+**RX 时钟路径**：
+- MII/GMII/RGMII：直接收 ETH_RX_CLK 引脚（MII 2.5/25MHz，GMII 125MHz，RGMII 2.5/25/125MHz）
+- RMII：不用引脚，用发送参考时钟回环 eth_clk_fb，按速率分频（÷20/÷2）得到 2.5/25MHz
+
+**mac_speed_o[1:0]**（MAC 输出给 RCC 的速率信息）：0x = 1000M，10 = 10M，11 = 100M。RGMII 用它动态切 TX 频率，RMII 用它切分频。
+
+**使能位清单**（MPU/MCU 各一套）：ETHCKEN/ETHCKLPEN（内核时钟）、ETHTXEN/ETHTXLPEN（TX）、ETHRXEN/ETHRXLPEN（RX）、ETHMACEN/ETHMACLPEN（总线 aclk/hclk6）、ETHSTPEN（CStop/Stop 保持 PAD 时钟）、ETHPTPDIV（PTP 分频）。
+
+**驱动要点**：
+- MDIO 测试最小配置：ETHMACEN（BIT10 总线）+ ETHCKEN（BIT7 内核）+ ETHTXEN（BIT8 TX 路径）；软复位完成需要 ck_ker_eth 在场
+- 使能顺序（ETH_SEL 要求）：ETH 进复位 → 配 SYSCFG ETH_SEL（RGMII=001）→ 释放复位 → 使能时钟
+- MII/GMII/RGMII 的 RX 时钟来自 PHY 引脚——软复位超时的根因常是外部 PHY 时钟不在场
+- 板级已定：接口 = RGMII（ETH_SEL=001），引脚 MDC=PC1/MDIO=PA2（AF11），GTX_CLK=PG4，CLK125=PG5，RX_CLK=PA1（AF11）
+- 待确认：ETH_CLK_SEL 选内部还是外部 125MHz（取决于 PG5 是否接 PHY 的 CLK125 输出）；ETHSRC 选哪个 PLL（pll4_p 或 pll3_q）及其频率（RGMII 需 125MHz）
+
 ### §10.4.9 时钟概念概述 (pp601-602)
 
 **外设分配**：双核系统，CPU 通过 PERxEN=1 将外设绑定到自己的域。
