@@ -281,3 +281,65 @@ int GmacMdioWrite(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_add
     }
     return 1;
 }
+
+
+/* ================================================================== */
+/*  DMA 通道与描述符环 (RM0436 63.9.4, 63.10)                           */
+/* ================================================================== */
+
+#define GMAC_TXCR_ST     (1U << 0)   /* 发送启动 */
+#define GMAC_RXCR_SR     (1U << 0)   /* 接收启动 */
+
+
+/*
+ * 停止两个 DMA 引擎 (整体复位用 GmacSoftReset, 需 link 后调用).
+ * 清 ST/SR 会记住各自停在哪一格, 重启后从原处继续.
+ */
+void GmacDmaInit(volatile GmacRegs_t *gmac)
+{
+    gmac->DMA.CH[0].TXCR &= ~GMAC_TXCR_ST;
+    gmac->DMA.CH[0].RXCR &= ~GMAC_RXCR_SR;
+}
+
+
+/*
+ * 启动接收通道
+ * @param ring      已预填的描述符数组 (地址+OWN|BUF1V|IOC 由调用者写),
+ *                  双字对齐; 本函数不改描述符内容
+ * @param count     环内描述符个数 [2..1024]
+ * @param buf_size  单缓冲字节大小, 必须为 8 的倍数 (RBSZ[14:1], 低 3 位硬件忽略)
+ *
+ * 序列 = 手册接收初始化: RXDLAR 仅停止态可写且启动命令前必须先写 →
+ * RXRLR = count-1 ("写 0x9 = 10 个") → RBSZ|SR=1 → 尾指针.
+ * 初始尾指针指向最后一个描述符: 有效窗口为 D0..D(count-2),
+ * 尾部留一格应用所有, 收包回收时由软件推进尾指针扩展窗口.
+ */
+void GmacDmaRxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                    uint32_t count, uint32_t buf_size)
+{
+    volatile EthDmaChanRegs_t *ch = &gmac->DMA.CH[0];
+
+    ch->RXCR  &= ~GMAC_RXCR_SR;
+    ch->RXDLAR = (uint32_t)ring;
+    ch->RXRLR  = ((count - 1u) & 0x3FFU);
+    ch->RXCR   = (ch->RXCR & ~(0x3FFFU << 1))
+               | (((buf_size << 1) & (0x3FFFU << 1)) | GMAC_RXCR_SR);
+    ch->RXDTPR = (uint32_t)&ring[count - 1u];
+}
+
+
+/*
+ * 启动发送通道
+ * 序列同 Rx: TXDLAR(停止态) → TXRLR = count-1 → TXPBL=8 拍 | ST=1.
+ * 包提交时机: 软件填好描述符置 OWN 后写 TXDTPR (&提交格 + 16 字节),
+ * 硬件取到 current==tail 即 Suspend 待新提交.
+ */
+void GmacDmaTxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring, uint32_t count)
+{
+    volatile EthDmaChanRegs_t *ch = &gmac->DMA.CH[0];
+
+    ch->TXCR  &= ~GMAC_TXCR_ST;
+    ch->TXDLAR = (uint32_t)ring;
+    ch->TXRLR  = ((count - 1u) & 0x3FFU);
+    ch->TXCR   = (ch->TXCR & ~(0x3FU << 16)) | (8U << 16) | GMAC_TXCR_ST;
+}

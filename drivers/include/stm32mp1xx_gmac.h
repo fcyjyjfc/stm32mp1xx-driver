@@ -267,6 +267,21 @@ typedef struct {
     uint32_t gmac_mdc_div;    /* MDC = HCLK / 该值, 取 16/26/42/62/102/124 */
 } GmacMdioCfg_t;
 
+/* ---------------------------------------------------------------- DMA 描述符 */
+
+/* 普通描述符 = 连续 16 字节 4 字 (RM0436 63.10), 位域详见 docs/gmac_desc.md */
+typedef struct {
+    volatile uint32_t DES0;   /* 预填: 缓冲1地址 / WB: VLAN 或时间戳低    */
+    volatile uint32_t DES1;   /* 预填: 缓冲2地址 / WB: 校验和过滤状态     */
+    volatile uint32_t DES2;   /* Tx: IOC|B2L|B1L    / Rx(WB): 过滤命中   */
+    volatile uint32_t DES3;   /* 双向主控字: OWN/FD/LD/长度/错误汇总      */
+} GmacDesc_t;
+
+extern void GmacDmaInit(volatile GmacRegs_t *gmac);
+extern void GmacDmaRxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                           uint32_t count, uint32_t buf_size);
+extern void GmacDmaTxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                           uint32_t count);
 
 extern int  GmacSoftReset(volatile GmacRegs_t *gmac);
 extern void GmacMacInit(volatile GmacRegs_t *gmac, const GmacMacCfg_t *cfg);
