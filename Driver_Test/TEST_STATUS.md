@@ -190,6 +190,8 @@
 | BasicTimerStart/Stop | 通过 | CEN 位单独启停，退出时自动 Stop |
 | BasicTimerClkEnable 接口 | 通过 | 驱动新增接口，PSC=63999 → CNT 1kHz；幻灯片轮播定时用（STGEN 安全世界不可访问） |
 | UIF 轮询 | 通过 | 检测 SR.0，清 UIF 后打印计数、翻转 GPIOZ6/Z7 LED |
+| UIF 清除封装 | 通过 | BasicTimerClrUif/UifGet: UIF 是 rc_w0 必须写 0 (原 SR|=1 无效), btimer/dac/irq 测试统一改走封装 |
+| BasicTimerDelayMs | 通过 | 自包含 1ms 忙等 (PSC=6399/ARR=9 @64MHz, 每次调用重配不依赖静态标志); PHY 复位/协商轮询用 |
 | 串口退出 | 通过 | 收到任意字符即停止 |
 | 主菜单入口 | 通过 | 按 8 进入 BTIMER 测试 |
 
@@ -837,3 +839,52 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 5 | 头文件注释 "DE 极性: 1=高有效" 是误读 | depol=0 → 画面正常, DE 占比实测 73.1% ≈ 720/750, DE 生成器方案废弃 |
 
 **教训**: 位语义以手册原文为准, 不能信项目内注释; 怀疑"硬件通路损坏"前, 先穷尽"配置语义"的可能性; 实测手段 (引脚采样/寄存器回读) 用于收窄矛盾, 最终收敛到唯一解释。
+
+## GMAC 以太网 (菜单 23)
+
+硬件配置: RGMII (全部 AF11), ETH ker_ck=PLL4_P(125MHz, ETHCKSELR.ETHSRC=0), MDC=PC1/MDIO=PA2 (AF11, 分频 124→MDC≈2.15MHz, IEEE ≤2.5MHz 合规), PHY=MAE0621A (ID 0x7B74/0x4411, 复位脚 PH2, strap 地址 1 配置/实测应答在 0). ETH 与 LTDC 互斥 (PLL4: P=125MHz 给 ETH 或 Q=74.25MHz 给 LTDC, 不能同时精确).
+
+三层分层: MAC MDIO 控制器 (drivers/stm32mp1xx_gmac.c) / GPIO 位冲击总线 (devices/mdio_gpio.c) / PHY 设备驱动 (devices/phy_mae0621a.c, 黑盒).
+
+### MDIO 总线 (测试 1/8)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| MDIO 控制器读 ID (测试 1) | 通过 | addr0 reg2/reg3 稳定 0x7B74/0x4411, MDC≈2.15MHz 合规 |
+| 首次读 REG2 0xFFFF 重试 | 通过 | PHY 特性 (实测复现), MaePhyReadRetry 重试×3, 对上层黑盒; GB 超时 (-1) 不重试 |
+| GPIO 位冲击读 ID (测试 8) | 通过 | 绕过控制器直读 0x7B74/0x4411, 定位故障层级 (控制器/MAC 或 PHY/硬件) |
+| 采样点 (MDC 低电平期间) | 通过 | 此 PHY 数据更新贴近上升沿, 高电平采样左移一位 (0x4411→0x8823), 改低电平采样修复 |
+| 命令阶段推挽强驱动 | 通过 | 开漏+40k 上拉 RC 上升沿 1.2µs vs MDC 位宽 1.5µs, 弱驱动 PHY 采不到命令 (全 0xFFFF) |
+| 帧末恢复 AF | 通过 | MDC/MDIO 与 MAC 共用引脚, 帧结束后恢复 AF11 还给控制器 (OTYPER/PUPDR 由下次初始化重置) |
+
+### PHY 驱动 (devices/phy_mae0621a)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| MaePhyReset | 通过 | 低脉冲 20ms + 释放 200ms (≥10/30ms 留起振余量), 引脚配置在驱动内自完成 |
+| MaePhyGetId | 通过 | reg2/reg3, 含首次读 0xFFFF 重试 |
+| MaePhyFind | 通过 | 期望地址优先, 否则扫 0~31, 命中回填 dev->phy_addr |
+| MaePhyRegRead/RegWrite | 通过 | 0xFFFF 自动重试×3; GB 超时返回 -1 |
+| MaePhyWaitAnComplete | 待实测 | 轮询 BMSR.AN_COMPLETE, 20ms 间隔 |
+| 外设隔离 | 通过 | 驱动内只调 GmacMdio*/Gpio*/BasicTimerDelayMs, 不碰 MAC PHYCSR (link/速率判定留测试层) |
+
+### 链路激活 + 收发 (测试 4/5/6/7)
+
+| 测试项 | 状态 | 说明 |
+|--------|------|------|
+| 测试 4 完整激活 | 待实测 | MaePhyFind → AN → link → SWR → MAC 配置 → DMA 环启动 |
+| 测试 5 RX 监控 (~12s) | 待实测 | 轮询 RI (rc_w1), 回显帧长/状态/头部 16 字节 |
+| 测试 6 TX 广播帧 | 待实测 | 60 字节最小帧 (dst=FF*6, ethertype 0x88B5), CPC=00 自动补 Pad+CRC, 双槽交替 |
+| 测试 7 MAC 内部回环 | 待实测 | MACCR.LM + SYSCFG 选内部 ETH_CLK 作 eth_rx_clk, 免网线验证描述符管线, 逐字节比对 |
+| GmacSoftReset | 待实测 | 需 link 后 RX_CLK 在场才完成; 无 link 必超时 (RGMII RX 时钟来自 PHY PA1) |
+
+### 已知问题/修复记录
+
+| 问题 | 原因 | 修复 |
+|------|------|------|
+| SWR 无 link 必超时 | RGMII RX_CLK 来自 PHY 引脚 (PA1), 无 link 时 PHY 不输出; 复位完成需所有激活时钟域的时钟在场 | SWR 放链路建立后 (测试 4); 超时仅警告不中止, MDIO 在 CSR 时钟域不受影响 |
+| SWR 清掉 MDC 分频 | 软复位复位 MDIOAR | 复位后重新 GmacMdioInit |
+| 位冲击高电平采样数据左移 | PHY 数据更新贴近 MDC 上升沿, 高电平期间采到"下一位" | 采样点移到 MDC 低电平期间 |
+| 位冲击命令阶段全 0xFFFF | 开漏+内部 40k 上拉 RC 上升沿 1.2µs, 弱驱动下 PHY 采不到合法命令 | 命令阶段 MDIO 推挽强驱动 |
+| 首次读 REG2 返回 0xFFFF | PHY 特性 (实测复现) | 重试×3 后稳定 0x7B74 |
+| PHY ID 与预期不符 | 最初误判为 RTL8211F (ID 0x001C/0xC843) | 实测 0x7B74/0x4411 = MAE0621A, 删除全部 RTL8211 代码 |

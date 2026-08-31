@@ -49,8 +49,17 @@ extern void BasicTimerClkEnable(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerStart(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerStop(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerUg(volatile BasicTimerRegs_t *const tim_reg);
+extern void BasicTimerClrUif(volatile BasicTimerRegs_t *const tim_reg);
+extern uint32_t BasicTimerUifGet(volatile BasicTimerRegs_t *const tim_reg);
 extern uint32_t BasicTimerCnt(volatile BasicTimerRegs_t *const tim_reg);
 extern void BasicTimerInit(void);
+
+/**
+ * @brief   毫秒级忙等延时 (自包含: 每次调用重配定时器, 幂等)
+ * @param   tim_reg  定时器 (TIM6/TIM7)
+ * @param   ms       延时毫秒数
+ */
+extern void BasicTimerDelayMs(volatile BasicTimerRegs_t *const tim_reg, uint32_t ms);
 
 /* TRGO 主模式选择（CR2.MMS[2:0]）*/
 typedef enum {

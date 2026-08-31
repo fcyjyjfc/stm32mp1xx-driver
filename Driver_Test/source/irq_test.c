@@ -22,7 +22,7 @@ static volatile uint32_t tim6_irq_cnt = 0;
 
 static void tim6_isr(void)
 {
-    TIM6->SR &= ~1;
+    BasicTimerClrUif(TIM6);
     tim6_irq_cnt++;
     GpioToggle(GPIO_Z, 6);
 }
@@ -226,7 +226,7 @@ static void IrqTest_ExtiBoth(void)
 
 static void tim6_low_isr(void)
 {
-    TIM6->SR &= ~1;
+    BasicTimerClrUif(TIM6);
     GpioOutHi(GPIO_Z, 6);
     PRINT("[");                                     /* 进入低优先级 ISR */
 
@@ -240,7 +240,7 @@ static void tim6_low_isr(void)
 
 static void tim7_high_isr(void)
 {
-    TIM7->SR &= ~1;
+    BasicTimerClrUif(TIM7);
     GpioToggle(GPIO_Z, 7);
     PRINT("!");                                     /* 高优先级抢断 */
 }

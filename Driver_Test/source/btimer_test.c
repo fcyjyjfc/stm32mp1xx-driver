@@ -13,7 +13,7 @@ static volatile uint32_t tim6_irq_cnt = 0;          /* TIM6 中断计数 */
 
 static void tim6_isr(void)
 {
-    TIM6->SR &= ~1;                                 /* 清 UIF */
+    BasicTimerClrUif(TIM6);                         /* 清 UIF */
     tim6_irq_cnt++;                                 /* 计数 +1 */
     GpioToggle(GPIO_Z, 6);                          /* 翻转 LED */
 }
@@ -118,9 +118,9 @@ void BtimerTest(void)
         IwdgKickDog(IWDG2);
 
         // 检查 UIF（SR bit0）
-        if (TIM6->SR & 1)
+        if (BasicTimerUifGet(TIM6))
         {
-            TIM6->SR = 0;   // 清 UIF
+            BasicTimerClrUif(TIM6);
             cnt++;
 
             // 打印计数
@@ -143,9 +143,9 @@ void BtimerTest(void)
             GpioToggle(GPIO_Z, 6);
         }
 
-        if (TIM7->SR & 1)
+        if (BasicTimerUifGet(TIM7))
 		{
-			TIM7->SR = 0;   // 清 UIF
+			BasicTimerClrUif(TIM7);
 			cnt2++;
 
 			// 打印计数

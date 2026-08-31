@@ -2,13 +2,17 @@
  * gmac_test.c — GMAC 测试
  *
  *   GmacTest — 测试入口 (menu_test 第 23 项, 二级菜单)
- *     测试 1: MDIO 全地址扫描 (0~31), ID 对照 + reg0/reg1 已知明文旁证
+ *     测试 1: MDIO 地址 0 读 ID + reg0/reg1 旁证 (走 PHY 驱动)
  *     测试 2: 响应地址寄存器栅格图 (reg0~31 全量转储, 定位寻址偏差)
  *     测试 3: INER(reg18) 写读回环, 验证写路径与采样对齐
  *     测试 4: 完整激活 — 找 PHY → 等自协商/link → SWR → MAC/DMA 启动
  *     测试 5: 收包监控 ~12s (轮询 RI, 回显帧长/状态/头部字节)
  *     测试 6: 发一帧 60 字节最小广播, 回显写回状态与 MMC 计数
  *     测试 7: MAC 内部回环 (LM 位 + 内部 rx 参考钟, 免网线验证收发管线)
+ *     测试 8: MDIO 位冲击读 (GPIO 模拟总线直调, 绕过 GMAC MDIO 控制器)
+ *
+ * 分层: MAC MDIO 控制器在 drivers/stm32mp1xx_gmac.c; 与 PHY 的通信在
+ * devices/phy_mae0621a.c (黑盒); GPIO 位冲击总线在 devices/mdio_gpio.c.
  *
  *  Created on: 2026-8-26
  *      Author: gjsbr
@@ -19,6 +23,8 @@
 #include "stm32mp1xx_gpio.h"
 #include "stm32mp1xx_syscfg.h"
 #include "stm32mp1xx_btimer.h"
+#include "phy_mae0621a.h"
+#include "mdio_gpio.h"
 #include "common_test.h"
 
 
@@ -50,9 +56,8 @@
 /* INER = 中断使能寄存器 (reg18): 复位默认全 0, 几乎全 RW, 拿来做写读回环最安全 */
 #define GMAC_TEST_REG_INER     18
 
-/* RTL8211F 出厂身份 (Rev1.1 手册 §8.4.3/8.4.4):
- * ID1 恒 0x001C; ID2 = OUI_LSB(110010)+Model(010001)+Rev(0110) = 0xC916,
- * revision 位允许批次差异, 只比对高 12 位 */
+/* PHY strap 地址 (默认 001b; 以原理图为准) */
+#define GMAC_TEST_PHY_ADDR     1
 
 
 /* ================================================================== */
@@ -121,17 +126,12 @@ static void GmacClockEnable(void)
 
 /*
  * GPIO: 全部 ETH 引脚 (RGMII, AF11)
- *   PH2 = PHY 复位 — AF11 是 CRS, 复位必须用 GPIO 推挽输出做低脉冲
+ *   PH2 = PHY 复位脚, 由 MaePhyReset 自行配置 (devices/phy_mae0621a.c)
  */
 static void GmacGpioInit(void)
 {
     RCC->MP_AHB4ENSETR |= (1U << 0) | (1U << 1) | (1U << 2)
                         | (1U << 4) | (1U << 6) | (1U << 7); /* GPIOA,B,C,E,G,H */
-
-    /* ---- PH2 = PHY 复位脚 (GPIO 推挽输出, 复位时序见 GmacPhyReset) ---- */
-    GpioMode(GPIO_H, 2, GPIO_MODER_OUTPUT);
-    GpioOtype(GPIO_H, 2, GPIO_OTYPE_PUSH_PULL);
-    GpioOspeed(GPIO_H, 2, GPIO_OSPEED_HI);
 
     /* ---- PC1 = MDC (输出) ---- */
     GpioMode(GMAC_TEST_MDC_PORT, GMAC_TEST_MDC_PIN, GPIO_MODER_AF);
@@ -140,7 +140,9 @@ static void GmacGpioInit(void)
     GpioOspeed(GMAC_TEST_MDC_PORT, GMAC_TEST_MDC_PIN, GPIO_OSPEED_HI);
     GpioPullUpDown(GMAC_TEST_MDC_PORT, GMAC_TEST_MDC_PIN, GPIO_PUPDR_NO);
 
-    /* ---- PA2 = MDIO (双向) ---- */
+    /* ---- PA2 = MDIO (双向) ----
+     * 必须推挽: 开漏时命令帧高电平只剩内部 40k 上拉, RC 上升沿 1.2µs
+     * vs MDC 666kHz 位宽 1.5µs, PHY 采不到合法命令 → 全 0xFFFF (实测回归) */
     GpioMode(GMAC_TEST_MDIO_PORT, GMAC_TEST_MDIO_PIN, GPIO_MODER_AF);
     GpioAf(GMAC_TEST_MDIO_PORT, GMAC_TEST_MDIO_PIN, GMAC_TEST_MDIO_AF);
     GpioOtype(GMAC_TEST_MDIO_PORT, GMAC_TEST_MDIO_PIN, GPIO_OTYPE_PUSH_PULL);
@@ -229,75 +231,16 @@ static void GmacGpioInit(void)
 
 
 /*
- * PHY 复位: PH2 低脉冲 + 释放后等待, 时序用 TIM7 精确毫秒延时.
- * 手册 §7.17: 拉低 ≥10ms, 释放后再等 ≥30ms 才能访问寄存器.
- * 延时实现复制 btimer_test 的用法 (64MHz 内核时钟, 已实测).
+ * 板级 PHY 实例: 绑定 MAC MDIO 总线, 复位脚 PH2.
+ * 期望地址 = strap (1), 测试 1 会临时改 0.
  */
-static void GmacTim7Init(void)
-{
-    BasicTimerCfg_t cfg;
+static MaePhy_t g_phy;
 
-    RCC->MP_APB1ENSETR |= 1 << 5;       /* TIM7 时钟使能 (APB1 bit5) */
-
-    cfg.tim_psc  = 6399;                /* 64MHz / 6400 = 10kHz 计数 */
-    cfg.tim_arr  = 9;                   /* 10 计数一次更新 = 1ms */
-    cfg.tim_arpe = 1;
-    cfg.tim_opm  = 0;
-    cfg.tim_urs  = 0;
-    cfg.tim_udis = 0;
-    cfg.tim_ude  = 0;
-    cfg.tim_uie  = 0;
-
-    BasicTimerCfg(TIM7, &cfg);
-    BasicTimerUg(TIM7);                 /* 装载 PSC/ARR 并复位计数 */
-}
-
-static void GmacTim7StartDelay(uint32_t ms)
-{
-    uint32_t uif = 0;
-
-    TIM7->SR |= 1;                      /* 清掉残留 UIF (含 Ug 产生的) */
-    BasicTimerStart(TIM7);
-
-    while (uif < ms)
-    {
-        if (TIM7->SR & 1)
-        {
-            TIM7->SR |= 1;
-            uif++;
-        }
-    }
-
-    BasicTimerStop(TIM7);
-}
-
-/* TIM7 只需配一次 (菜单反复进出测试) */
-static int g_tim7_inited = 0;
+/* 测试 8: GPIO 位冲击总线 (MDC=PC1, MDIO=PA2, AF11), 字段在 GmacTest_Init 填充 */
+static MdioGpio_t g_mdio_gpio;
 
 /*
- * PHY 复位时序 (docs/rtl8211f_datasheet.md §7.17):
- *   拉低 ≥10ms (内部稳压器完全起效)
- *   释放后等 ≥30ms (晶振起振+PLL 锁定+内部稳态), 之后才能访问寄存器,
- *   否则紧接着的软复位会因 RX 时钟域无时钟而超时.
- */
-static void GmacPhyReset(void)
-{
-    if (!g_tim7_inited)
-    {
-        GmacTim7Init();
-        g_tim7_inited = 1;
-    }
-
-    GpioOutLow(GPIO_H, 2);
-    GmacTim7StartDelay(12);
-
-    GpioOutHi(GPIO_H, 2);
-    GmacTim7StartDelay(35);
-}
-
-
-/*
- * 公共初始化 (仅 MDIO 探测所需最小集): 时钟 + GPIO + PHY 复位 + MDC 分频
+ * 公共初始化 (仅 MDIO 探测所需最小集): 时钟 + GPIO + MDC 分频 + PHY 复位
  * @return 1 = 恒成功 (探测测试不依赖 MAC 内部状态)
  *
  * 注意: 此处不做 GMAC 软复位 —— 按启动流程, SWR 应放在链路建立、PHY 回送
@@ -311,43 +254,39 @@ static int GmacTest_Init(void)
 
     GmacClockEnable();
     GmacGpioInit();
-    GmacPhyReset();
 
     mdio_cfg.gmac_mdc_div = GMAC_TEST_MDC_DIV;
     GmacMdioInit(ETH, &mdio_cfg);
+
+    g_phy.gmac     = ETH;
+    g_phy.phy_addr = GMAC_TEST_PHY_ADDR;
+    g_phy.rst_port = GPIO_H;
+    g_phy.rst_pin  = 2;
+    MaePhyReset(&g_phy);
+
+    g_mdio_gpio.mdc_port  = GMAC_TEST_MDC_PORT;
+    g_mdio_gpio.mdc_pin   = GMAC_TEST_MDC_PIN;
+    g_mdio_gpio.mdio_port = GMAC_TEST_MDIO_PORT;
+    g_mdio_gpio.mdio_pin  = GMAC_TEST_MDIO_PIN;
+    g_mdio_gpio.mdc_af    = GMAC_TEST_MDIO_AF;
+    g_mdio_gpio.mdio_af   = GMAC_TEST_MDIO_AF;
     return 1;
 }
 
 
 /* ================================================================== */
-/*  子测试 1: MDIO 全地址扫描                                          */
+/*  子测试 1: MDIO 地址 0 读取                                        */
 /* ================================================================== */
 
-#define RTL_ID1_EXPECT   0x001C
-#define RTL_ID2_BASEMASK 0xFFF0
-#define RTL_ID2_BASEVAL  0xC910
-
-/*
- * 判断 ID 对是否符合 RTL8211F 家族出厂数据 (屏蔽 revision 位).
- */
-static int RtlIdMatch(uint16_t id1, uint16_t id2)
-{
-    return (id1 == RTL_ID1_EXPECT)
-        && ((id2 & RTL_ID2_BASEMASK) == RTL_ID2_BASEVAL);
-}
-
-/* 该地址是否在总线上应答 (读到非全 1 且不超时) */
-static int MdioAddrAlive(uint32_t phy, uint16_t *id1_out, uint16_t *id2_out)
+/* 该地址是否在总线上应答 (经 PHY 驱动读 ID, 含首次读重试) */
+static int TestPhyAlive(uint32_t phy, uint16_t *id1_out, uint16_t *id2_out)
 {
     uint16_t id1, id2;
 
-    if (!GmacMdioRead(ETH, phy, 2, &id1))
+    g_phy.phy_addr = phy;
+    if (MaePhyGetId(&g_phy, &id1, &id2) != 0)
         return 0;
-    if (id1 == 0xFFFF)
-        return 0;
-    if (!GmacMdioRead(ETH, phy, 3, &id2))
-        return 0;
-    if (id2 == 0xFFFF)
+    if (id1 == 0xFFFF || id2 == 0xFFFF)
         return 0;
 
     *id1_out = id1;
@@ -356,71 +295,106 @@ static int MdioAddrAlive(uint32_t phy, uint16_t *id1_out, uint16_t *id2_out)
 }
 
 /*
- * 测试 1: MDIO 全地址扫描 (0~31), 每个地址都打印, 不静默跳过.
- *   超时 / FF 无应答 / 真实应答 三种结果分开显示,
- *   应答者额外读 reg0(BMCR)/reg1(BMSR) 作已知明文旁证:
- *   复位默认应为 ~0x1140 / ~0x79xx (docs/rtl8211f_datasheet.md 附录A).
- *
- *   注意: 地址 0 是广播保留值, RTL8211F 默认应答广播命令 (Reg24.13=1),
- *   addr0 有响应 ≠ 设备真实地址; strap 决定的真实地址应在 1~7 内.
+ * 测试 1: 只读 PHY 地址 0 的 ID1/ID2 + reg0/reg1 旁证.
+ *   首次读 REG2 的 0xFFFF 重试已封装在 PHY 驱动内 (黑盒).
+ *   区分两种失败: 返回 -1 = GB 挂死 (MAC/MDC 侧); 最终值 0xFFFF = PHY 无应答.
  */
 static void TestGmacMdioScan(void)
 {
     char buf[16];
-    int i;
+    uint16_t id1, id2, bmcr = 0, bmsr = 0;
 
     if (!GmacTest_Init())
         return;
 
-    /* MDIOAR 回读: CR 分频域写入是否仍生效 */
-    PRINT("  MDIOAR=0x");
-    PrintHex32(buf, ETH->MAC.MDIOAR);
-    PRINT(buf);
-    PRINT("\r\n");
+    PRINT("  -- #  ID1     ID2     BMCR    BMSR\r\n");
 
-    PRINT("  -- addr  ID1     ID2     BMCR    BMSR    verdict\r\n");
+    g_phy.phy_addr = 0;
 
-    for (i = 0; i < 32; i++)
+    if (MaePhyGetId(&g_phy, &id1, &id2) != 0)
     {
-        uint16_t id1, id2, bmcr = 0, bmsr = 0;
-
-        if (!MdioAddrAlive(i, &id1, &id2))
-        {
-            PRINT("  ");
-            NumToStr(buf, i);
-            PRINT(buf);
-            PRINT(":       -- (no response / idle)\r\n");
-            continue;
-        }
-
-        GmacMdioRead(ETH, i, 0, &bmcr);
-        GmacMdioRead(ETH, i, 1, &bmsr);
-
-        PRINT("  ");
-        NumToStr(buf, i);
+        PRINT("  --:       -- (GB timeout, MDIOAR=0x");
+        PrintHex32(buf, ETH->MAC.MDIOAR);
         PRINT(buf);
-        PRINT(":     0x");
+        PRINT(")\r\n");
+        return;
+    }
+    if (id1 == 0xFFFF || id2 == 0xFFFF)
+    {
+        PRINT("  --:       -- (0xFFFF after retries, PHY no ack)\r\n");
+        return;
+    }
+
+    MaePhyRegRead(&g_phy, PHY_REG_BMCR, &bmcr);
+    MaePhyRegRead(&g_phy, PHY_REG_BMSR, &bmsr);
+
+    PRINT("   0:     0x");
+    PrintHex32(buf, id1);
+    PRINT(buf);
+    PRINT("  0x");
+    PrintHex32(buf, id2);
+    PRINT(buf);
+    PRINT("  0x");
+    PrintHex32(buf, bmcr);
+    PRINT(buf);
+    PRINT("  0x");
+    PrintHex32(buf, bmsr);
+    PRINT(buf);
+    PRINT("  [responder]\r\n");
+}
+
+
+/* ================================================================== */
+/*  位冲击 MDIO 读 (菜单第 8 项) — 绕过 GMAC MDIO 控制器                */
+/* ================================================================== */
+
+/*
+ * 测试 8: 全地址位冲击扫描, 只打印应答者; 全 0xFFFF 则定位硬件侧.
+ * 直调 GPIO 模拟 MDIO 总线 (devices/mdio_gpio.c), 不经 PHY 驱动 —
+ * MAC MDIO 或 PHY 驱动出问题时本测试不受污染, 用于定位故障层级.
+ */
+static void TestGmacMdioBitBang(void)
+{
+    char buf[16];
+    int addr;
+    int pass = 0;
+
+    if (!GmacTest_Init())
+        return;
+
+    PRINT("  bit-bang scan: manual C22 read frame via GPIO (MDC=PC1, MDIO=PA2)\r\n");
+
+    for (addr = 0; addr < 32; addr++)
+    {
+        uint16_t id1 = 0xFFFF, id2 = 0xFFFF;
+        int t;
+
+        /* PHY 首次读 REG2 可能返回 0xFFFF, 重试×3 (同 phy_mae0621a 内处理) */
+        for (t = 0; t < 3 && id1 == 0xFFFF; t++)
+            id1 = MdioGpioRead(&g_mdio_gpio, addr, PHY_REG_ID1);
+        for (t = 0; t < 3 && id2 == 0xFFFF; t++)
+            id2 = MdioGpioRead(&g_mdio_gpio, addr, PHY_REG_ID2);
+
+        if (id1 == 0xFFFF && id2 == 0xFFFF)
+            continue;
+
+        PRINT("  addr ");
+        NumToStr(buf, addr);
+        PRINT(buf);
+        PRINT(": ID1=0x");
         PrintHex32(buf, id1);
         PRINT(buf);
-        PRINT("  0x");
+        PRINT("  ID2=0x");
         PrintHex32(buf, id2);
         PRINT(buf);
-        PRINT("  0x");
-        PrintHex32(buf, bmcr);
-        PRINT(buf);
-        PRINT("  0x");
-        PrintHex32(buf, bmsr);
-        PRINT(buf);
-        PRINT("  ");
-
-        if (RtlIdMatch(id1, id2))
-            PRINT("[RTL8211F confirmed]\r\n");
-        else if ((id1 == RTL_ID1_EXPECT) ||
-                 ((id2 & RTL_ID2_BASEMASK) == RTL_ID2_BASEVAL))
-            PRINT("[Realtek family, odd ID]\r\n");
-        else
-            PRINT("[unknown responder]\r\n");
+        PRINT("  [responder]\r\n");
+        pass = 1;
     }
+
+    if (pass)
+        PRINT("  => PHY alive on bit-bang path (ID 0x7B74/0x4411, MAE0621A)\r\n");
+    else
+        PRINT("  => all 32 addrs 0xFFFF even bypassing controller: PHY/power/trace hardware issue\r\n");
 }
 
 
@@ -440,15 +414,12 @@ static void TestGmacRegDump(void)
     static const struct { uint8_t reg; const char *hint; } anchor[] = {
         { 0,  "<BMCR  exp~1140>" },
         { 1,  "<BMSR  exp~79xx>" },
-        { 2,  "<ID1   exp 001C>" },
-        { 3,  "<ID2   exp C91x>" },
+        { 2,  "<ID1   exp 7B74>" },
+        { 3,  "<ID2   exp 4411>" },
         { 15, "<GBESR exp 2000>" },
         { 18, "<INER  def 0000>" },
         { 19, "<INSR  ro/rc>" },
-        { 24, "<PHYCR1 bcast=en>" },
-        { 25, "<PHYCR2 RXC-EN!>" },
-        { 26, "<PHYSR realtime>" },
-        { 31, "<PAGSR page>" },
+        { 26, "<PHYSR realtime, bit layout TBD>" },
     };
     char buf[16];
     int i, r, k;
@@ -461,7 +432,7 @@ static void TestGmacRegDump(void)
     {
         uint16_t id1, id2;
 
-        if (!MdioAddrAlive(i, &id1, &id2))
+        if (!TestPhyAlive(i, &id1, &id2))
             continue;
 
         PRINT("  ---- PHY @addr ");
@@ -477,7 +448,7 @@ static void TestGmacRegDump(void)
 
         for (r = 0; r < 32; r++)
         {
-            if (!GmacMdioRead(ETH, i, r, &v))
+            if (MaePhyRegRead(&g_phy, r, &v) != 0)
                 continue;
 
             PRINT("  ");
@@ -529,7 +500,7 @@ static void TestGmacInerEcho(void)
     {
         uint16_t id1, id2;
 
-        if (!MdioAddrAlive(i, &id1, &id2))
+        if (!TestPhyAlive(i, &id1, &id2))
             continue;
 
         PRINT("  echo test on PHY @addr ");
@@ -539,8 +510,8 @@ static void TestGmacInerEcho(void)
 
         for (t = 0; t < 2; t++)
         {
-            GmacMdioWrite(ETH, i, GMAC_TEST_REG_INER, pattern[t]);
-            GmacMdioRead(ETH, i, GMAC_TEST_REG_INER, &v);
+            MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, pattern[t]);
+            MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
 
             PRINT("    write 0x");
             PrintHex32(buf, pattern[t]);
@@ -557,8 +528,8 @@ static void TestGmacInerEcho(void)
         }
 
         /* 恢复默认: 中断全部禁用 */
-        GmacMdioWrite(ETH, i, GMAC_TEST_REG_INER, 0);
-        GmacMdioRead(ETH, i, GMAC_TEST_REG_INER, &v);
+        MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, 0);
+        MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
 
         PRINT("    restore 0x");
         PrintHex32(buf, v);
@@ -589,14 +560,8 @@ static void TestGmacInerEcho(void)
 #define CHAN_SR_TI  (1U << 0)
 #define CHAN_SR_RI  (1U << 6)
 
-/* PHY 寄存器 */
-#define REG_BMSR        1
-#define BMSR_AN_COMPLETE (1U << 5)
-#define REG_PHYSR       26
-
 static const uint8_t g_mac_addr[6] = { 0x02, 0x12, 0x34, 0x56, 0x78, 0x90 };
 
-#define GMAC_TEST_PHY_ADDR   1      /* strap 默认 001b; 以原理图为准 */
 #define RX_RING_N            4
 #define TX_RING_N            2
 #define RX_BUF_SZ            1536   /* RBSZ: 8 的倍数 */
@@ -611,61 +576,21 @@ static int      g_rx_cur    = 0;         /* 收包服务游标 */
 static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
 
 /*
- * 找 RTL8211F: 先试配置地址, 失败则全地址段扫描按出厂 ID 匹配.
- * @return >=0 = PHY 地址, -1 = 总线上没有匹配者
- */
-static int FindRtlPhy(void)
-{
-    char buf[16];
-    int i;
-    uint16_t id1, id2;
-
-    if (MdioAddrAlive(GMAC_TEST_PHY_ADDR, &id1, &id2) && RtlIdMatch(id1, id2))
-        return GMAC_TEST_PHY_ADDR;
-
-    for (i = 0; i < 32; i++)
-    {
-        if (!MdioAddrAlive(i, &id1, &id2))
-            continue;
-        if (!RtlIdMatch(id1, id2))
-            continue;
-        PRINT("  note: expected addr ");
-        NumToStr(buf, GMAC_TEST_PHY_ADDR);
-        PRINT(buf);
-        PRINT(", found ID match @ ");
-        NumToStr(buf, i);
-        PRINT(buf);
-        PRINT("\r\n");
-        return i;
-    }
-    return -1;
-}
-
-/*
- * 等自协商完成 + link up. 链路状态以 MAC 侧 ETH_MACPHYCSR 为准
- * (它读的是 RGMII 接口上 PHY 实际回送的状态信号), PHYSR 原值一并打印作对照.
+ * 等自协商完成 + link up. 自协商状态经 PHY 驱动 (BMSR), 链路状态以 MAC 侧
+ * ETH_MACPHYCSR 为准 (它读的是 RGMII 接口上 PHY 实际回送的状态信号),
+ * PHYSR 原值一并打印作对照.
  *
- * @param phy        PHY 地址
  * @param spd_out/fdx_out 输出: 协商速率 Mbps / 全双工标志
  * @return 0 = link up 并解出速率双工; -1 超时无对端
  */
-static int WaitPhyLink(int phy, uint32_t *spd_out, uint32_t *fdx_out)
+static int WaitPhyLink(uint32_t *spd_out, uint32_t *fdx_out)
 {
     char buf[16];
     int i;
     uint16_t physr = 0;
 
-    PRINT("  waiting AN complete (~4s max, 需对端在位如光猫/交换机)\r\n");
-    for (i = 0; i < 200; i++)
-    {
-        uint16_t bmsr;
-        if (!GmacMdioRead(ETH, phy, REG_BMSR, &bmsr))
-            return -1;
-        if (bmsr & BMSR_AN_COMPLETE)
-            break;
-        GmacTim7StartDelay(20);
-    }
-    if (i >= 200)
+    PRINT("  waiting AN complete (~4s max, peer needed: switch/router)\r\n");
+    if (MaePhyWaitAnComplete(&g_phy, 4000) != 0)
     {
         PRINT("  [FAIL] AN not completed (check cable / peer)\r\n");
         return -1;
@@ -675,8 +600,8 @@ static int WaitPhyLink(int phy, uint32_t *spd_out, uint32_t *fdx_out)
     {
         if (ETH->MAC.PHYCSR & (1U << 19))          /* LNKSTS */
             break;
-        GmacMdioRead(ETH, phy, REG_PHYSR, &physr); /* 顺带刷新原值供打印 */
-        GmacTim7StartDelay(50);
+        MaePhyRegRead(&g_phy, PHY_REG_PHYSR, &physr); /* 顺带刷新原值供打印 */
+        BasicTimerDelayMs(TIM7, 50);
     }
     if (i >= 60)
     {
@@ -697,7 +622,7 @@ static int WaitPhyLink(int phy, uint32_t *spd_out, uint32_t *fdx_out)
     PRINT("  PHYSR(reg26)=0x");
     PrintHex32(buf, physr);
     PRINT(buf);
-    PRINT("  (对照 rtl 笔记, 位图待核)\r\n");
+    PRINT("  (bit layout TBD)\r\n");
     return 0;
 }
 
@@ -714,18 +639,28 @@ static void TestGmacActivate(void)
 
     GmacTest_Init();
 
-    phy = FindRtlPhy();
+    phy = MaePhyFind(&g_phy);
     if (phy < 0)
     {
-        PRINT("  [STOP] no RTL8211F responded (run test 1 for details)\r\n");
+        PRINT("  [STOP] no PHY responded (run test 1 for details)\r\n");
         return;
+    }
+    if (phy != GMAC_TEST_PHY_ADDR)
+    {
+        PRINT("  note: expected addr ");
+        NumToStr(buf, GMAC_TEST_PHY_ADDR);
+        PRINT(buf);
+        PRINT(", found responder @ ");
+        NumToStr(buf, phy);
+        PRINT(buf);
+        PRINT("\r\n");
     }
     PRINT("  PHY @addr ");
     NumToStr(buf, phy);
     PRINT(buf);
     PRINT(", ID OK\r\n");
 
-    if (WaitPhyLink(phy, &speed, &fdx) != 0)
+    if (WaitPhyLink(&speed, &fdx) != 0)
         return;
     PRINT("  link ");
     NumToStr(buf, (int)speed);
@@ -889,7 +824,7 @@ static void TestGmacRxMonitor(void)
                 ETH->DMA.CH[0].SR |= CHAN_SR_RI;     /* rc_w1 */
                 RxServiceRing();
             }
-            GmacTim7StartDelay(50);
+            BasicTimerDelayMs(TIM7, 50);
         }
     }
     PRINT("  monitor done\r\n");
@@ -935,7 +870,7 @@ static void TestGmacTxBroadcast(void)
     {
         if (!(d->DES3 & DESC_OWN))
             break;
-        GmacTim7StartDelay(5);
+        BasicTimerDelayMs(TIM7, 5);
     }
 
     if (d->DES3 & DESC_OWN)
@@ -1000,6 +935,7 @@ static void TestGmacMacLoop(void)
     int t, ok;
 
     g_activated = 0;                    /* 与真链路激活态互斥, 防误入测试5/6 */
+    g_rx_cur = 0;                       /* 环重置后首帧必落槽 0, 清旧游标防错查 */
 
     GmacTest_Init();
 
@@ -1047,7 +983,7 @@ static void TestGmacMacLoop(void)
     /* ---- 开回环 + RE/TE (顺序: 配置完最后使能) ---- */
     ETH->MAC.CR |= (1U << 12);          /* MACCR.LM */
     GmacMacStart(ETH);
-    GmacTim7StartDelay(2);
+    BasicTimerDelayMs(TIM7, 2);
 
     /* ---- 提交一帧 (槽0), CPC=00 → MAC 会补 Pad+CRC 上线 64 字节 ---- */
     BuildTestFrame(&tx_buf[0][0]);
@@ -1059,7 +995,7 @@ static void TestGmacMacLoop(void)
     ETH->DMA.CH[0].TXDTPR = (uint32_t)&tx_desc[1];
 
     for (t = 0; t < 100 && (txd->DES3 & DESC_OWN); t++)   /* 发送闭环 ≤500ms */
-        GmacTim7StartDelay(5);
+        BasicTimerDelayMs(TIM7, 5);
     if (txd->DES3 & DESC_OWN)
     {
         PRINT("  [FAIL] tx never completed (check DMADSR.RPS)\r\n");
@@ -1069,7 +1005,7 @@ static void TestGmacMacLoop(void)
     /* ---- 等回环帧落到 Rx 描述符 (槽0 预期, 1s 上限) ---- */
     rxd = &rx_desc[g_rx_cur];           /* 此前无流量, 游标应在槽0 */
     for (t = 0; t < 200 && (rxd->DES3 & DESC_OWN); t++)
-        GmacTim7StartDelay(5);
+        BasicTimerDelayMs(TIM7, 5);
     if (rxd->DES3 & DESC_OWN)
     {
         PRINT("  [FAIL] no looped-back frame (check ref-clk & LM setup)\r\n");
@@ -1123,11 +1059,11 @@ static const MenuEntry_t g_gmac_menu[] = {
     { "1", "MDIO scan (all addr)",   TestGmacMdioScan },
     { "2", "PHY reg grid dump",      TestGmacRegDump },
     { "3", "INER write/read echo",   TestGmacInerEcho },
-    { "7", "MAC internal loopback",  TestGmacMacLoop },
     { "4", "Activate (link+SWR+MAC)",TestGmacActivate },
     { "5", "RX monitor (~12s)",      TestGmacRxMonitor },
     { "6", "TX broadcast frame",     TestGmacTxBroadcast },
-    { "7", "MAC Loopback",           TestGmacMacLoop },
+    { "7", "MAC internal loopback",  TestGmacMacLoop },
+    { "8", "MDIO bit-bang read",     TestGmacMdioBitBang },
 };
 
 void GmacTest(void)

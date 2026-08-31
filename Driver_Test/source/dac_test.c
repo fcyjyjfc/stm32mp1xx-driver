@@ -213,9 +213,9 @@ static void TestTriangle(void)
     {
         IwdgKickDog(IWDG2);
 
-        if (TIM6->SR & 1)
+        if (BasicTimerUifGet(TIM6))
         {
-            TIM6->SR = ~(uint32_t)1;
+            BasicTimerClrUif(TIM6);
             step++;
 
             /* 每 ~256 步采样一次（每周期 16 点，4 周期共 64 点） */
@@ -322,9 +322,9 @@ static void TestNoise(void)
         if (FramePoll(0))
             break;
 
-        if (TIM6->SR & 1)
+        if (BasicTimerUifGet(TIM6))
         {
-            TIM6->SR = ~(uint32_t)1;
+            BasicTimerClrUif(TIM6);
             count++;
 
             if ((count % 200) == 1)
@@ -671,8 +671,8 @@ static void TestSinCos(void)
     {
         IwdgKickDog(IWDG2);
 
-        while (!(TIM6->SR & 1));
-        TIM6->SR = ~(uint32_t)1;
+        while (!BasicTimerUifGet(TIM6));
+        BasicTimerClrUif(TIM6);
 
         if ((step % 4) == 0)
         {
