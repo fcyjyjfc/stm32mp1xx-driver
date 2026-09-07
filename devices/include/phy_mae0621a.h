@@ -19,9 +19,20 @@
 #define PHY_REG_ID1    2   /* PHY ID 高 16 位 */
 #define PHY_REG_ID2    3   /* PHY ID 低 16 位 + 版本 */
 #define PHY_REG_PHYSR  26  /* 实时状态 (位定义待查) */
+#define PHY_REG_PAGSR  31  /* 页选择 (换页窗口) */
+
+/* =================== 页面 =================== */
+#define PHY_PAGE_A43   0xA43u  /* PHY 专属页: PHYCR1/2, PHYSR, INSR */
+#define PHY_PAGE_D92   0xD92u  /* 时钟配置页 (手册未公开, 定义来自 Linux maxio 驱动) */
+
+/* =================== 页内寄存器 =================== */
+#define PHY_REG_INSR      0x1Du  /* 页 A43: 中断状态, bit5 = 操作状态 */
+#define PHY_REG_CLK_MODE  0x02u  /* 页 D92: 参考时钟模式, bit8 = 晶振/振荡器 */
 
 /* =================== 位定义 =================== */
 #define PHY_BMSR_AN_COMPLETE  (1u << 5)
+#define PHY_INSR_OP_NORMAL    (1u << 5)  /* INSR bit5: 1 = PHY 操作正常, 0 = 异常 */
+#define PHY_CLK_MODE_OSC      (1u << 8)  /* CLK_MODE bit8: 1 = 振荡器, 0 = 晶振 */
 
 /* =================== 芯片 ID =================== */
 #define MAE_PHY_ID1  0x7B74
@@ -82,6 +93,18 @@ int  MaePhyRegRead (MaePhy_t *dev, uint32_t reg, uint16_t *val);
  * @return  0 = 成功; -1 = GB 超时 (写入未生效)
  */
 int  MaePhyRegWrite(MaePhy_t *dev, uint32_t reg, uint16_t val);
+
+/**
+ * @brief   参考时钟模式初始化 (复刻 Linux maxio 驱动 clk_init, 软复位含在内)
+ * @param   dev  驱动上下文
+ * @return  0 = 完成 (时钟模式已校正); -1 = 软复位超时 (总线异常)
+ * @note    必须跟在复位之后: 软复位会把时钟模式重置回默认值.
+ *          时序: SWR → 等 bit15 清零 → 读 INSR(页 A43) bit5 → 异常则
+ *          翻转 CLK_MODE(页 D92 reg2) bit8 (晶振 ↔ 振荡器) → 恢复原页
+ *          → 延时 100ms 等 PLL 重锁. 翻转条件与方向均来自 Linux maxio
+ *          驱动 (drivers/net/phy/maxio.c), 黑盒对上层.
+ */
+int  MaePhyClkInit(MaePhy_t *dev);
 
 /**
  * @brief   等自协商完成 (轮询 BMSR.AN_COMPLETE)

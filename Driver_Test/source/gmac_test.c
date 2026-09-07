@@ -2,14 +2,12 @@
  * gmac_test.c — GMAC 测试
  *
  *   GmacTest — 测试入口 (menu_test 第 23 项, 二级菜单)
- *     测试 1: MDIO 地址 0 读 ID + reg0/reg1 旁证 (走 PHY 驱动)
- *     测试 2: 响应地址寄存器栅格图 (reg0~31 全量转储, 定位寻址偏差)
- *     测试 3: INER(reg18) 写读回环, 验证写路径与采样对齐
- *     测试 4: 完整激活 — 找 PHY → 等自协商/link → SWR → MAC/DMA 启动
- *     测试 5: 收包监控 ~12s (轮询 RI, 回显帧长/状态/头部字节)
- *     测试 6: 发一帧 60 字节最小广播, 回显写回状态与 MMC 计数
- *     测试 7: MAC 内部回环 (LM 位 + 内部 rx 参考钟, 免网线验证收发管线)
- *     测试 8: MDIO 位冲击读 (GPIO 模拟总线直调, 绕过 GMAC MDIO 控制器)
+ *     测试 1: MDIO 通信层验证 — 读 ID + 栅格图 + INER 写读回环 + 换页 (0xA43)
+ *     测试 2: 完整激活 — 找 PHY → 等自协商/link → SWR → MAC/DMA 启动
+ *     测试 3: 收包监控 ~12s (轮询 RI, 回显帧长/状态/头部字节)
+ *     测试 4: 发一帧 60 字节最小广播, 回显写回状态与 MMC 计数
+ *     测试 5: MAC 内部回环 (LM 位 + 内部 rx 参考钟, 免网线验证收发管线)
+ *     测试 6: MDIO 位冲击读 (GPIO 模拟总线直调, 绕过 GMAC MDIO 控制器)
  *
  * 分层: MAC MDIO 控制器在 drivers/stm32mp1xx_gmac.c; 与 PHY 的通信在
  * devices/phy_mae0621a.c (黑盒); GPIO 位冲击总线在 devices/mdio_gpio.c.
@@ -53,11 +51,17 @@
  * 跑显示测试时 PLL4_Q=74.25MHz 给 LTDC, P 不使能 (P/Q 整数分频无法同时精确) */
 #define GMAC_TEST_ETH_SRC      0
 
-/* INER = 中断使能寄存器 (reg18): 复位默认全 0, 几乎全 RW, 拿来做写读回环最安全 */
+/* INER = 中断使能寄存器 (reg18): 复位默认 0x0020 (bit5=1), 拿来做写读回环
+ * 实测可写位 0,2,3,4,5,7,9,10 = 0x06BD; 其余位 (1,6,8,11~15) 写入不回显,
+ * 与手册保留位一致, 判据只比对可写位 */
 #define GMAC_TEST_REG_INER     18
+#define GMAC_TEST_INER_RW_MASK 0x06BD
 
-/* PHY strap 地址 (默认 001b; 以原理图为准) */
-#define GMAC_TEST_PHY_ADDR     1
+/* PHY strap 地址: 实测应答 @0 —— Linux 侧同址 (stmmac-0:00), M4 各测试
+ * MaePhyFind 轮轮命中 0. 早期按 001b 假设成 1, 向错误地址发 MDIO 会被静默
+ * 丢弃 (读回 0xFFFF): clk_init 的 SWR 因此表现为 500ms 超时误报失败
+ * (2026-09-07 回归教训), 地址必须与硬件一致. */
+#define GMAC_TEST_PHY_ADDR     0
 
 
 /* ================================================================== */
@@ -232,15 +236,15 @@ static void GmacGpioInit(void)
 
 /*
  * 板级 PHY 实例: 绑定 MAC MDIO 总线, 复位脚 PH2.
- * 期望地址 = strap (1), 测试 1 会临时改 0.
+ * phy_addr = 板级 strap, 实测 0 (见 GMAC_TEST_PHY_ADDR 注释).
  */
 static MaePhy_t g_phy;
 
-/* 测试 8: GPIO 位冲击总线 (MDC=PC1, MDIO=PA2, AF11), 字段在 GmacTest_Init 填充 */
+/* 测试 6: GPIO 位冲击总线 (MDC=PC1, MDIO=PA2, AF11), 字段在 GmacTest_Init 填充 */
 static MdioGpio_t g_mdio_gpio;
 
 /*
- * 公共初始化 (仅 MDIO 探测所需最小集): 时钟 + GPIO + MDC 分频 + PHY 复位
+ * 公共初始化: 时钟 + GPIO + MDC 分频 + PHY 复位 + 参考时钟修复 (clk_init)
  * @return 1 = 恒成功 (探测测试不依赖 MAC 内部状态)
  *
  * 注意: 此处不做 GMAC 软复位 —— 按启动流程, SWR 应放在链路建立、PHY 回送
@@ -262,7 +266,21 @@ static int GmacTest_Init(void)
     g_phy.phy_addr = GMAC_TEST_PHY_ADDR;
     g_phy.rst_port = GPIO_H;
     g_phy.rst_pin  = 2;
+
+    /* 复位结论 (2026-09-07 修订): 引脚复位本身无害. 此前"复位后 MDI 零
+     * 输出"的真因是参考时钟模式错误 (PHY 复位后默认振荡器模式 bit8=1,
+     * 本板工作在晶振模式 bit8=0, PLL 锁不住 → AN 引擎无时钟), 与复位
+     * 无关 —— 见 MaePhyClkInit 注释. Linux 同样不复位引脚 (设备树无
+     * reset-gpios), 但 maxio 驱动在 probe 做软复位 + 时钟模式修复;
+     * 裸机等效序列在此 (紧跟复位). */
     MaePhyReset(&g_phy);
+
+    /* 时钟修复紧跟复位 (对应 Linux probe 时机): SWR 会把时钟模式重置回
+     * 错误默认, 之后再软复位会重新破坏 —— Linux phylib link-down 后同样
+     * 只重跑 config_aneg 不复跑 clk_init. 失败仅告警不中止: 探测类测试
+     * 不依赖时钟模式, 链路测试的失败会在 WaitPhyLink 的 AN 诊断里体现. */
+    if (MaePhyClkInit(&g_phy) != 0)
+        PRINT("  [WARN] PHY clk init failed (AN will not work)\r\n");
 
     g_mdio_gpio.mdc_port  = GMAC_TEST_MDC_PORT;
     g_mdio_gpio.mdc_pin   = GMAC_TEST_MDC_PIN;
@@ -275,45 +293,48 @@ static int GmacTest_Init(void)
 
 
 /* ================================================================== */
-/*  子测试 1: MDIO 地址 0 读取                                        */
+/*  子测试 1: MDIO 通信层验证 (读 ID + 栅格图 + 写读回环 + 换页)        */
 /* ================================================================== */
 
-/* 该地址是否在总线上应答 (经 PHY 驱动读 ID, 含首次读重试) */
-static int TestPhyAlive(uint32_t phy, uint16_t *id1_out, uint16_t *id2_out)
-{
-    uint16_t id1, id2;
-
-    g_phy.phy_addr = phy;
-    if (MaePhyGetId(&g_phy, &id1, &id2) != 0)
-        return 0;
-    if (id1 == 0xFFFF || id2 == 0xFFFF)
-        return 0;
-
-    *id1_out = id1;
-    *id2_out = id2;
-    return 1;
-}
-
 /*
- * 测试 1: 只读 PHY 地址 0 的 ID1/ID2 + reg0/reg1 旁证.
- *   首次读 REG2 的 0xFFFF 重试已封装在 PHY 驱动内 (黑盒).
- *   区分两种失败: 返回 -1 = GB 挂死 (MAC/MDC 侧); 最终值 0xFFFF = PHY 无应答.
+ * 测试 1: 一次性验证 MDIO 通信层四条路径, 固定地址 0 (实测 strap):
+ *   1. 读 ID (reg2/3) — 读路径 + 首次读 REG2 0xFFFF 重试 (驱动内黑盒)
+ *   2. 栅格图 reg0~18 — 寻址字段 (PB/RB) 组装, 有偏差呈"行间搬运"指纹
+ *   3. INER(reg18) 写读回环 — 写路径与采样对齐; 判据只比对可写位 0x06BD
+ *      (保留位写入不回显, 实测与手册位定义一致; INER 默认 0x0020, bit5=1)
+ *   4. 换页 — 切 0xA43 读 PHY 专属寄存器 (PHYCR1/2, PHYSR, INSR),
+ *      用完切回默认页 0xA42 并再读 ID 确认恢复
+ * 区分两种失败: -1 = GB 超时 (MAC/MDC 侧); 最终值 0xFFFF = PHY 无应答.
  */
-static void TestGmacMdioScan(void)
+static void TestGmacMdioComm(void)
 {
+    static const struct { uint8_t reg; const char *hint; } anchor[] = {
+        { 0,  "<BMCR  exp~1140>" },
+        { 0,  "<BMCR  exp~1140>" },
+        { 1,  "<BMSR  exp~79xx>" },
+        { 2,  "<ID1   exp 7B74>" },
+        { 3,  "<ID2   exp 4411>" },
+        { 15, "<GBESR exp 2000>" },
+        { 18, "<INER  def 0020 (bit5=1)>" },
+    };
+    static const uint16_t pattern[2] = { 0x55AA, 0xAA55 };
+    static const uint32_t spd_tab[3] = { 10, 100, 1000 };
     char buf[16];
-    uint16_t id1, id2, bmcr = 0, bmsr = 0;
+    int r, k, t;
+    uint16_t id1, id2, v;
+    uint16_t phycr1 = 0, phycr2 = 0, physr = 0, insr = 0;
+
+    PRINT("\r\n--- MDIO Comm Layer ---\r\n");
+    PRINT("  Read ID (reg2/3, first-read 0xFFFF retried in driver)\r\n");
+    PRINT("  Grid reg0~18, INER write/read loopback, page switch 0xA43\r\n\r\n");
 
     if (!GmacTest_Init())
         return;
 
-    PRINT("  -- #  ID1     ID2     BMCR    BMSR\r\n");
-
-    g_phy.phy_addr = 0;
-
+    /* ---- 1. 读 ID (含首次读重试, 驱动内黑盒) ---- */
     if (MaePhyGetId(&g_phy, &id1, &id2) != 0)
     {
-        PRINT("  --:       -- (GB timeout, MDIOAR=0x");
+        PRINT("  [STOP] GB timeout (MDIOAR=0x");
         PrintHex32(buf, ETH->MAC.MDIOAR);
         PRINT(buf);
         PRINT(")\r\n");
@@ -321,35 +342,132 @@ static void TestGmacMdioScan(void)
     }
     if (id1 == 0xFFFF || id2 == 0xFFFF)
     {
-        PRINT("  --:       -- (0xFFFF after retries, PHY no ack)\r\n");
+        PRINT("  [STOP] 0xFFFF after retries: PHY no ack\r\n");
         return;
     }
-
-    MaePhyRegRead(&g_phy, PHY_REG_BMCR, &bmcr);
-    MaePhyRegRead(&g_phy, PHY_REG_BMSR, &bmsr);
-
-    PRINT("   0:     0x");
+    PRINT("  ID 0x");
     PrintHex32(buf, id1);
     PRINT(buf);
-    PRINT("  0x");
+    PRINT("/0x");
     PrintHex32(buf, id2);
     PRINT(buf);
-    PRINT("  0x");
-    PrintHex32(buf, bmcr);
+    PRINT("  (MAE0621A)\r\n");
+
+    /* ---- 2. 栅格图 reg0~18 (默认页 0xA42 可读部分) ---- */
+    PRINT("  reg grid (page 0xA42, 0~18):\r\n");
+    for (r = 0; r <= 18; r++)
+    {
+        if (MaePhyRegRead(&g_phy, r, &v) != 0)
+            continue;
+
+        PRINT("    reg ");
+        if (r < 10)
+            PRINT("0");
+        NumToStr(buf, r);
+        PRINT(buf);
+        PRINT(": 0x");
+        PrintHex32(buf, v);
+        PRINT(buf);
+
+        for (k = 0; k < (int)(sizeof(anchor) / sizeof(anchor[0])); k++)
+        {
+            if (anchor[k].reg == r)
+            {
+                PRINT("  ");
+                PRINT(anchor[k].hint);
+            }
+        }
+        PRINT("\r\n");
+    }
+
+    /* ---- 3. INER 写读回环 (写路径 + 采样对齐) ---- */
+    for (t = 0; t < 2; t++)
+    {
+        MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, pattern[t]);
+        MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
+
+        PRINT("  INER write 0x");
+        PrintHex32(buf, pattern[t]);
+        PRINT(buf);
+        PRINT(" -> read 0x");
+        PrintHex32(buf, v);
+        PRINT(buf);
+        /* 判据只比对可写位: 保留位写入不回显 (与手册一致), 全值相等必 MISMATCH */
+        if (((v ^ pattern[t]) & GMAC_TEST_INER_RW_MASK) == 0)
+            PRINT("  [OK] (writable bits matched, reserved 1/6/8/11-15 dropped)\r\n");
+        else
+        {
+            PRINT("  [MISMATCH] diff on writable bits=0x");
+            PrintHex32(buf, (v ^ pattern[t]) & GMAC_TEST_INER_RW_MASK);
+            PRINT(buf);
+            PRINT("\r\n");
+        }
+    }
+    MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, 0);   /* 恢复: 中断全禁 */
+    MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
+    PRINT("  INER restore 0x");
+    PrintHex32(buf, v);
     PRINT(buf);
-    PRINT("  0x");
-    PrintHex32(buf, bmsr);
+    PRINT(v == 0 ? "  [OK] (all interrupts off)\r\n" : "  [FAIL]\r\n");
+
+    /* ---- 4. 换页: 0xA43 读 PHY 专属寄存器, 用完切回默认页 ---- */
+    MaePhyRegWrite(&g_phy, 31, 0x0A43);              /* PAGSR: 切到 0xA43 */
+    MaePhyRegRead(&g_phy, 24, &phycr1);
+    MaePhyRegRead(&g_phy, 25, &phycr2);
+    MaePhyRegRead(&g_phy, 26, &physr);
+    MaePhyRegRead(&g_phy, 29, &insr);
+    MaePhyRegWrite(&g_phy, 31, 0x0A42);              /* 切回默认页 (IEEE 标准寄存器) */
+
+    PRINT("  page 0xA43 regs:\r\n");
+    PRINT("    PHYCR1=0x");
+    PrintHex32(buf, phycr1);
     PRINT(buf);
-    PRINT("  [responder]\r\n");
+    PRINT("\r\n    PHYCR2=0x");
+    PrintHex32(buf, phycr2);
+    PRINT(buf);
+    PRINT("\r\n    PHYSR =0x");
+    PrintHex32(buf, physr);
+    PRINT(buf);
+
+    /* PHYSR 解码: link 实时 / speed[5:4] / duplex[3] (仅 link 时有效) */
+    {
+        uint32_t link = (physr >> 2) & 1U;
+
+        PRINT("  (link=");
+        NumToStr(buf, (int)link);
+        PRINT(buf);
+        PRINT(link ? " up" : " down");
+        if (link)
+        {
+            uint32_t spd_idx = (physr >> 4) & 3U;
+
+            PRINT(", ");
+            NumToStr(buf, (int)spd_tab[(spd_idx > 2u) ? 2u : spd_idx]);
+            PRINT(buf);
+            PRINT("Mbps ");
+            PRINT((physr & (1u << 3)) ? "FDX" : "HDX");
+        }
+        PRINT(")\r\n    INSR  =0x");
+    }
+    PrintHex32(buf, insr);
+    PRINT(buf);
+    PRINT("\r\n");
+
+    /* ---- 切回验证: 默认页读 ID 仍正常 ---- */
+    if (MaePhyGetId(&g_phy, &id1, &id2) == 0
+        && id1 != 0xFFFF && id2 != 0xFFFF)
+        PRINT("  page restored, ID re-read OK\r\n");
+    else
+        PRINT("  [FAIL] page not restored\r\n");
 }
 
 
 /* ================================================================== */
-/*  位冲击 MDIO 读 (菜单第 8 项) — 绕过 GMAC MDIO 控制器                */
+/*  位冲击 MDIO 读 (菜单第 6 项) — 绕过 GMAC MDIO 控制器                */
 /* ================================================================== */
 
 /*
- * 测试 8: 全地址位冲击扫描, 只打印应答者; 全 0xFFFF 则定位硬件侧.
+ * 测试 6: 全地址位冲击扫描, 只打印应答者; 全 0xFFFF 则定位硬件侧.
  * 直调 GPIO 模拟 MDIO 总线 (devices/mdio_gpio.c), 不经 PHY 驱动 —
  * MAC MDIO 或 PHY 驱动出问题时本测试不受污染, 用于定位故障层级.
  */
@@ -359,10 +477,12 @@ static void TestGmacMdioBitBang(void)
     int addr;
     int pass = 0;
 
+    PRINT("\r\n--- MDIO Bit-Bang ---\r\n");
+    PRINT("  Manual C22 read frame via GPIO (MDC=PC1, MDIO=PA2)\r\n");
+    PRINT("  Bypasses GMAC MDIO controller; all-0xFFFF -> PHY/power/trace issue\r\n");
+
     if (!GmacTest_Init())
         return;
-
-    PRINT("  bit-bang scan: manual C22 read frame via GPIO (MDC=PC1, MDIO=PA2)\r\n");
 
     for (addr = 0; addr < 32; addr++)
     {
@@ -398,151 +518,6 @@ static void TestGmacMdioBitBang(void)
 }
 
 
-/* ================================================================== */
-/*  子测试 2: 响应地址寄存器栅格图                                      */
-/* ================================================================== */
-
-/*
- * 测试 2: 对每个应答地址把 reg0~31 全量转储一遍.
- *   用途: 若 MDIOAR 的 PB(PHY 地址)/RB(寄存器地址)字段组装有偏差,
- *   整表会呈现"行间搬运"指纹 (读 reg N 得到别的物理寄存器),
- *   与附录 A 的复位默认值形态直接对照即可定位偏移量.
- *   锚点行带提示注解.
- */
-static void TestGmacRegDump(void)
-{
-    static const struct { uint8_t reg; const char *hint; } anchor[] = {
-        { 0,  "<BMCR  exp~1140>" },
-        { 1,  "<BMSR  exp~79xx>" },
-        { 2,  "<ID1   exp 7B74>" },
-        { 3,  "<ID2   exp 4411>" },
-        { 15, "<GBESR exp 2000>" },
-        { 18, "<INER  def 0000>" },
-        { 19, "<INSR  ro/rc>" },
-        { 26, "<PHYSR realtime, bit layout TBD>" },
-    };
-    char buf[16];
-    int i, r, k;
-    uint16_t v;
-
-    if (!GmacTest_Init())
-        return;
-
-    for (i = 0; i < 32; i++)
-    {
-        uint16_t id1, id2;
-
-        if (!TestPhyAlive(i, &id1, &id2))
-            continue;
-
-        PRINT("  ---- PHY @addr ");
-        NumToStr(buf, i);
-        PRINT(buf);
-        PRINT("  ID 0x");
-        PrintHex32(buf, id1);
-        PRINT(buf);
-        PRINT("/0x");
-        PrintHex32(buf, id2);
-        PRINT(buf);
-        PRINT(" ----\r\n");
-
-        for (r = 0; r < 32; r++)
-        {
-            if (MaePhyRegRead(&g_phy, r, &v) != 0)
-                continue;
-
-            PRINT("  ");
-            if (r < 10)
-                PRINT(" ");
-            NumToStr(buf, r);
-            PRINT(buf);
-            PRINT(": 0x");
-            PrintHex32(buf, v);
-            PRINT(buf);
-
-            for (k = 0; k < (int)(sizeof(anchor) / sizeof(anchor[0])); k++)
-            {
-                if (anchor[k].reg == r)
-                {
-                    PRINT("  ");
-                    PRINT(anchor[k].hint);
-                }
-            }
-
-            PRINT("\r\n");
-        }
-    }
-}
-
-
-/* ================================================================== */
-/*  子测试 3: INER 写读回环                                             */
-/* ================================================================== */
-
-/*
- * 测试 3: INER(reg18) 写读回环, 验证写路径与采样对齐.
- *   选 INER 当小白鼠: 默认全 0, 几乎全域 RW, 写错顶多误开中断且最后恢复.
- *   判据: 两个异构模式都能原样回显 => 读写双向 OK, 问题只剩身份判定;
- *         回显有规律变形 => 写路径/TA 采样有问题.
- */
-static void TestGmacInerEcho(void)
-{
-    char buf[16];
-    int i;
-    int t;
-    uint16_t v;
-    const uint16_t pattern[2] = { 0x55AA, 0xAA55 };
-
-    if (!GmacTest_Init())
-        return;
-
-    for (i = 0; i < 32; i++)
-    {
-        uint16_t id1, id2;
-
-        if (!TestPhyAlive(i, &id1, &id2))
-            continue;
-
-        PRINT("  echo test on PHY @addr ");
-        NumToStr(buf, i);
-        PRINT(buf);
-        PRINT("\r\n");
-
-        for (t = 0; t < 2; t++)
-        {
-            MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, pattern[t]);
-            MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
-
-            PRINT("    write 0x");
-            PrintHex32(buf, pattern[t]);
-            PRINT(buf);
-            PRINT(" -> read 0x");
-            PrintHex32(buf, v);
-            PRINT(buf);
-            PRINT("  ");
-
-            if (v == pattern[t])
-                PRINT("[OK]\r\n");
-            else
-                PRINT("[MISMATCH]\r\n");
-        }
-
-        /* 恢复默认: 中断全部禁用 */
-        MaePhyRegWrite(&g_phy, GMAC_TEST_REG_INER, 0);
-        MaePhyRegRead(&g_phy, GMAC_TEST_REG_INER, &v);
-
-        PRINT("    restore 0x");
-        PrintHex32(buf, v);
-        PRINT(buf);
-        if (v == 0)
-            PRINT(" [OK]\r\n");
-        else
-            PRINT(" [FAIL]\r\n");
-        return;
-    }
-
-    PRINT("  no responder found\r\n");
-}
 
 
 /* ================================================================== */
@@ -577,8 +552,9 @@ static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
 
 /*
  * 等自协商完成 + link up. 自协商状态经 PHY 驱动 (BMSR), 链路状态以 MAC 侧
- * ETH_MACPHYCSR 为准 (它读的是 RGMII 接口上 PHY 实际回送的状态信号),
- * PHYSR 原值一并打印作对照.
+ * ETH_MACPHYCSR 为准 (它读的是 RGMII 接口上 PHY 实际回送的状态信号).
+ * 流程: 只读观测自主 AN (时钟修复已在 Init 完成) → 未完成则显式广告 +
+ * 重启 AN (3 轮 × 5s) → MAC PHYCSR 轮询.
  *
  * @param spd_out/fdx_out 输出: 协商速率 Mbps / 全双工标志
  * @return 0 = link up 并解出速率双工; -1 超时无对端
@@ -586,21 +562,178 @@ static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
 static int WaitPhyLink(uint32_t *spd_out, uint32_t *fdx_out)
 {
     char buf[16];
+    int an_done = 0;
     int i;
-    uint16_t physr = 0;
 
-    PRINT("  waiting AN complete (~4s max, peer needed: switch/router)\r\n");
-    if (MaePhyWaitAnComplete(&g_phy, 4000) != 0)
+    PRINT("  AN phase: observe autonomous (read-only), else explicit-advert replica\r\n");
+    /* ---- 只读轮询: 观测复位后自主 AN (手册 BMCR 注 3: 复位后 AN 自动重启) ----
+     * 全程不写寄存器. 参考时钟修复已由 GmacTest_Init 内的 MaePhyClkInit
+     * 完成 (紧跟复位, 对应 Linux probe 时机), 此阶段 AN 引擎已有正确
+     * 时钟, 理论上可自主完成 —— 完成则跳过下方显式广告复刻; 否则落下
+     * 复刻路径做对照. 注意 BMSR.5 非锁存, 实时反映协商状态. */
     {
-        PRINT("  [FAIL] AN not completed (check cable / peer)\r\n");
-        return -1;
+        uint16_t bmsr = 0, anlpar = 0, aner = 0;
+        uint16_t lb = 0xFFFF, lp = 0xFFFF, le = 0xFFFF;  /* 已打印值, 检测变化 */
+        uint32_t ticks = 0;
+
+        PRINT("  observe autonomous AN (read-only, up to 10s):\r\n");
+        while (ticks < 40)
+        {
+            IwdgKickDog(IWDG2);
+            if (MaePhyRegRead(&g_phy, PHY_REG_BMSR, &bmsr) != 0)
+            {
+                /* GB 超时 = 总线异常, 观测无意义, 落回复刻路径看诊断 */
+                PRINT("  [WARN] MDIO fault during observe, fall back\r\n");
+                break;
+            }
+            MaePhyRegRead(&g_phy, 5, &anlpar);           /* ANLPAR */
+            MaePhyRegRead(&g_phy, 6, &aner);             /* ANER: bit0 LP_AN_ABLE 旁证 */
+
+            /* 只在状态变化时打印 (首行基线 + 每个转折点): 逐 250ms 刷屏是
+             * 排查时钟 bug 的产物, 成功路径已无必要; 静默失败态由完成
+             * 超时行 + 复刻路径诊断覆盖 */
+            if (bmsr != lb || anlpar != lp || aner != le || ticks == 0)
+            {
+                PRINT("  t=");
+                NumToStr(buf, (int)(ticks * 250));
+                PRINT(buf);
+                PRINT("ms BMSR=0x");
+                PrintHex32(buf, bmsr);
+                PRINT(buf);
+                PRINT(" ANLPAR=0x");
+                PrintHex32(buf, anlpar);
+                PRINT(buf);
+                PRINT(" ANER=0x");
+                PrintHex32(buf, aner);
+                PRINT(buf);
+                PRINT("\r\n");
+                lb = bmsr;
+                lp = anlpar;
+                le = aner;
+            }
+
+            if (bmsr & PHY_BMSR_AN_COMPLETE)
+            {
+                an_done = 1;
+                break;
+            }
+            BasicTimerDelayMs(TIM7, 250);
+            ticks++;
+        }
+        if (an_done)
+        {
+            PRINT("  autonomous AN complete at ~");
+            NumToStr(buf, (int)(ticks * 250));
+            PRINT(buf);
+            PRINT("ms -> skip replica (post-reset defaults advertise 1G FDX)\r\n");
+        }
+        else
+            PRINT("  no autonomous AN -> run explicit-advert replica\r\n");
+    }
+
+    if (!an_done)
+    {
+        /* Linux 序列复刻后半段 (2026-09-07 修订): 前半段 clk_init 已前移到
+         * GmacTest_Init (紧跟复位, 对应 Linux probe 时机; 根因背景见
+         * MaePhyClkInit 注释). 此处复刻 phylib config_aneg: 显式写
+         * ANAR/GBCR 再置 ANE|ANRESTART. 注意此处不再软复位 —— SWR 会把
+         * 时钟模式重置回错误默认, 而修复只在复位后跑一次 (Linux phylib
+         * link-down 后同样只重跑 config_aneg 不重跑 clk_init). */
+        {
+            uint16_t bmcr_v, pag_v, insr_v, clk_v;
+
+            /* 诊断回读: 修复后的操作状态与时钟模式 (bit5=1 正常, bit8=1 振荡器) */
+            MaePhyRegRead(&g_phy, PHY_REG_PAGSR, &pag_v);
+            MaePhyRegWrite(&g_phy, PHY_REG_PAGSR, PHY_PAGE_A43);
+            MaePhyRegRead(&g_phy, PHY_REG_INSR, &insr_v);
+            MaePhyRegWrite(&g_phy, PHY_REG_PAGSR, PHY_PAGE_D92);
+            MaePhyRegRead(&g_phy, PHY_REG_CLK_MODE, &clk_v);
+            MaePhyRegWrite(&g_phy, PHY_REG_PAGSR, pag_v);
+            PRINT("  INSR=0x");
+            PrintHex32(buf, insr_v);
+            PRINT(buf);
+            PRINT(" CLK_MODE=0x");
+            PrintHex32(buf, clk_v);
+            PRINT(buf);
+            PRINT("\r\n");
+
+            /* 写探针: 上轮实验所有写入后的回读值都与默认相同, 无法区分"写入
+             * 成功"与"被静默丢弃" (此 PHY 有静默异常前科). INER(reg18) bit2
+             * 可写, 写 0x0004 回读验证写路径, 再恢复全禁. */
+            MaePhyRegWrite(&g_phy, 18, 0x0004);
+            MaePhyRegRead(&g_phy, 18, &bmcr_v);
+            PRINT(bmcr_v & 0x0004 ? "  write probe OK\r\n" : "  [WARN] write dropped?!\r\n");
+            MaePhyRegWrite(&g_phy, 18, 0x0000);
+
+            MaePhyRegWrite(&g_phy, 4, 0x01E1);              /* ANAR: 10/100 广告 */
+            MaePhyRegWrite(&g_phy, 9, 0x0200);              /* GBCR: 1000BASE-T FDX */
+            MaePhyRegWrite(&g_phy, PHY_REG_BMCR, 0x1140 | 0x0200);  /* ANE=1 + Restart_AN */
+        }
+        /* AN 等待: 3 轮 × 5s, 轮间重启 AN (Linux restart→Link Up 实测 ~4.5s,
+         * 单轮 5s 窗口太紧; 重启写 BMCR bit9, 自清零位不影响其余配置) */
+        for (i = 0; i < 3; i++)
+        {
+            IwdgKickDog(IWDG2);          /* 3 轮跨 IWDG2 超时上限, 每轮前喂狗 */
+            if (MaePhyWaitAnComplete(&g_phy, 5000) == 0)
+            {
+                an_done = 1;
+                break;
+            }
+            PRINT("  AN wait round ");
+            NumToStr(buf, i + 1);
+            PRINT(buf);
+            PRINT(" timeout\r\n");
+            if (i < 2)
+            {
+                MaePhyRegWrite(&g_phy, PHY_REG_BMCR, 0x1140 | 0x0200);
+                PRINT("  restart AN\r\n");
+            }
+        }
+        if (!an_done)
+        {
+            uint16_t bmcr, anar, anlpar, aner, gbsr;
+
+            /* 失败诊断: 判据 = ANER bit0 (LP_AN_ABLE) + ANLPAR. 全 0 且
+             * LP_AN_ABLE=0 → PHY 从未检测到对端 AN 能力 (线/对端/PHY 接收
+             * 路径问题); 对端被看到但 AN 未完成 → 时序/训练问题.
+             * GBSR(reg10) 只对 1000T 有效: 主从解析与训练状态, 恒 0 说明
+             * 1000T 训练从未开始. PAGE_RX(ANER bit1) 是读即清锁存位,
+             * 轮询读到 0 只能作旁证; bit2 是本地 NP 能力恒 1. */
+            MaePhyRegRead(&g_phy, PHY_REG_BMCR, &bmcr);
+            MaePhyRegRead(&g_phy, 4, &anar);
+            MaePhyRegRead(&g_phy, 5, &anlpar);
+            MaePhyRegRead(&g_phy, 6, &aner);
+            MaePhyRegRead(&g_phy, 10, &gbsr);
+            PRINT("  [FAIL] AN timeout after 3 rounds. BMCR=0x");
+            PrintHex32(buf, bmcr);
+            PRINT(buf);
+            PRINT(" ANAR=0x");
+            PrintHex32(buf, anar);
+            PRINT(buf);
+            PRINT("\r\n");
+            PRINT("    ANLPAR=0x");
+            PrintHex32(buf, anlpar);
+            PRINT(buf);
+            PRINT(" ANER=0x");
+            PrintHex32(buf, aner);
+            PRINT(buf);
+            PRINT(" GBSR=0x");
+            PrintHex32(buf, gbsr);
+            PRINT(buf);
+            PRINT("\r\n");
+            if (aner & 0x0001)
+                PRINT("    LP_AN_ABLE=1 -> peer seen, AN incomplete: timing/training issue\r\n");
+            else
+                PRINT("    ANLPAR=0 + LP_AN_ABLE=0 -> peer never seen: cable/peer/PHY-hw issue\r\n");
+            return -1;
+        }
     }
 
     for (i = 0; i < 60; i++)
     {
+        IwdgKickDog(IWDG2);                        /* 3s 轮询叠加 AN 等待可跨 IWDG2 上限 */
         if (ETH->MAC.PHYCSR & (1U << 19))          /* LNKSTS */
             break;
-        MaePhyRegRead(&g_phy, PHY_REG_PHYSR, &physr); /* 顺带刷新原值供打印 */
         BasicTimerDelayMs(TIM7, 50);
     }
     if (i >= 60)
@@ -619,16 +752,12 @@ static int WaitPhyLink(uint32_t *spd_out, uint32_t *fdx_out)
         *spd_out = spd_tab[(spd_idx > 2u) ? 2u : spd_idx];
     }
 
-    PRINT("  PHYSR(reg26)=0x");
-    PrintHex32(buf, physr);
-    PRINT(buf);
-    PRINT("  (bit layout TBD)\r\n");
     return 0;
 }
 
 /*
- * 测试 4: 完整激活 — 验 PHY 身份 → 等自协商/link → SWR → MAC 配置 → DMA 启动
- * 通过后链路进入可用状态, 测试 5/6 在其之上收发.
+ * 测试 2: 完整激活 — 验 PHY 身份 → 等自协商/link → SWR → MAC 配置 → DMA 启动
+ * 通过后链路进入可用状态, 测试 3/4 在其之上收发.
  */
 static void TestGmacActivate(void)
 {
@@ -636,6 +765,9 @@ static void TestGmacActivate(void)
     char buf[16];
     int phy, i;
     uint32_t speed = 1000, fdx = 1;
+
+    PRINT("\r\n--- Activate (find PHY -> AN/link -> SWR -> MAC/DMA) ---\r\n");
+    PRINT("  Needs a peer on the cable: AN only completes against switch/router\r\n");
 
     GmacTest_Init();
 
@@ -731,8 +863,8 @@ static void TestGmacActivate(void)
     PRINT(" tx=");
     PrintHex32(buf, (uint32_t)tx_desc);
     PRINT(buf);
-    PRINT("\r\n  use test 5 to watch incoming broadcast,\r\n"
-          "       test 6 to send a frame\r\n");
+    PRINT("\r\n  use menu 3 (RX monitor) to watch incoming broadcast,\r\n"
+          "       menu 4 (TX broadcast) to send a frame\r\n");
 }
 
 /*
@@ -803,22 +935,26 @@ static void RxServiceRing(void)
 }
 
 /*
- * 测试 5: 收包监控 ~12s. 理想素材 = 光猫的广播帧 (ARP/IPv6 RA 等).
+ * 测试 3: 收包监控 ~12s. 理想素材 = 光猫的广播帧 (ARP/IPv6 RA 等).
  * 轮询通道 RI 而非走中断, 免去 EXTI/GIC 配置, 与现有测试框架同构.
  */
 static void TestGmacRxMonitor(void)
 {
     if (!g_activated)
     {
-        PRINT("  run test 4 first\r\n");
+        PRINT("  run test 2 first\r\n");
         return;
     }
 
+    PRINT("\r\n--- RX Monitor ---\r\n");
+    PRINT("  Polls RI for ~12s, dumps frame len/status/head 16 bytes\r\n");
+    PRINT("  Best fed by router broadcasts (ARP / IPv6 RA)\r\n");
     PRINT("  monitoring ~12s ...\r\n");
     {
         int t;
         for (t = 0; t < 240; t++)
         {
+            IwdgKickDog(IWDG2);             /* ~12s 监控, 主循环被阻塞需自喂 */
             if (ETH->DMA.CH[0].SR & CHAN_SR_RI)
             {
                 ETH->DMA.CH[0].SR |= CHAN_SR_RI;     /* rc_w1 */
@@ -833,7 +969,7 @@ static void TestGmacRxMonitor(void)
 static void BuildTestFrame(uint8_t *f);
 
 /*
- * 测试 6: 发一帧最小以太网广播 (dst=FF*6, ethertype 0x88B5 本地实验用).
+ * 测试 4: 发一帧最小以太网广播 (dst=FF*6, ethertype 0x88B5 本地实验用).
  * 长度给 60 字节, CPC=00 让 MAC 自动补 Pad+CRC → 上线即合法最小帧.
  * 发送用双槽交替, 每次等上一槽完成再提交下一槽.
  */
@@ -846,9 +982,13 @@ static void TestGmacTxBroadcast(void)
 
     if (!g_activated)
     {
-        PRINT("  run test 4 first\r\n");
+        PRINT("  run test 2 first\r\n");
         return;
     }
+
+    PRINT("\r\n--- TX Broadcast ---\r\n");
+    PRINT("  One 60-byte minimum broadcast (dst FF*6, ethertype 0x88B5)\r\n");
+    PRINT("  CPC=00: MAC appends pad+CRC -> legal 64-byte frame on wire\r\n");
 
     s = g_tx_next;
     f = &tx_buf[s][0];
@@ -917,7 +1057,7 @@ static void BuildTestFrame(uint8_t *f)
 }
 
 /*
- * 测试 7: MAC 内部回环 (无需网线/PHY link).
+ * 测试 5: MAC 内部回环 (无需网线/PHY link).
  *
  * 原理: MACCR.LM(bit12)=1 时发送数据在 MAC 内直连接收路径, 不出 RGMII 引脚,
  * 用于验证 描述符环+DMA+MAC 组帧(CRC 补齐)+Rx 过滤 的完整管线.
@@ -934,7 +1074,11 @@ static void TestGmacMacLoop(void)
     char buf[16];
     int t, ok;
 
-    g_activated = 0;                    /* 与真链路激活态互斥, 防误入测试5/6 */
+    PRINT("\r\n--- MAC Internal Loopback ---\r\n");
+    PRINT("  MACCR.LM loops TX into RX inside MAC, no cable/PHY link needed\r\n");
+    PRINT("  Internal ETH_CLK as eth_rx_clk; TX vs RX compared byte-exact\r\n");
+
+    g_activated = 0;                    /* 与真链路激活态互斥, 防误入测试3/4 */
     g_rx_cur = 0;                       /* 环重置后首帧必落槽 0, 清旧游标防错查 */
 
     GmacTest_Init();
@@ -1056,14 +1200,12 @@ cleanup:
 /* ================================================================== */
 
 static const MenuEntry_t g_gmac_menu[] = {
-    { "1", "MDIO scan (all addr)",   TestGmacMdioScan },
-    { "2", "PHY reg grid dump",      TestGmacRegDump },
-    { "3", "INER write/read echo",   TestGmacInerEcho },
-    { "4", "Activate (link+SWR+MAC)",TestGmacActivate },
-    { "5", "RX monitor (~12s)",      TestGmacRxMonitor },
-    { "6", "TX broadcast frame",     TestGmacTxBroadcast },
-    { "7", "MAC internal loopback",  TestGmacMacLoop },
-    { "8", "MDIO bit-bang read",     TestGmacMdioBitBang },
+    { "1", "MDIO comm (id/grid/wr/page)", TestGmacMdioComm },
+    { "2", "Activate (link+SWR+MAC)",      TestGmacActivate },
+    { "3", "RX monitor (~12s)",            TestGmacRxMonitor },
+    { "4", "TX broadcast frame",           TestGmacTxBroadcast },
+    { "5", "MAC internal loopback",        TestGmacMacLoop },
+    { "6", "MDIO bit-bang read",           TestGmacMdioBitBang },
 };
 
 void GmacTest(void)

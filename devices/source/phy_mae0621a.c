@@ -65,6 +65,62 @@ void MaePhyReset(MaePhy_t *dev)
 
 
 /**
+ * @brief   参考时钟模式初始化 (复刻 Linux maxio 驱动 clk_init)
+ * @param   dev  目标 PHY
+ * @return  0 = 时钟模式已校正; -1 = 软复位超时 (总线侧问题)
+ * @note    根因背景: 此 PHY 复位后默认振荡器模式 (bit8=1), 本板工作
+ *          在晶振模式 (bit8=0; Linux 修复 printk 0x200a 与本机读回
+ *          0x200A 一致), 内部 PLL 锁不住 → PMA/AN 引擎无时钟 → 线上零
+ *          活动 (ANLPAR 恒 0, 对端看不到本机), AN 永不完成. MDIO 属
+ *          MDC 时钟域不受影响, 故 ID/寄存器读写全部正常 —— 这是裸机
+ *          与 Linux 行为差异的真因 (Linux maxio 驱动在 probe/config_init
+ *          各跑一次本流程, 裸机此前从未执行).
+ *          时序与 Linux 驱动一致: 先 SWR 再判 INSR. SWR 会把时钟模式
+ *          重置回错误默认, 修复必须跟在 SWR 之后 (Linux phylib 在
+ *          link-down 后只重跑 config_aneg 不复跑 clk_init, 故 A7 侧
+ *          软复位后 AN 同样挂死). 翻转后留 100ms 等 PLL 重锁.
+ *          INSR bit5 = PHY 操作状态 (1 正常 / 0 异常, 手册 8.4.17);
+ *          页 D92/reg2 手册未公开, 位定义来自 Linux 驱动源码.
+ */
+int MaePhyClkInit(MaePhy_t *dev)
+{
+    uint16_t bmcr_v, pag, insr, clk;
+    int i;
+
+    /* 1. SWR (Linux: BMCR_RESET | 读改写; SWR 复位全部寄存器, 直接 0x8000 等价) */
+    MaePhyRegWrite(dev, PHY_REG_BMCR, 0x8000);
+    for (i = 0; i < 100; i++)
+    {
+        if (MaePhyRegRead(dev, PHY_REG_BMCR, &bmcr_v) != 0)
+            return -1;
+        if (!(bmcr_v & 0x8000u))
+            break;
+        BasicTimerDelayMs(TIM7, 5);
+    }
+    if (i >= 100)
+        return -1;                       /* SWR 未完成, 后续判定不可信 */
+
+    /* 2. 换页读工作状态 INSR; 换页前保存 PAGSR 用后恢复 */
+    MaePhyRegRead(dev, PHY_REG_PAGSR, &pag);
+    MaePhyRegWrite(dev, PHY_REG_PAGSR, PHY_PAGE_A43);
+    MaePhyRegRead(dev, PHY_REG_INSR, &insr);
+
+    /* 3. bit5=0 (异常) → 翻转 CLK_MODE bit8 (晶振 ↔ 振荡器) */
+    if (!(insr & PHY_INSR_OP_NORMAL))
+    {
+        MaePhyRegWrite(dev, PHY_REG_PAGSR, PHY_PAGE_D92);
+        MaePhyRegRead(dev, PHY_REG_CLK_MODE, &clk);
+        MaePhyRegWrite(dev, PHY_REG_CLK_MODE, clk ^ PHY_CLK_MODE_OSC);
+    }
+
+    /* 4. 恢复原页, 留 PLL 重锁时间 */
+    MaePhyRegWrite(dev, PHY_REG_PAGSR, pag);
+    BasicTimerDelayMs(TIM7, 100);
+    return 0;
+}
+
+
+/**
  * @brief   读 PHY 身份: ID1 (reg2) + ID2 (reg3)
  * @param   dev   目标 PHY
  * @param   id1   输出: OUI 厂商代码 + 部分型号
