@@ -8,12 +8,17 @@
  *   GmacMdioInit    — MDC 分频配置
  *   GmacMdioRead    — C22 读 PHY 寄存器 (轮询)
  *   GmacMdioWrite   — C22 写 PHY 寄存器 (轮询)
+ *   GmacEthLinkUp   — 完整链路激活 (MDIO → PHY → MAC, 见下)
+ *   GmacLinkStatus  — 读 RGMII 链路状态 (PHYCSR 解码)
  *
  *  Created on: 2026-8-26
  *      Author: gjsbr
  */
 
 #include "stm32mp1xx_gmac.h"
+#include "stm32mp1xx_btimer.h"   /* BasicTimerDelayMs (链路轮询延时) */
+#include "stm32mp1xx_iwdg.h"     /* IwdgKickDog (AN 3 轮跨看门狗窗口) */
+#include "phy_mae0621a.h"        /* PHY 黑盒 (复位/时钟修复/找地址/等 AN) */
 
 
 /* ================================================================== */
@@ -59,9 +64,17 @@ volatile GmacRegs_t *const ETH = (void *)0x5800A000U;
 /* ---- DMAMR (0x1000) ---- */
 #define GMAC_DMAMR_SWR    (1U << 0)   /* 软件复位 */
 
+/* ---- ETH_MACPHYCSR (0x00F8) ---- */
+#define GMAC_PHYCSR_LNKSTS   (1U << 19)   /* RGMII link up */
+#define GMAC_PHYCSR_LNKSPEED (3U << 17)   /* [18:17]: 00=10M, 01=100M, 10=1000M */
+#define GMAC_PHYCSR_LNKMOD   (1U << 16)   /* 1 = 全双工 */
+
 
 /* MDC 分频系数 -> MACMDIOAR.CR 编码 (数组下标即编码, RM0436 Table 521) */
 static const uint32_t gmac_mdc_div_tab[6] = {42, 62, 16, 26, 102, 124};
+
+/* PHYCSR LNKSPEED 索引 -> Mbps (数组下标 = [18:17] 编码) */
+static const uint32_t gmac_lnkspeed_tab[3] = {10, 100, 1000};
 
 
 /* ================================================================== */
@@ -280,6 +293,136 @@ int GmacMdioWrite(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_add
             return 0;
     }
     return 1;
+}
+
+
+/* ================================================================== */
+/*  完整链路激活 (MDIO → PHY → MAC)                                      */
+/* ================================================================== */
+
+/**
+ * @brief  等 RGMII link up, 解出协商速率/双工
+ * @param  gmac   ETH
+ * @param  speed  输出: Mbps (10/100/1000)
+ * @param  fdx    输出: 1 = 全双工
+ * @return 1 = link up (输出有效); 0 = 超时无 link 信号
+ * @note   ETH_MACPHYCSR 是 RGMII 接口上 PHY 回送状态信号的解码, 属 MAC
+ *         侧寄存器 (PHY 驱动不碰). 必须在 GmacSoftReset 之前调用:
+ *         SWR 复位 MAC 全部寄存器, 含本寄存器.
+ *         轮询 3s (60×50ms), 期间自喂 IWDG2 (主循环被本函数阻塞).
+ */
+int GmacLinkStatus(volatile GmacRegs_t *gmac, uint32_t *speed, uint32_t *fdx)
+{
+    int i;
+
+    for (i = 0; i < 60; i++)
+    {
+        IwdgKickDog(IWDG2);                    /* 3s 轮询, 主循环被阻塞需自喂 */
+        if (gmac->MAC.PHYCSR & GMAC_PHYCSR_LNKSTS)
+            break;
+        BasicTimerDelayMs(TIM7, 50);
+    }
+    if (i >= 60)
+        return 0;
+
+    {
+        uint32_t spd_idx = (gmac->MAC.PHYCSR & GMAC_PHYCSR_LNKSPEED) >> 17;
+
+        *fdx   = (gmac->MAC.PHYCSR & GMAC_PHYCSR_LNKMOD) ? 1u : 0u;
+        *speed = gmac_lnkspeed_tab[(spd_idx > 2u) ? 2u : spd_idx];
+    }
+    return 1;
+}
+
+
+/**
+ * @brief  完整链路激活: MDIO 分频 → PHY 复位 → 时钟修复 → 找地址 →
+ *         等自协商 → 读链路 → 软复位 → MAC 按协商结果配置 → LED 显示配置
+ * @param  gmac   ETH (时钟/引脚/GPIO 由上层就绪)
+ * @param  cfg    板级参数 (分频/PHY 地址/复位脚/MAC 地址/AN 超时)
+ * @param  speed  输出: 协商速率 Mbps
+ * @param  fdx    输出: 1 = 全双工
+ * @return GMAC_ETH_LINKUP_OK 或负值错误码 (见 stm32mp1xx_gmac.h);
+ *         失败无打印, 诊断由上层按错误码展开 (驱动静默)
+ * @note   对应手册激活序列 + PHY 驱动时序, 顺序不可乱:
+ *         - 软复位需 RX_CLK 在场 (link 之后), 无 link 时提前调用必超时
+ *         - SWR 会清掉 MDC 分频与 MAC 配置, 之后必须重配
+ *         - AN: 等 SWR 触发的自主协商 (2 片 × an_timeout_ms) 优先,
+ *           超时才显式广告 + RESTART_AN 兜底 (1 片); 片间喂狗跨 IWDG2 上限
+ *         - 参考时钟修复在 PHY 复位后执行 (见 MaePhyClkInit), 与
+ *           GmacSoftReset 无关 (SWR 是 MAC 侧, 不影响 PHY 时钟模式)
+ */
+int GmacEthLinkUp(volatile GmacRegs_t *gmac, const GmacEthCfg_t *cfg,
+                  uint32_t *speed, uint32_t *fdx)
+{
+    MaePhy_t phy;
+    GmacMdioCfg_t mdio_cfg;
+    GmacMacCfg_t mac_cfg;
+    int i;
+
+    /* ---- 1. MDC 分频 (PHY 复位前配好, 复位后即可访问总线) ---- */
+    mdio_cfg.gmac_mdc_div = cfg->gmac_mdc_div;
+    GmacMdioInit(gmac, &mdio_cfg);
+
+    /* ---- 2. PHY 复位 + 参考时钟模式修复 (紧跟复位, 见 MaePhyClkInit) ---- */
+    phy.gmac     = gmac;
+    phy.phy_addr = cfg->phy_addr;
+    phy.rst_port = cfg->phy_rst_port;
+    phy.rst_pin  = cfg->phy_rst_pin;
+    MaePhyReset(&phy);
+    if (MaePhyClkInit(&phy) != 0)
+        return GMAC_ETH_LINKUP_ERR_MDIO;
+
+    /* ---- 3. 找应答的 PHY (期望地址优先, 失败扫 0~31) ---- */
+    if (MaePhyFind(&phy) < 0)
+        return GMAC_ETH_LINKUP_ERR_NOPHY;
+
+    /* ---- 4. AN 完成: 先等自主协商, 超时才显式重启兜底 ----
+     * 手册注 3: 硬件/软件复位后 AN 自动重启, 且复位默认广告含 1G FDX ——
+     * 本 PHY 上 clk_init 的 SWR 触发自主协商实测完成 (~2-4s), 而"显式写
+     * ANAR/GBCR + RESTART_AN"路径历史从未成功 (复刻 3×5s 恒超时), 故不
+     * 干扰正在运行的自主协商, 直接等待. 10s 跨 IWDG2 超时上限, 分两片
+     * 各 an_timeout_ms, 片间喂狗. */
+    IwdgKickDog(IWDG2);
+    if (MaePhyWaitAnComplete(&phy, cfg->an_timeout_ms) != 0)
+    {
+        IwdgKickDog(IWDG2);
+        if (MaePhyWaitAnComplete(&phy, cfg->an_timeout_ms) != 0)
+        {
+            /* 兜底: 显式广告 + RESTART_AN (手册注 1/2: 写广告需重启才生效) */
+            MaePhyRegWrite(&phy, PHY_REG_ANAR, MAE_PHY_ANAR_ADV);
+            MaePhyRegWrite(&phy, PHY_REG_GBCR, PHY_GBCR_1000T_FDX);
+            MaePhyRegWrite(&phy, PHY_REG_BMCR,
+                           MAE_PHY_BMCR_RESET_VAL | PHY_BMCR_RESTART_AN);
+            IwdgKickDog(IWDG2);
+            if (MaePhyWaitAnComplete(&phy, cfg->an_timeout_ms) != 0)
+                return GMAC_ETH_LINKUP_ERR_ANTMO;
+        }
+    }
+
+    /* ---- 5. 读 MAC 侧链路 (软复位前! SWR 复位 PHYCSR) ---- */
+    if (!GmacLinkStatus(gmac, speed, fdx))
+        return GMAC_ETH_LINKUP_ERR_NOLINK;
+
+    /* ---- 6. 软复位: 此刻 RX_CLK 在场, 应当干净通过 ---- */
+    if (!GmacSoftReset(gmac))
+        return GMAC_ETH_LINKUP_ERR_SWR;
+
+    /* ---- 7. SWR 清掉 MDC 分频与 MAC 配置: 重配 + 按协商结果配置 ---- */
+    GmacMdioInit(gmac, &mdio_cfg);
+    for (i = 0; i < 6; i++)
+        mac_cfg.gmac_mac_addr[i] = cfg->mac_addr[i];
+    mac_cfg.gmac_speed     = *speed;
+    mac_cfg.gmac_duplex    = *fdx;
+    mac_cfg.gmac_jumbo     = 0;
+    mac_cfg.gmac_strip_crc = 0;
+    GmacMacInit(gmac, &mac_cfg);
+
+    /* ---- 8. LED 显示配置 (PHY 内, 通用千兆双灯): PHY 复位已全部结束
+     * (ClkInit 内 SWR 会清 LCR 回默认), 此刻改写生效. 纯显示, 失败不阻断. */
+    MaePhyLedConfig(&phy);
+
+    return GMAC_ETH_LINKUP_OK;
 }
 
 

@@ -9,6 +9,7 @@
 #define STM32MP1XX_GMAC_H_
 
 #include <stdint.h>
+#include "stm32mp1xx_gpio.h"   /* GpioRegs_t (GmacEthCfg_t 复位脚) */
 
 
 /* 通道寄存器块, 每通道间距 0x80, 基偏移 0x1100 + 0x80*x (x = 0~1)
@@ -267,6 +268,37 @@ typedef struct {
     uint32_t gmac_mdc_div;    /* MDC = HCLK / 该值, 取 16/26/42/62/102/124 */
 } GmacMdioCfg_t;
 
+/* ---------------------------------------------------------- MACCR 位导出 */
+
+/* 测试/上层需直读直写的 MACCR 位 (LM 自回环) */
+#define GMAC_MACCR_LM   (1U << 12)   /* 回环模式: 发送在 MAC 内直连接收路径 */
+
+/* ---------------------------------------------------------- 完整链路激活 */
+
+/*
+ * 板级以太网参数: 从 MDIO 到 PHY 再到 MAC 的完整激活流程由 GmacEthLinkUp
+ * 执行 (MAC 驱动), 本结构只注入板上差异 (时钟树/GPIO 已由上层就绪).
+ * 内部顺序: MdioInit → PHY 复位 → 时钟模式修复 → 找 PHY → 等自主协商
+ * (复位默认广告, 2 片 × an_timeout_ms) → 超时才显式重启兜底 (1 片) →
+ * 读 PHYCSR → 软复位 → MdioInit 重配 → MacInit.
+ * 失败返回负值错误码, 无打印 (驱动静默); 诊断由上层按错误码展开.
+ */
+typedef struct {
+    uint32_t gmac_mdc_div;                 /* MDC 分频 (GmacMdioInit 用) */
+    uint32_t phy_addr;                     /* 期望 PHY strap 地址 */
+    volatile GpioRegs_t *phy_rst_port;     /* PHY 复位脚所在口 (板级) */
+    uint32_t phy_rst_pin;                  /* PHY 复位脚位号 */
+    uint8_t  mac_addr[6];                  /* MAC 地址 (写 MACA0) */
+    uint32_t an_timeout_ms;                /* AN 等待片长: 自主 2 片 + 兜底 1 片 */
+} GmacEthCfg_t;
+
+#define GMAC_ETH_LINKUP_OK           0
+#define GMAC_ETH_LINKUP_ERR_MDIO    -1   /* PHY 软复位/总线事务超时 */
+#define GMAC_ETH_LINKUP_ERR_NOPHY   -2   /* MaePhyFind: 总线上无应答者 */
+#define GMAC_ETH_LINKUP_ERR_ANTMO   -3   /* 自协商 3 轮均超时 */
+#define GMAC_ETH_LINKUP_ERR_NOLINK  -4   /* RGMII 无 link 信号 (PHYCSR) */
+#define GMAC_ETH_LINKUP_ERR_SWR     -5   /* GmacSoftReset 超时 */
+
 /* ---------------------------------------------------------------- DMA 描述符 */
 
 /* 普通描述符 = 连续 16 字节 4 字 (RM0436 63.10), 位域详见 docs/gmac_desc.md */
@@ -290,6 +322,11 @@ extern void GmacMacDeinit(volatile GmacRegs_t *gmac);
 extern void GmacMdioInit(volatile GmacRegs_t *gmac, const GmacMdioCfg_t *cfg);
 extern int  GmacMdioRead(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_addr, uint16_t *val);
 extern int  GmacMdioWrite(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_addr, uint16_t val);
+
+/* 完整激活流程与链路状态 (见 GmacEthCfg_t 上注释) */
+extern int  GmacEthLinkUp(volatile GmacRegs_t *gmac, const GmacEthCfg_t *cfg,
+                          uint32_t *speed, uint32_t *fdx);
+extern int  GmacLinkStatus(volatile GmacRegs_t *gmac, uint32_t *speed, uint32_t *fdx);
 
 
 #endif /* STM32MP1XX_GMAC_H_ */

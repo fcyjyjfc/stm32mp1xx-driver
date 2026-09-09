@@ -80,8 +80,21 @@ init_stack:
                          * EnableCpuIrq() 在 TestCommonInit 末尾统一开启. */
   mov  sp,r0
 
+  // Zero .bss: 镜像由 u-boot 整块载入 DDR, .bss 区是上次运行残留的任意值,
+  // 不清零则零初始化静态量 (菜单状态/收发包游标/惰性激活标志等) 从脏值
+  // 起步 —— 实测 g_activated 残留非 0 导致 ActivateGmac 缓存假命中,
+  // 测试 2 打印未初始化局部量 (回归根源, 与 BTIMER 静态标志同族).
+  ldr  r0,=__bss_start
+  ldr  r1,=__bss_end
+  mov  r2,#0
+zbss_loop:
+  cmp  r0,r1
+  bge  zbss_done
+  str  r2,[r0],#4
+  b    zbss_loop
+zbss_done:
 
- bl main 
+ bl main
 
  .align 4 
  /****  swi_interrupt handler  ****/ 

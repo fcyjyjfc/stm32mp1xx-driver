@@ -23,8 +23,10 @@ SECTIONS
     __exidx_end = .;
 
     . = ALIGN(4);
+    __bss_start = .;
     .bss :
     { *(.bss) }
+    __bss_end = .;
 
     . = ALIGN(4);
     _end = .;

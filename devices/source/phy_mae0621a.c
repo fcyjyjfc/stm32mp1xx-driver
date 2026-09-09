@@ -87,13 +87,13 @@ int MaePhyClkInit(MaePhy_t *dev)
     uint16_t bmcr_v, pag, insr, clk;
     int i;
 
-    /* 1. SWR (Linux: BMCR_RESET | 读改写; SWR 复位全部寄存器, 直接 0x8000 等价) */
-    MaePhyRegWrite(dev, PHY_REG_BMCR, 0x8000);
+    /* 1. SWR (Linux: BMCR_RESET | 读改写; SWR 复位全部寄存器, 直接全 1 等价) */
+    MaePhyRegWrite(dev, PHY_REG_BMCR, PHY_BMCR_SWR);
     for (i = 0; i < 100; i++)
     {
         if (MaePhyRegRead(dev, PHY_REG_BMCR, &bmcr_v) != 0)
             return -1;
-        if (!(bmcr_v & 0x8000u))
+        if (!(bmcr_v & PHY_BMCR_SWR))
             break;
         BasicTimerDelayMs(TIM7, 5);
     }
@@ -232,4 +232,39 @@ int MaePhyWaitAnComplete(MaePhy_t *dev, uint32_t timeout_ms)
         elapsed += 20;
     }
     return -1;                              /* 超时: 检查网线/对端 */
+}
+
+
+/**
+ * @brief   LED 显示配置: 通用千兆双灯方案 (页 D04 LCR)
+ * @param   dev   目标 PHY
+ * @return  0 = 成功; -1 = MDIO 故障
+ * @note    接线假设 LED0=绿灯/LED1=橙灯 (FS-MP1A 板上仅这两路到网口),
+ *          颜色反转则互换字段赋值. 重映射: 绿灯(即 LED0) = 任意速率
+ *          链路(10M/100M/1000M 三链路位同置) + 活动; 橙灯(LED1) =
+ *          1000M 指示 (通用千兆方案: 橙灯代表高速). LED2 保持复位
+ *          默认 0x6000 (未接线). 保留的链路/活动位与默认一致.
+ */
+int MaePhyLedConfig(MaePhy_t *dev)
+{
+    uint16_t pag, lcr;
+
+    if (MaePhyRegRead(dev, PHY_REG_PAGSR, &pag) != 0)
+        return -1;
+
+    /* 换页窗口: 进 D04 读改写 LCR, 退出恢复原页 (MaePhyClkInit 同款) */
+    if (MaePhyRegWrite(dev, PHY_REG_PAGSR, PHY_PAGE_D04) != 0)
+        return -1;
+
+    if (MaePhyRegRead(dev, PHY_REG_LCR, &lcr) != 0)
+        return -1;
+
+    lcr &= ~(PHY_LCR_LED0_MASK | PHY_LCR_LED1_MASK);
+    lcr |= PHY_LCR_LED0_LINK_10 | PHY_LCR_LED0_LINK_100
+         | PHY_LCR_LED0_LINK_1000 | PHY_LCR_LED0_ACT   /* LED0: 任意速率链路+活动 */
+         | PHY_LCR_LED1_LINK_1000;                      /* LED1: 1000M 指示 */
+    if (MaePhyRegWrite(dev, PHY_REG_LCR, lcr) != 0)
+        return -1;
+
+    return MaePhyRegWrite(dev, PHY_REG_PAGSR, pag);
 }

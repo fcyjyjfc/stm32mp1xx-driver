@@ -844,7 +844,7 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 硬件配置: RGMII (全部 AF11), ETH ker_ck=PLL4_P(125MHz, ETHCKSELR.ETHSRC=0), MDC=PC1/MDIO=PA2 (AF11, 分频 124→MDC≈2.15MHz, IEEE ≤2.5MHz 合规), PHY=MAE0621A (ID 0x7B74/0x4411, 复位脚 PH2, 应答地址 0 —— Linux stmmac-0:00 与本机 MaePhyFind 轮轮一致; 早期按 schematic 假设 strap=1 引发回归, 见修复记录). ETH 与 LTDC 互斥 (PLL4: P=125MHz 给 ETH 或 Q=74.25MHz 给 LTDC, 不能同时精确).
 
-三层分层: MAC MDIO 控制器 (drivers/stm32mp1xx_gmac.c) / GPIO 位冲击总线 (devices/mdio_gpio.c) / PHY 设备驱动 (devices/phy_mae0621a.c, 黑盒).
+分层与流程: 寄存器级 MAC 驱动 (drivers/stm32mp1xx_gmac.c) 承载完整激活流程 GmacEthLinkUp (MDIO 分频 → MaePhyReset → MaePhyClkInit → MaePhyFind → 等 AN → GmacLinkStatus 读 PHYCSR → GmacSoftReset → 重配 MDIO + GmacMacInit → MaePhyLedConfig, 全程静默, 失败码 -1~-5 交测试层诊断) / PHY 黑盒驱动 (devices/phy_mae0621a.c, 只碰 MDIO/GPIO/延时, 不读 MAC 寄存器) / GPIO 位冲击总线 (devices/mdio_gpio.c); 测试层只剩板级参数 + 惰性激活 (ActivateGmac) + 打印判定.
 
 ### MDIO 通信层 (测试 1, 合并读 ID+栅格图+写回读+换页)
 
@@ -872,17 +872,18 @@ SdmmcPowerOn (400kHz, 1-bit)
 | MaePhyGetId | 通过 | reg2/reg3, 含首次读 0xFFFF 重试 |
 | MaePhyFind | 通过 | 期望地址优先, 否则扫 0~31, 命中回填 dev->phy_addr; 各测试轮轮命中 @0 |
 | MaePhyRegRead/RegWrite | 通过 | 0xFFFF 自动重试×3; GB 超时返回 -1 |
-| MaePhyClkInit | 通过 | SWR → 读 INSR (页 A43) bit5 判工作状态 → 异常则翻转 CLK_MODE (页 D92 reg2) bit8 (振荡器→晶振) → 恢复页 + 100ms PLL 重锁; 紧跟复位在 GmacTest_Init 执行, 自主 AN 完成即证 (见修复记录) |
-| MaePhyWaitAnComplete | 通过 | 20ms 轮询 BMSR.5; 回归期 3×5s 超时路径实测干净返回 -1 不挂死; 时钟修复后自主 AN 在 observe 段即完成, 成功返回路径未被主流触发 (同一位判据 observe 已实测置位) |
-| 外设隔离 | 通过 | 驱动内只调 GmacMdio*/Gpio*/BasicTimerDelayMs, 不碰 MAC PHYCSR (link/速率判定留测试层) |
+| MaePhyClkInit | 通过 | SWR → 读 INSR (页 A43) bit5 判工作状态 → 异常则翻转 CLK_MODE (页 D92 reg2) bit8 (振荡器→晶振) → 恢复页 + 100ms PLL 重锁; 紧跟 MaePhyReset 执行 (GmacEthLinkUp 流程内, 测试 1/6 走 GmacTest_Init 同款), 自主 AN 完成即证 (见修复记录) |
+| MaePhyWaitAnComplete | 通过 | 20ms 轮询 BMSR.5; 驱动内不喂狗 —— 跨 IWDG2 10s 上限的等待由 GmacEthLinkUp 切片 (2×an_timeout_ms) 片间喂狗; 超时干净返回 -1 不挂死 |
+| MaePhyLedConfig | 待实测 | LCR (页 D04, 读改写保 LED2): LED0=任意速率链路+活动 (接线假设绿), LED1=1000M (橙); PHY 复位会清 LCR → GmacEthLinkUp 尾部 (复位序列结束后) 调用; 亮灯效果待板上实测 (颜色假设见 phy_mae0621a.c 注释) |
+| 外设隔离 | 通过 | PHY 驱动内只调 GmacMdio*/Gpio*/BasicTimerDelayMs + PAGSR 换页, 不碰 MAC 寄存器; PHYCSR 链路/速率读取在 MAC 驱动 (GmacLinkStatus), 隔离边界在 drivers/devices 之间 |
 
 ### 链路激活 + 收发 (测试 2/3/4/5)
 
 | 测试项 | 状态 | 说明 |
 |--------|------|------|
-| AN 流程 (WaitPhyLink) | 通过 | 三段: 只读 observe (40×250ms, 状态变化才打印) → 未完成则显式广告复刻 (ANAR 0x01E1/GBCR 0x0200/BMCR ANRESTART, 3×5s) → MAC PHYCSR 轮询解速率双工; 时钟修复后恒走自主快路径 |
-| 测试 2 完整激活 | 通过 | MaePhyFind @0 → observe 段 0 写入下自主 AN 完成 (BMCR 注 3: 复位后 AN 自动重启, 复位默认广告 1G FDX) → PHYCSR link 1G FDX → SWR 干净 → MAC/DMA 环启动 |
-| 测试 3 RX 监控 (~12s) | 通过 | 回显路由器周期广播 + IPv6 RA (ethertype 0x86DD, dst 33:33:00:00:00:02, 源 B8:8E:B0:BA:80:8B/8D), 4 个 ring slot 循环收, 无 ES 错误 |
+| GmacEthLinkUp (MAC 驱动内完整激活) | 通过 | 8 步: MdioInit → MaePhyReset → MaePhyClkInit → MaePhyFind → AN (先等 SWR 触发的自主协商 2 片×5s, 片间喂狗; 超时才显式 ANAR/GBCR + RESTART_AN 兜底 1 片; 双失败 → ERR_ANTMO) → GmacLinkStatus (SWR 前!) → GmacSoftReset → MdioInit 重配 + GmacMacInit + MaePhyLedConfig; 全程静默, 失败码 -1~-5 |
+| 测试 2 完整激活 (显式入口) | 通过 | ActivateGmac 惰性激活 (测试 3/4 共用): 首跑走 GmacEthLinkUp → Rx/Tx 环 + RE/TE, 实测 link 1G FDX; 缓存命中回填 g_link_speed/g_link_fdx (曾踩 .bss 残留假命中, 见修复记录) |
+| 测试 3 RX 监控 (无限时) | 通过 | 任意串口输入退出 (FramePoll 非阻塞, 同 adc/irq 长测); 完整 hex dump 带帧内偏移; 实测回显光猫周期帧无 ES: ① 90B IPv6 组播 (0x86DD, dst 33:33:00:00:00:02 = ff02::2/ff05::2 "所有路由器" 组, 源 …BA:80:8D) —— 体含 MLDv1 报告 (type 0x83, checksum 随组地址变 7E9D↔7EA3 互证, 前导字节非标疑光猫私有封装); ② 64B 广播 (0xFFFA + 明文 "loopback", 源 …BA:80:8B); 两源同属创维 OUI = 光猫本体 (桥泛洪到板卡口) |
 | 测试 4 TX 广播帧 | 通过 | 60 字节最小帧 (dst=FF*6, ethertype 0x88B5), CPC=00 自动补 Pad+CRC, 双槽交替, TDES3_WB=0x00000000 无错误 |
 | 测试 5 MAC 内部回环 | 待实测 | MACCR.LM + SYSCFG 选内部 ETH_CLK 作 eth_rx_clk, 免网线验证描述符管线, 逐字节比对 |
 | GmacSoftReset | 通过 | link 后复位干净完成 (测试 2 流程内); 无 link 必超时 (RGMII RX 时钟来自 PHY PA1), 见修复记录 |
@@ -899,3 +900,6 @@ SdmmcPowerOn (400kHz, 1-bit)
 | PHY ID 与预期不符 | 最初误判为 RTL8211F (ID 0x001C/0xC843) | 实测 0x7B74/0x4411 = MAE0621A, 删除全部 RTL8211 代码 |
 | AN 永不完成 (线上零活动) | 复位默认振荡器模式 (CLK_MODE bit8=1), 本板需晶振模式 (bit8=0): 内部 PLL 锁不住 → PMA/AN 引擎无时钟 → 线上零活动 (ANLPAR 恒 0, 对端看不到本机); MDIO 属 MDC 时钟域不受影响, ID/寄存器读写全正常 —— 裸机与 Linux 行为差异真因 (Linux maxio 驱动 probe 即修, 裸机此前从未执行) | MaePhyClkInit 复刻 Linux clk_init 紧跟复位执行 (SWR 会把模式重置回错误默认, 修复必须在 SWR 之后; Linux phylib link-down 后同样只重跑 config_aneg 不重跑 clk_init); 修复后 observe 段 0 写入自主 AN 完成 |
 | PHY 地址误设 1 的回归 | 按 schematic 001b 假设 strap 地址 1, 实测应答在 0 (Linux stmmac-0:00 + MaePhyFind 轮轮一致); 向无应答地址写 MDIO 被静默丢弃 (读回 0xFFFF) → clk_init 的 SWR 轮询 bit15 永不落 → 500ms 误报 "clk init failed", AN 死 | GMAC_TEST_PHY_ADDR 1→0 与硬件一致 (2026-09-07 回归教训) |
+| AN 超时回归 (GmacEthLinkUp 下沉后) | 重构后只走"显式广告 + RESTART_AN"路径 —— 该路径历史 3×5s 复刻从未成功 (ANLPAR 见对端页但 ACK 不置位), 且 clk_init 内 SWR 已触发的自主协商 (复位默认广告 1G FDX, 手册注 3) 未被等待即被写 BMCR 干扰 | 改为先等自主协商 2 片×an_timeout_ms (片间喂狗跨 IWDG2 10s), 超时才显式兜底 1 片; 实测 ~2s 内完成 |
+| 菜单 2 link 268447745Mbps 乱码 | 镜像整块载入 DDR 且 .bss 未清零 → g_activated 残留非 0 → ActivateGmac 假命中缓存不写输出参 → 打印未初始化局部量 (268447745 = 0x10003001 栈残留) | start.S zbss_loop 清零 __bss_start~__bss_end (lds 导出); ActivateGmac 命中缓存时从 g_link_speed/g_link_fdx 回填输出参 (双保险) |
+| 1G 下网口灯全灭 | 复位默认 LED 按速率分灯 (10M/100M/1000M 各一), 板上只接 LED0/LED1 到网口, 1000M 指示落在未接线的 LED2 | LED 配置下沉 PHY 驱动 (MaePhyLedConfig): 通用千兆双灯 (绿=任意速率链路+活动, 橙=1000M), GmacEthLinkUp 尾部调用 (PHY 复位清 LCR, 须在复位序列后); 测试 7 删除 (无需专测) —— 亮灯待板上实测 |
