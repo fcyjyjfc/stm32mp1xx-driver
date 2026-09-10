@@ -6,7 +6,7 @@
  *     测试 2: 完整激活 — 链路建立在 MAC 驱动 GmacEthLinkUp, 数据面在此
  *     测试 3: 收包监控 (轮询 RI, 回显帧长/状态/完整 hex dump; 串口输入退出)
  *     测试 4: 发一帧 60 字节最小广播, 回显写回状态与 MMC 计数
- *     测试 5: MAC 内部回环 (LM 位 + 内部 rx 参考钟, 免网线验证收发管线)
+ *     测试 5: MAC 内部回环 (建链后 LM 置位, 连续发收逐字节验证, 任意键停)
  *     测试 6: MDIO 位冲击读 (GPIO 模拟总线直调, 绕过 GMAC MDIO 控制器)
  *
  * 分层: 寄存器级在 drivers/stm32mp1xx_gmac.c — 其中 GmacEthLinkUp 承载
@@ -541,13 +541,6 @@ static void TestGmacMdioBitBang(void)
 /*  完整链路激活 (GmacEthLinkUp 驱动流程 + 惰性激活 + 数据面)           */
 /* ================================================================== */
 
-/* 描述符预填位 (docs/gmac_desc.md) */
-#define DESC_OWN    (1U << 31)
-#define DESC_IOC    (1U << 30)
-#define DESC_FD     (1U << 29)
-#define DESC_LD     (1U << 28)
-#define DESC_BUF1V  (1U << 24)
-
 /* 通道状态位 (ETH_DMACxSR, rc_w1) */
 #define CHAN_SR_TI  (1U << 0)
 #define CHAN_SR_RI  (1U << 6)
@@ -577,7 +570,8 @@ static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
  *   - 时钟树/引脚: GmacTest_InitBus (板级, MAC 寄存器需时钟在场)
  *   - 链路建立: GmacEthLinkUp (drivers/stm32mp1xx_gmac.c) — PHY 复位/
  *     时钟修复/找地址/等协商/软复位/MAC 配置全在驱动内, 失败只回错误码;
- *   - 数据面: Rx 环预填 + DMA 启动留测试层 (DMA 层暂不下沉)
+ *   - 数据面: 描述符字段构建在驱动 (GmacDmaRxArm/RxRecycle/TxSubmit),
+ *     环分配/缓冲管理/取帧策略留测试层
  *
  * @param spd_out/fdx_out  输出协商速率/双工, 可传 NULL (测试 3/4)
  * @return 0 = 已激活 (含 g_activated 缓存命中); -1 = 失败 (诊断已打印)
@@ -585,7 +579,6 @@ static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
 static int ActivateGmac(uint32_t *spd_out, uint32_t *fdx_out)
 {
     char buf[16];
-    volatile GmacDesc_t *d;
     GmacEthCfg_t cfg;
     uint32_t speed = 1000, fdx = 1;
     int rc, i;
@@ -666,25 +659,18 @@ static int ActivateGmac(uint32_t *spd_out, uint32_t *fdx_out)
         return -1;
     }
 
-    /* ---- 数据面: Rx 环预填 + 启动 ---- */
+    /* ---- 数据面: Rx 环预填 + 启动 (描述符构建走驱动助手) ---- */
     for (i = 0; i < (int)RX_RING_N; i++)
-    {
-        d = &rx_desc[i];
-        d->DES0 = (uint32_t)&rx_buf[i][0];
-        d->DES1 = 0;
-        d->DES2 = 0;
-        d->DES3 = DESC_OWN | DESC_IOC | DESC_BUF1V;
-    }
+        GmacDmaRxArm(&rx_desc[i], &rx_buf[i][0]);
     GmacDmaRxStart(ETH, rx_desc, RX_RING_N, RX_BUF_SZ);
 
-    /* ---- Tx 环清零待提交 ---- */
+    /* ---- Tx 环全关待提交 (地址/长度在提交时由 GmacDmaTxSubmit 建立) ---- */
     for (i = 0; i < (int)TX_RING_N; i++)
     {
-        d = &tx_desc[i];
-        d->DES0 = (uint32_t)&tx_buf[i][0];
-        d->DES1 = 0;
-        d->DES2 = 0;
-        d->DES3 = 0;
+        tx_desc[i].DES0 = 0;
+        tx_desc[i].DES1 = 0;
+        tx_desc[i].DES2 = 0;
+        tx_desc[i].DES3 = 0;
     }
     GmacDmaTxStart(ETH, tx_desc, TX_RING_N);
 
@@ -743,16 +729,11 @@ static void RxServiceRing(void)
         int n, k;
 
         d = &rx_desc[g_rx_cur];
-        if (d->DES3 & DESC_OWN)
+        if (d->DES3 & GMAC_DESC_OWN)
             break;                          /* 该格仍归 DMA, 后面必然更没到货 */
 
         w3 = d->DES3;
-        if ((w3 & DESC_LD) == 0)
-        {
-            /* 罕见: 单缓冲配置不应出现跨描述符包, 直接丢弃重灌 */
-            d->DES3 = DESC_OWN | DESC_IOC | DESC_BUF1V;
-        }
-        else
+        if (w3 & GMAC_DESC_LD)
         {
             uint32_t len = w3 & 0x7FFFU;
             uint32_t es  = (w3 >> 15) & 1U;
@@ -770,6 +751,7 @@ static void RxServiceRing(void)
              * ok 帧含末尾 4 字节 CRC (CSC=0 不剥). */
             if (disp > RX_BUF_SZ)
                 disp = RX_BUF_SZ;                       /* 防坏长度越界读 */
+            /* 取帧走软件映射: DES0 写回已是 VLAN tag, 缓冲地址读不回 */
             p = &rx_buf[g_rx_cur][0];
             for (n = 0; (uint32_t)n < disp; n += 16)
             {
@@ -801,11 +783,11 @@ static void RxServiceRing(void)
             }
             PRINT("\r\n");
         }
+        /* else: 罕见跨描述符包 (单缓冲配置不应出现), 静默丢弃重灌 */
 
-        d->DES3 = DESC_OWN | DESC_IOC | DESC_BUF1V;  /* 归还硬件复用 */
+        /* 归还硬件复用: 重灌 + 尾指针推进 (驱动助手内成对) */
+        GmacDmaRxRecycle(ETH, rx_desc, RX_RING_N, g_rx_cur, &rx_buf[g_rx_cur][0]);
         g_rx_cur = (g_rx_cur + 1) % RX_RING_N;
-        ETH->DMA.CH[0].RXDTPR =
-            (uint32_t)&rx_desc[g_rx_cur];            /* 尾指针跟进新边界 */
         break;                                       /* 其余下轮再看 */
     }
 }
@@ -866,24 +848,19 @@ static void TestGmacTxBroadcast(void)
     /* 组帧 (与回环测试同一字节模式): 广播目的 + 板卡源 MAC + 0x88B5 + 花样 */
     BuildTestFrame(f);
 
-    d = &tx_desc[s];
-    d->DES0 = (uint32_t)f;
-    d->DES1 = 0;
-    d->DES2 = DESC_IOC | 60u;                           /* B1L=60, 非 TSO 长度放这里 */
-    d->DES3 = DESC_OWN | DESC_FD | DESC_LD;             /* CPC=00: 补 Pad+CRC */
-
-    /* 提交: 尾指针 = 提交格的下一格; 双槽交替时窗口恰好只含本槽 */
-    ETH->DMA.CH[0].TXDTPR = (uint32_t)&tx_desc[s ^ 1];
+    /* 提交 (B1L=60; CPC=00 → MAC 补 Pad+CRC; 尾指针由助手推到提交格下一格) */
+    GmacDmaTxSubmit(ETH, tx_desc, TX_RING_N, s, f, 60u);
 
     /* 等完成 (TI 或 OWN 自清, 500ms 上限) */
+    d = &tx_desc[s];
     for (t = 0; t < 100; t++)
     {
-        if (!(d->DES3 & DESC_OWN))
+        if (!(d->DES3 & GMAC_DESC_OWN))
             break;
         BasicTimerDelayMs(TIM7, 5);
     }
 
-    if (d->DES3 & DESC_OWN)
+    if (d->DES3 & GMAC_DESC_OWN)
     {
         PRINT("  [TIMEOUT] desc not closed\r\n");
         return;
@@ -927,141 +904,238 @@ static void BuildTestFrame(uint8_t *f)
 }
 
 /*
- * 测试 5: MAC 内部回环 (无需网线/PHY link).
+ * 测试 5: MAC 内部回环 (需要 link).
  *
- * 原理: MACCR.LM(bit12)=1 时发送数据在 MAC 内直连接收路径, 不出 RGMII 引脚,
- * 用于验证 描述符环+DMA+MAC 组帧(CRC 补齐)+Rx 过滤 的完整管线.
- * 手册约束: 需要 eth_rx_clk 在场 —— 通过 SYSCFG_ETH_REF_CLK_SEL 选内部
- * ETH_CLK 绕开对 PHY RX_CLK 的依赖 (该选择器手册标注面向 RMII, RGMII 下
- * 实际效果以本测试结果为准, 这正是本用例存在的意义).
+ * 原理: MACCR.LM(bit12)=1 时发送数据在 MAC 内直连到接收路径 (经内部异步
+ * FIFO, 手册 63.5.8), 不出 RGMII 引脚, 验证 描述符环+DMA+MAC 组帧(补
+ * Pad/CRC)+Rx 过滤 的完整管线. 收发逐字节比对.
  *
- * 注意: 无 link 时 SWR 无法完成, 故此测试不做软复位 —— RCC 总线复位
- * (GmacClockEnable 内) 已将全部寄存器带回默认态, 等效于干净基线.
+ * 为什么必须有 link (旧"内部时钟顶替 eth_rx_clk"方案已废弃):
+ *   - MACCR.LM 手册注: "The GMII Rx clock input (eth_rx_clk) is required
+ *     for the loopback to work properly ... the Tx clock is not internally
+ *     looped back";
+ *   - MII/GMII/RGMII 的 RX 时钟直接收 ETH_RX_CLK 引脚 (PA1); SYSCFG
+ *     ETH_REF_CLK_SEL 的内部时钟选项只能用于 RMII PHY;
+ *   - 本板 PHY 的 RXC 从线路数据流恢复 → 无 link 无 RXC (与"无 link 时
+ *     SWR 必超时"同源); 且置 REF_CLK_SEL=1 会让 PA1 被内部时钟驱动, 与
+ *     PHY 的 RXC 输出对撞 (pad 竞争), 不能拿它做实验.
+ * 故先 ActivateGmac 建链 (RXC=125MHz 在场), 无 link 直接跳过.
+ *
+ * LM 变更约束 (手册): 收发活动期间不得改回环/速率/双工配置 → LM 的置位与
+ * 清除都用 GmacMacDeinit/Start 包进收发空闲窗口.
+ * 回环帧同时会经 TX 引脚上线 (手册), PC 侧 Wireshark 可见同一帧.
+ *
+ * 连续回环 (任意键停, 同测试 3): 每轮 ping-pong 一发一收, 载荷 58..59 字节
+ * 带轮次序号. 收帧按序号三分类: 前 60B 全同 = 本轮 (再判状态字); 0x88B5
+ * 但序号不符 = 其它轮次迟到帧, 静默计 stale; 序号相同但内容不符 = 回环路径
+ * 损坏, 立即报 FAIL; 非 0x88B5 = 光猫后台广播, 静默计 drained. 失败 (TX 未
+ * 闭环/无回环/状态字/内容损坏) 立即打印并计数, 成功静默; 每 100 轮一行
+ * 进度, 退出打总账 + PASS/FAIL.
  */
 static void TestGmacMacLoop(void)
 {
-    volatile GmacDesc_t *txd, *rxd;
+    volatile GmacDesc_t *d;
     char buf[16];
-    int t, ok;
+    uint8_t *f;
+    int s, t;
+    uint32_t len = 0, w3 = 0;
+    unsigned int tot = 0, ok_n = 0, fail_n = 0;
+    unsigned int drain_n = 0, stale_n = 0;
 
     PRINT("\r\n--- MAC Internal Loopback ---\r\n");
-    PRINT("  MACCR.LM loops TX into RX inside MAC, no cable/PHY link needed\r\n");
-    PRINT("  Internal ETH_CLK as eth_rx_clk; TX vs RX compared byte-exact\r\n");
+    PRINT("  MACCR.LM loops TX into RX inside the MAC; needs link (RX clock\r\n");
+    PRINT("  comes from PHY RXC only). Frame also goes out on the wire\r\n");
+    PRINT("  Continuous rounds, unique payload counter each round\r\n");
+    PRINT("  Press any key on the console to stop\r\n");
 
-    g_activated = 0;                    /* 与真链路激活态互斥, 防误入测试3/4 */
-    g_rx_cur = 0;                       /* 环重置后首帧必落槽 0, 清旧游标防错查 */
-
-    GmacTest_InitBus();                 /* 回环不需要 MDIO/PHY: 只做时钟+引脚 */
-
-    SyscfgEthRefClkSelSet(1);           /* eth_rx_clk ← 内部 ETH_CLK */
-
-    /* ---- MAC 配置 (千兆全双工 + 混杂), 先配置再开回环 ---- */
+    if (ActivateGmac(NULL, NULL) != 0)
     {
-        GmacMacCfg_t mac_cfg;
-        uint8_t k;
-
-        for (k = 0; k < 6; k++)
-            mac_cfg.gmac_mac_addr[k] = g_mac_addr[k];
-        mac_cfg.gmac_speed     = 1000;
-        mac_cfg.gmac_duplex    = 1;
-        mac_cfg.gmac_jumbo     = 0;
-        mac_cfg.gmac_strip_crc = 0;     /* ACS=0: 回环收到的是含 CRC 全帧 */
-        GmacMacInit(ETH, &mac_cfg);
+        PRINT("  [SKIP] loopback needs an established link (cable/peer)\r\n");
+        return;
     }
 
-    /* ---- Rx/Tx 环 ---- */
-    {
-        int i;
-
-        for (i = 0; i < (int)RX_RING_N; i++)
-        {
-            rxd = &rx_desc[i];
-            rxd->DES0 = (uint32_t)&rx_buf[i][0];
-            rxd->DES1 = 0;
-            rxd->DES2 = 0;
-            rxd->DES3 = DESC_OWN | DESC_IOC | DESC_BUF1V;
-        }
-        GmacDmaRxStart(ETH, rx_desc, RX_RING_N, RX_BUF_SZ);
-
-        for (i = 0; i < (int)TX_RING_N; i++)
-        {
-            txd = &tx_desc[i];
-            txd->DES0 = (uint32_t)&tx_buf[i][0];
-            txd->DES1 = 0;
-            txd->DES2 = 0;
-            txd->DES3 = 0;
-        }
-        GmacDmaTxStart(ETH, tx_desc, TX_RING_N);
-    }
-
-    /* ---- 开回环 + RE/TE (顺序: 配置完最后使能) ---- */
+    /* ---- 开回环: 停 RE/TE (收发空闲窗口) → 置 LM → 恢复 RE/TE ---- */
+    GmacMacDeinit(ETH);
     ETH->MAC.CR |= GMAC_MACCR_LM;
     GmacMacStart(ETH);
-    BasicTimerDelayMs(TIM7, 2);
 
-    /* ---- 提交一帧 (槽0), CPC=00 → MAC 会补 Pad+CRC 上线 64 字节 ---- */
-    BuildTestFrame(&tx_buf[0][0]);
-    txd = &tx_desc[0];
-    txd->DES0 = (uint32_t)&tx_buf[0][0];
-    txd->DES1 = 0;
-    txd->DES2 = DESC_IOC | 60u;
-    txd->DES3 = DESC_OWN | DESC_FD | DESC_LD;
-    ETH->DMA.CH[0].TXDTPR = (uint32_t)&tx_desc[1];
-
-    for (t = 0; t < 100 && (txd->DES3 & DESC_OWN); t++)   /* 发送闭环 ≤500ms */
-        BasicTimerDelayMs(TIM7, 5);
-    if (txd->DES3 & DESC_OWN)
+    /* ---- 连续回环循环 (任意键停, 同测试 3) ---- */
+    for (;;)
     {
-        PRINT("  [FAIL] tx never completed (check DMADSR.RPS)\r\n");
-        goto cleanup;
+        int found = 0, ok = 0, saw_anom = 0;
+
+        IwdgKickDog(IWDG2);             /* 无限循环, 主循环被阻塞需自喂 */
+        if (FramePoll(0))
+            break;                      /* 串口任意输入终止 */
+
+        tot++;
+
+        /* ---- 发一轮: 载荷 58..59 带轮次序号 → 每帧内容唯一, 迟到帧不误认 ---- */
+        s = g_tx_next;
+        f = &tx_buf[s][0];
+        BuildTestFrame(f);
+        f[58] = (uint8_t)tot;
+        f[59] = (uint8_t)(tot >> 8);
+        GmacDmaTxSubmit(ETH, tx_desc, TX_RING_N, s, f, 60u);
+        g_tx_next = s ^ 1;
+
+        d = &tx_desc[s];
+        for (t = 0; t < 100 && (d->DES3 & GMAC_DESC_OWN); t++)   /* TX 闭环 ≤500ms */
+            BasicTimerDelayMs(TIM7, 5);
+        if (d->DES3 & GMAC_DESC_OWN)
+        {
+            fail_n++;
+            PRINT("  [FAIL] #");
+            NumToStr(buf, (int)tot);
+            PRINT(buf);
+            PRINT(" tx never completed\r\n");
+            continue;
+        }
+        if (d->DES3 & (1U << 15))       /* TX WB ES: 本帧未正常发出 */
+        {
+            fail_n++;
+            PRINT("  [FAIL] #");
+            NumToStr(buf, (int)tot);
+            PRINT(buf);
+            PRINT(" tx ES=0x");
+            PrintHex32(buf, d->DES3 & 0xFFFFU);
+            PRINT(buf);
+            PRINT("\r\n");
+            continue;
+        }
+
+        /* ---- 收本轮回环帧 (≤500ms): 按游标扫环, 非本轮帧静默回收计数 ---- */
+        for (t = 0; t < 100 && !found; t++)
+        {
+            volatile uint8_t *p;
+            int k;
+
+            d = &rx_desc[g_rx_cur];
+            if (d->DES3 & GMAC_DESC_OWN)
+            {
+                BasicTimerDelayMs(TIM7, 5);  /* 未到货, 稍后再看 */
+                continue;
+            }
+
+            w3  = d->DES3;
+            len = w3 & 0x7FFFU;
+            p   = &rx_buf[g_rx_cur][0];  /* 软件映射取帧: DES0 写回已是 VLAN tag */
+            if (len >= 64)
+            {
+                for (k = 0; k < 60; k++)
+                    if (p[k] != f[k])
+                        break;
+                found = (k == 60);
+            }
+
+            if (found)
+            {
+                ok = ((w3 & GMAC_DESC_LD) != 0)
+                   && ((w3 & GMAC_DESC_FD) != 0)
+                   && (((w3 >> 15) & 1U) == 0)          /* ES=0 */
+                   && ((((w3 >> 24) & 1U)) == 0);       /* CE=0: MAC 已校 CRC */
+                if (ok)
+                {
+                    ok_n++;
+                }
+                else
+                {
+                    fail_n++;
+                    PRINT("  [FAIL] #");
+                    NumToStr(buf, (int)tot);
+                    PRINT(buf);
+                    PRINT(" rx status word=0x");
+                    PrintHex32(buf, w3);
+                    PRINT(buf);
+                    PRINT(" (ES/CE/LD/FD)\r\n");
+                }
+            }
+            else if (len >= 60 && p[12] == 0x88 && p[13] == 0xB5)
+            {
+                if (p[58] != f[58] || p[59] != f[59])
+                {
+                    stale_n++;              /* 轮次序号不符: 其它轮次的迟到帧 */
+                }
+                else
+                {
+                    /* 同轮序号但内容不符: 回环路径数据损坏 */
+                    saw_anom = 1;
+                    fail_n++;
+                    for (k = 0; k < 60; k++)
+                        if (p[k] != f[k])
+                            break;
+                    PRINT("  [FAIL] #");
+                    NumToStr(buf, (int)tot);
+                    PRINT(buf);
+                    PRINT(" 0x88B5 same-round mismatch, first diff off=");
+                    NumToStr(buf, k);
+                    PRINT(buf);
+                    PRINT("\r\n");
+                }
+            }
+            else
+            {
+                drain_n++;                  /* 非本实验帧 (光猫后台广播等) */
+            }
+
+            /* 回收槽位 + 游标推进 (与 RxServiceRing 同款驱动助手) */
+            GmacDmaRxRecycle(ETH, rx_desc, RX_RING_N, g_rx_cur, &rx_buf[g_rx_cur][0]);
+            g_rx_cur = (g_rx_cur + 1) % RX_RING_N;
+        }
+
+        if (!found && !saw_anom)
+        {
+            fail_n++;
+            PRINT("  [FAIL] #");
+            NumToStr(buf, (int)tot);
+            PRINT(buf);
+            PRINT(" no loopback in 500ms\r\n");
+        }
+
+        if ((tot % 100u) == 0)          /* 进度行: 每 100 轮一条 */
+        {
+            PRINT("  #");
+            NumToStr(buf, (int)tot);
+            PRINT(buf);
+            PRINT(" ok=");
+            NumToStr(buf, (int)ok_n);
+            PRINT(buf);
+            PRINT(" fail=");
+            NumToStr(buf, (int)fail_n);
+            PRINT(buf);
+            PRINT(" drained=");
+            NumToStr(buf, (int)drain_n);
+            PRINT(buf);
+            PRINT(" stale=");
+            NumToStr(buf, (int)stale_n);
+            PRINT(buf);
+            PRINT("\r\n");
+        }
     }
 
-    /* ---- 等回环帧落到 Rx 描述符 (槽0 预期, 1s 上限) ---- */
-    rxd = &rx_desc[g_rx_cur];           /* 此前无流量, 游标应在槽0 */
-    for (t = 0; t < 200 && (rxd->DES3 & DESC_OWN); t++)
-        BasicTimerDelayMs(TIM7, 5);
-    if (rxd->DES3 & DESC_OWN)
-    {
-        PRINT("  [FAIL] no looped-back frame (check ref-clk & LM setup)\r\n");
-        goto cleanup;
-    }
-
-    ok = ((rxd->DES3 & DESC_LD) != 0)
-       && ((rxd->DES3 & DESC_FD) != 0)
-       && (((rxd->DES3 >> 15) & 1U) == 0)               /* ES=0 */
-       && ((((rxd->DES3 >> 24) & 1U)) == 0);            /* CE=0 */
-
-    PRINT("  loopback got len=");
-    NumToStr(buf, (int)((ok ? (rxd->DES3 & 0x7FFFU) - 4u : (rxd->DES3 & 0x7FFFU))));
+    PRINT("  stopped by user. ");
+    NumToStr(buf, (int)tot);
     PRINT(buf);
-    PRINT(", WIRE=");
-    NumToStr(buf, (int)(rxd->DES3 & 0x7FFFU));
+    PRINT(" rounds: ok=");
+    NumToStr(buf, (int)ok_n);
     PRINT(buf);
+    PRINT(" fail=");
+    NumToStr(buf, (int)fail_n);
+    PRINT(buf);
+    PRINT(" drained=");
+    NumToStr(buf, (int)drain_n);
+    PRINT(buf);
+    PRINT(" stale=");
+    NumToStr(buf, (int)stale_n);
+    PRINT(buf);
+    PRINT("\r\n");
+    PRINT(fail_n ? "  [FAIL] some rounds failed\r\n"
+                 : "  [PASS] every round byte-exact\r\n");
 
-    if (ok)
-    {
-        volatile uint8_t *p   = &rx_buf[g_rx_cur][0];
-        const uint8_t    *ref = &tx_buf[0][0];
-        int bad = 0;
-
-        for (t = 0; t < 60; t++)
-            if (p[t] != ref[t]) { bad++; break; }
-        if (bad == 0)
-            PRINT("  payload-match ");
-        PRINT("\r\n  [");
-        PRINT(bad ? "FAIL payload mismatch]" : "PASS mac loopback]");
-        PRINT("\r\n");
-    }
-    else
-    {
-        PRINT("\r\n  [FAIL] status word: see ES/CE/LD/FD bits\r\n");
-        goto noown_cleanup;
-    }
-
-noown_cleanup:
-cleanup:
-    ETH->MAC.CR &= ~GMAC_MACCR_LM;      /* 撤销回环, 还原真实链路路径 */
-    PRINT("  LM cleared, done\r\n");
+    GmacMacDeinit(ETH);                 /* 清 LM 同样要在收发空闲窗口 */
+    ETH->MAC.CR &= ~GMAC_MACCR_LM;
+    GmacMacStart(ETH);                  /* 还原真实链路路径 */
+    PRINT("  LM cleared, MAC back to normal path\r\n");
 }
 
 
@@ -1074,7 +1148,7 @@ static const MenuEntry_t g_gmac_menu[] = {
     { "2", "Activate (link+SWR+MAC)",      TestGmacActivate },
     { "3", "RX monitor (key to stop)",      TestGmacRxMonitor },
     { "4", "TX broadcast frame",           TestGmacTxBroadcast },
-    { "5", "MAC internal loopback",        TestGmacMacLoop },
+    { "5", "MAC loopback (key to stop)",  TestGmacMacLoop },
     { "6", "MDIO bit-bang read",           TestGmacMdioBitBang },
 };
 

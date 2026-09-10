@@ -844,7 +844,7 @@ SdmmcPowerOn (400kHz, 1-bit)
 
 硬件配置: RGMII (全部 AF11), ETH ker_ck=PLL4_P(125MHz, ETHCKSELR.ETHSRC=0), MDC=PC1/MDIO=PA2 (AF11, 分频 124→MDC≈2.15MHz, IEEE ≤2.5MHz 合规), PHY=MAE0621A (ID 0x7B74/0x4411, 复位脚 PH2, 应答地址 0 —— Linux stmmac-0:00 与本机 MaePhyFind 轮轮一致; 早期按 schematic 假设 strap=1 引发回归, 见修复记录). ETH 与 LTDC 互斥 (PLL4: P=125MHz 给 ETH 或 Q=74.25MHz 给 LTDC, 不能同时精确).
 
-分层与流程: 寄存器级 MAC 驱动 (drivers/stm32mp1xx_gmac.c) 承载完整激活流程 GmacEthLinkUp (MDIO 分频 → MaePhyReset → MaePhyClkInit → MaePhyFind → 等 AN → GmacLinkStatus 读 PHYCSR → GmacSoftReset → 重配 MDIO + GmacMacInit → MaePhyLedConfig, 全程静默, 失败码 -1~-5 交测试层诊断) / PHY 黑盒驱动 (devices/phy_mae0621a.c, 只碰 MDIO/GPIO/延时, 不读 MAC 寄存器) / GPIO 位冲击总线 (devices/mdio_gpio.c); 测试层只剩板级参数 + 惰性激活 (ActivateGmac) + 打印判定.
+分层与流程: 寄存器级 MAC 驱动 (drivers/stm32mp1xx_gmac.c) 承载完整激活流程 GmacEthLinkUp (MDIO 分频 → MaePhyReset → MaePhyClkInit → MaePhyFind → 等 AN → GmacLinkStatus 读 PHYCSR → GmacSoftReset → 重配 MDIO + GmacMacInit → MaePhyLedConfig, 全程静默, 失败码 -1~-5 交测试层诊断) + 描述符字段构建 GmacDmaRxArm/RxRecycle/TxSubmit (位布局是硬件语义, 与 GmacDesc_t 同居驱动层; RxRecycle 重灌时重放缓冲地址 —— 收帧写回已把 DES0 复用为 VLAN tag, 且地址全 0 的缓冲会被跳过) / PHY 黑盒驱动 (devices/phy_mae0621a.c, 只碰 MDIO/GPIO/延时, 不读 MAC 寄存器) / GPIO 位冲击总线 (devices/mdio_gpio.c); 测试层只剩板级参数 + 惰性激活 (ActivateGmac) + 环分配/取帧策略 + 打印判定.
 
 ### MDIO 通信层 (测试 1, 合并读 ID+栅格图+写回读+换页)
 
@@ -885,8 +885,9 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 测试 2 完整激活 (显式入口) | 通过 | ActivateGmac 惰性激活 (测试 3/4 共用): 首跑走 GmacEthLinkUp → Rx/Tx 环 + RE/TE, 实测 link 1G FDX; 缓存命中回填 g_link_speed/g_link_fdx (曾踩 .bss 残留假命中, 见修复记录) |
 | 测试 3 RX 监控 (无限时) | 通过 | 任意串口输入退出 (FramePoll 非阻塞, 同 adc/irq 长测); 完整 hex dump 带帧内偏移; 实测回显光猫周期帧无 ES: ① 90B IPv6 组播 (0x86DD, dst 33:33:00:00:00:02 = ff02::2/ff05::2 "所有路由器" 组, 源 …BA:80:8D) —— 体含 MLDv1 报告 (type 0x83, checksum 随组地址变 7E9D↔7EA3 互证, 前导字节非标疑光猫私有封装); ② 64B 广播 (0xFFFA + 明文 "loopback", 源 …BA:80:8B); 两源同属创维 OUI = 光猫本体 (桥泛洪到板卡口) |
 | 测试 4 TX 广播帧 | 通过 | 60 字节最小帧 (dst=FF*6, ethertype 0x88B5), CPC=00 自动补 Pad+CRC, 双槽交替, TDES3_WB=0x00000000 无错误 |
-| 测试 5 MAC 内部回环 | 待实测 | MACCR.LM + SYSCFG 选内部 ETH_CLK 作 eth_rx_clk, 免网线验证描述符管线, 逐字节比对 |
+| 测试 5 MAC 内部回环 | 待实测 | 需 link: ActivateGmac 建链后 GmacMacDeinit → 置 LM → GmacMacStart (LM 变更须收发空闲窗口, 手册); 连续回环 (任意键停, 同测试 3): 每轮 60B 广播帧载荷 58..59 带轮次序号 → 每帧内容唯一, 发→等 TX 闭环 ≤500ms→扫环收 ≤500ms, 收帧按序号三分类: 0x88B5 序号不符 = 其它轮次迟到帧 (静默计 stale), 序号相同但内容不符 = 回环路径损坏 (立即报 FAIL), 非 0x88B5 = 光猫后台广播 (静默计 drained), 命中判 前 60B 逐字节 + LD/FD/ES=0/CE=0 (CE 即 MAC 侧 CRC 校验), 失败立即报, 每 100 轮进度行, 退出打总账 + PASS/FAIL; 上一版单发单收实测通过 (len=60/WIRE=64, drained=0) 后改为连续, 待复查; 旧免网线方案废弃 (RGMII RX 时钟只收 PA1 引脚 / REF_CLK_SEL 内部选项仅 RMII / PHY RXC 从线路恢复 → 无 link 无 RXC, 见 rcc_clock_tree.md 与 mae.md); 回环帧同时经 TX 上线, PC Wireshark 可交叉验证 |
 | GmacSoftReset | 通过 | link 后复位干净完成 (测试 2 流程内); 无 link 必超时 (RGMII RX 时钟来自 PHY PA1), 见修复记录 |
+| 描述符助手 (GmacDmaRxArm/RxRecycle/TxSubmit) | 待实测 | 字段构建下沉驱动 (GMAC_DESC_* 位宏与 GmacDesc_t 同居); RxRecycle 重灌重放 DES0 缓冲地址 (收帧写回已复用为 VLAN tag, 全 0 地址缓冲被跳过) + 尾指针推进成对封装 (只重灌不推尾指针 = 环静默饿死); TxSubmit = DES0/1/2/3 + 尾指针一步 (CPC=00 补 Pad+CRC); 测试 3/4/5 下一轮实测即验证 |
 
 ### 已知问题/修复记录
 
@@ -903,3 +904,4 @@ SdmmcPowerOn (400kHz, 1-bit)
 | AN 超时回归 (GmacEthLinkUp 下沉后) | 重构后只走"显式广告 + RESTART_AN"路径 —— 该路径历史 3×5s 复刻从未成功 (ANLPAR 见对端页但 ACK 不置位), 且 clk_init 内 SWR 已触发的自主协商 (复位默认广告 1G FDX, 手册注 3) 未被等待即被写 BMCR 干扰 | 改为先等自主协商 2 片×an_timeout_ms (片间喂狗跨 IWDG2 10s), 超时才显式兜底 1 片; 实测 ~2s 内完成 |
 | 菜单 2 link 268447745Mbps 乱码 | 镜像整块载入 DDR 且 .bss 未清零 → g_activated 残留非 0 → ActivateGmac 假命中缓存不写输出参 → 打印未初始化局部量 (268447745 = 0x10003001 栈残留) | start.S zbss_loop 清零 __bss_start~__bss_end (lds 导出); ActivateGmac 命中缓存时从 g_link_speed/g_link_fdx 回填输出参 (双保险) |
 | 1G 下网口灯全灭 | 复位默认 LED 按速率分灯 (10M/100M/1000M 各一), 板上只接 LED0/LED1 到网口, 1000M 指示落在未接线的 LED2 | LED 配置下沉 PHY 驱动 (MaePhyLedConfig): 通用千兆双灯 (绿=任意速率链路+活动, 橙=1000M), GmacEthLinkUp 尾部调用 (PHY 复位清 LCR, 须在复位序列后); 测试 7 删除 (无需专测) —— 亮灯待板上实测 |
+| Rx 回收只重灌 DES3 (隐患) | 收帧写回已把 DES0 复用为内/外层 VLAN tag (Table 544, 仅 RS0V 置位时有效), 重灌不重放 DES0 就依赖"硬件保留旧缓冲地址"——手册未承诺; 且地址全 0 的缓冲会被硬件跳过, 一旦某轮写回把该格清零即静默丢帧 | GmacDmaRxRecycle 每次回收重放 DES0 缓冲地址 (地址来源 = 测试层软件映射 rx_buf, 写回后 DES0 读不回地址), 与尾指针推进封装成对 (见描述符助手行) |

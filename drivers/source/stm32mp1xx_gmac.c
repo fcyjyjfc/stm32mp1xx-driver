@@ -472,6 +472,32 @@ void GmacDmaRxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
 
 
 /*
+ * Rx 描述符预填/重灌: 绑定缓冲地址 + OWN|IOC|BUF1V.
+ * 重灌必须重放地址: 收帧写回已把 DES0 复用为 VLAN tag (RDES0 写回格式,
+ * 仅 RS0V 时有效), 地址不再由硬件保留 —— 每次回收都要由本函数重建绑定,
+ * 否则依赖"硬件保留旧地址"这个手册未承诺的行为, 且全 0 地址的缓冲会被跳过.
+ */
+void GmacDmaRxArm(GmacDesc_t *d, void *buf)
+{
+    d->DES0 = (uint32_t)buf;
+    d->DES3 = GMAC_DESC_OWN | GMAC_DESC_IOC | GMAC_DESC_BUF1V;
+}
+
+
+/*
+ * Rx 回收: 重灌 + 推进尾指针 (RXDTPR = 回收格下一格 = "最后一个有效描述符
+ * 的下一个位置", 手册 63.10.2), 两步必须成对 —— 只重灌不推尾指针, 该格
+ * 不会回到硬件可见窗口, 环逐渐饿死.
+ */
+void GmacDmaRxRecycle(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                      uint32_t count, uint32_t idx, void *buf)
+{
+    GmacDmaRxArm(&ring[idx], buf);
+    gmac->DMA.CH[0].RXDTPR = (uint32_t)&ring[(idx + 1u) % count];
+}
+
+
+/*
  * 启动发送通道
  * 序列同 Rx: TXDLAR(停止态) → TXRLR = count-1 → TXPBL=8 拍 | ST=1.
  * 包提交时机: 软件填好描述符置 OWN 后写 TXDTPR (&提交格 + 16 字节),
@@ -485,4 +511,20 @@ void GmacDmaTxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring, uint32_t count)
     ch->TXDLAR = (uint32_t)ring;
     ch->TXRLR  = ((count - 1u) & 0x3FFU);
     ch->TXCR   = (ch->TXCR & ~(0x3FU << 16)) | (8U << 16) | GMAC_TXCR_ST;
+}
+
+
+/*
+ * Tx 提交: 填包缓冲 (BUF1AP + B1L) 并置 OWN|FD|LD, 尾指针推到提交格下一格
+ * 交给硬件 (TXDTPR = 最后有效描述符的下一个位置). CPC=00 = MAC 自动补
+ * Pad+CRC; 单缓冲, BUF2 置 0.
+ */
+void GmacDmaTxSubmit(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                     uint32_t count, uint32_t idx, void *buf, uint32_t len)
+{
+    ring[idx].DES0 = (uint32_t)buf;
+    ring[idx].DES1 = 0;
+    ring[idx].DES2 = GMAC_DESC_IOC | (len & 0x3FFFU);
+    ring[idx].DES3 = GMAC_DESC_OWN | GMAC_DESC_FD | GMAC_DESC_LD;
+    gmac->DMA.CH[0].TXDTPR = (uint32_t)&ring[(idx + 1u) % count];
 }

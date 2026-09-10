@@ -309,11 +309,23 @@ typedef struct {
     volatile uint32_t DES3;   /* 双向主控字: OWN/FD/LD/长度/错误汇总      */
 } GmacDesc_t;
 
+/* 描述符字段位 (读/写格式, 域定义见 docs/gmac_desc.md 63.10.3/63.10.4) */
+#define GMAC_DESC_OWN    (1U << 31)  /* 归 DMA, 完成自清 0 */
+#define GMAC_DESC_IOC    (1U << 30)  /* 完成中断 (Tx DES2 / Rx DES3) */
+#define GMAC_DESC_FD     (1U << 29)  /* 首描述符 */
+#define GMAC_DESC_LD     (1U << 28)  /* 末描述符 */
+#define GMAC_DESC_BUF1V  (1U << 24)  /* Rx DES3: 缓冲1地址有效 */
+
 extern void GmacDmaInit(volatile GmacRegs_t *gmac);
 extern void GmacDmaRxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
                            uint32_t count, uint32_t buf_size);
 extern void GmacDmaTxStart(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
                            uint32_t count);
+extern void GmacDmaRxArm(GmacDesc_t *d, void *buf);
+extern void GmacDmaRxRecycle(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                             uint32_t count, uint32_t idx, void *buf);
+extern void GmacDmaTxSubmit(volatile GmacRegs_t *gmac, GmacDesc_t *ring,
+                            uint32_t count, uint32_t idx, void *buf, uint32_t len);
 
 extern int  GmacSoftReset(volatile GmacRegs_t *gmac);
 extern void GmacMacInit(volatile GmacRegs_t *gmac, const GmacMacCfg_t *cfg);
