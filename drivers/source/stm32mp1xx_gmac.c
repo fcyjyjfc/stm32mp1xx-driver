@@ -35,7 +35,7 @@ volatile GmacRegs_t *const ETH = (void *)0x5800A000U;
 /* ---- MACCR (0x0000) ---- */
 #define GMAC_MACCR_RE   (1U << 0)   /* 接收使能 */
 #define GMAC_MACCR_TE   (1U << 1)   /* 发送使能 */
-#define GMAC_MACCR_LM   (1U << 12)  /* 回环模式 (自回环验证用) */
+#define GMAC_MACCR_LM   (1U << 12)  /* 回环模式 (MAC 内 TX→RX) */
 #define GMAC_MACCR_DM   (1U << 13)  /* 双工模式: 1 = 全双工 */
 #define GMAC_MACCR_FES  (1U << 14)  /* 10/100M 速度: 1 = 100M, 0 = 10M (仅 PS=1) */
 #define GMAC_MACCR_PS   (1U << 15)  /* 端口选择: 0 = 1000M, 1 = 10/100M */
@@ -86,7 +86,8 @@ static const uint32_t gmac_lnkspeed_tab[3] = {10, 100, 1000};
  * @param  gmac ETH
  * @return 1 = 成功, 0 = 超时
  *
- *   注意: 复位完成需要 PHY 输入时钟在场 (RGMII/ETH_CLK 未配置时可能超时).
+ *   注意: 复位完成需 TX/RX 接口时钟在场 (实测: RCC 门控单清任一, SWR
+ *   即卡死), 与 link/环回状态无关.
  */
 int GmacSoftReset(volatile GmacRegs_t *gmac)
 {
@@ -186,6 +187,25 @@ void GmacMacStart(volatile GmacRegs_t *gmac)
 void GmacMacDeinit(volatile GmacRegs_t *gmac)
 {
     gmac->MAC.CR &= ~(GMAC_MACCR_RE | GMAC_MACCR_TE);
+}
+
+
+/**
+ * @brief  开关 MAC 内部回环 (MACCR.LM)
+ * @param  gmac ETH
+ * @param  on   1 = 开, 0 = 关
+ *
+ *   回环数据经内部异步 FIFO (63.5.8): 写时钟 eth_tx_clk, 读时钟
+ *   eth_rx_clk —— 两路接口时钟必须在场 (RGMII 下由 PHY RXC 供给), 帧
+ *   同时经 TX 引脚上线. 仅全双工有效, 且手册规定收发活动期间不得改回环,
+ *   调用方须先 GmacMacDeinit 停 RE/TE, 改完再 GmacMacStart.
+ */
+void GmacMacLoopbackSet(volatile GmacRegs_t *gmac, int on)
+{
+    if (on)
+        gmac->MAC.CR |= GMAC_MACCR_LM;
+    else
+        gmac->MAC.CR &= ~GMAC_MACCR_LM;
 }
 
 
@@ -345,7 +365,8 @@ int GmacLinkStatus(volatile GmacRegs_t *gmac, uint32_t *speed, uint32_t *fdx)
  * @return GMAC_ETH_LINKUP_OK 或负值错误码 (见 stm32mp1xx_gmac.h);
  *         失败无打印, 诊断由上层按错误码展开 (驱动静默)
  * @note   对应手册激活序列 + PHY 驱动时序, 顺序不可乱:
- *         - 软复位需 RX_CLK 在场 (link 之后), 无 link 时提前调用必超时
+ *         - 软复位放最后: SWR 会清 PHYCSR (须先读链路) 与 MDC 分频
+ *           (须重配)
  *         - SWR 会清掉 MDC 分频与 MAC 配置, 之后必须重配
  *         - AN: 等 SWR 触发的自主协商 (2 片 × an_timeout_ms) 优先,
  *           超时才显式广告 + RESTART_AN 兜底 (1 片); 片间喂狗跨 IWDG2 上限

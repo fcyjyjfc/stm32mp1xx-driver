@@ -42,8 +42,14 @@
 
 /* =================== 位定义 =================== */
 #define PHY_BMCR_SWR          (1u << 15)  /* 软复位 (硬件自清零) */
+#define PHY_BMCR_LOOPBACK     (1u << 14)  /* PCS 环回: RGMII 发送数据路由到接收路径 (手册 8.4.1 位 0.14) */
 #define PHY_BMCR_ANE          (1u << 12)  /* 自协商使能 */
 #define PHY_BMCR_RESTART_AN   (1u << 9)   /* 重启自协商 (硬件自清零) */
+#define PHY_BMCR_FDX          (1u << 8)   /* 双工: 1 = 全双工 (ANE=0 强制模式下有效) */
+/* 速率选择位 (手册 8.4.1 位 0.13/0.6, ANE=0 强制模式下有效):
+ * 组合 00 = 10M, 10 (bit13) = 100M, 01 (bit6) = 1000M */
+#define PHY_BMCR_SPEED100     (1u << 13)
+#define PHY_BMCR_SPEED1000    (1u << 6)
 #define PHY_BMSR_AN_COMPLETE  (1u << 5)   /* BMSR: 自协商完成 */
 #define PHY_ANER_LP_AN_ABLE   (1u << 0)   /* ANER: 对端支持 AN (读清锁存) */
 #define PHY_GBCR_1000T_FDX    (1u << 9)   /* GBCR: 1000BASE-T 全双工广告 */
@@ -154,6 +160,40 @@ int  MaePhyClkInit(MaePhy_t *dev);
  * @note    link up 与协商速率需另从 MAC PHYCSR 读 (PHY 驱动不碰 MAC 寄存器)
  */
 int  MaePhyWaitAnComplete(MaePhy_t *dev, uint32_t timeout_ms);
+
+/**
+ * @brief   环回模式开关 (BMCR bit14, PCS 环回)
+ * @param   dev     驱动上下文
+ * @param   enable  0 = 关闭, 非 0 = 开启
+ * @return  0 = 成功; -1 = MDIO 读写失败
+ * @note    手册 8.4.1: 使能后 RGMII 发送数据路由到 RGMII 接收数据路径.
+ *          读改写 BMCR 保留 ANE/双工等其余位. 回环是 RGMII 内部路径,
+ *          不改变引脚方向; 当前速率/双工即环回速率 (勿另改, 与 MAC 侧
+ *          RGMII 时序须一致).
+ */
+int  MaePhyLoopbackSet(MaePhy_t *dev, int enable);
+
+/**
+ * @brief   强制速率/双工: 清 ANE 进入强制模式 (无对端场景用)
+ * @param   dev   驱动上下文
+ * @param   mbps  10 / 100 / 1000
+ * @param   fdx   1 = 全双工, 0 = 半双工
+ * @return  0 = 成功; -1 = MDIO 读写失败
+ * @note    无 link/无对端时 AN 永不完成、协商结果不存在, 只能定死速率
+ *          (如无 link 跑 PHY 环回). 读改写 BMCR, 保环回等其余位. 实验后
+ *          由 MaePhyAnRestore 写回复位默认恢复自协商.
+ */
+int  MaePhyForceSpeed(MaePhy_t *dev, uint32_t mbps, int fdx);
+
+/**
+ * @brief   恢复自协商: BMCR 写回复位默认 + 重启 AN (清环回/强制位)
+ * @param   dev  驱动上下文
+ * @return  0 = 成功; -1 = MDIO 写失败
+ * @note    一步写 BMCR = 复位默认值 (ANE=1, 含 1000M FDX 广告位) +
+ *          RESTART_AN: 清掉环回 bit14 与强制位, 触发重新协商. 环回/
+ *          强制实验的还原入口; 有对端时 link 会重新建立.
+ */
+int  MaePhyAnRestore(MaePhy_t *dev);
 
 /**
  * @brief   LED 显示配置: 通用千兆双灯方案 (页 D04 LCR)

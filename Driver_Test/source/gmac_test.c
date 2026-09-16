@@ -6,8 +6,10 @@
  *     测试 2: 完整激活 — 链路建立在 MAC 驱动 GmacEthLinkUp, 数据面在此
  *     测试 3: 收包监控 (轮询 RI, 回显帧长/状态/完整 hex dump; 串口输入退出)
  *     测试 4: 发一帧 60 字节最小广播, 回显写回状态与 MMC 计数
- *     测试 5: MAC 内部回环 (建链后 LM 置位, 连续发收逐字节验证, 任意键停)
+ *     测试 5: MAC 内部回环 (MACCR.LM, 建链后回环, 任意键停)
  *     测试 6: MDIO 位冲击读 (GPIO 模拟总线直调, 绕过 GMAC MDIO 控制器)
+ *     测试 7: PHY PCS 回环 (BMCR bit14, 无 link 最小激活, 与测试 5 共用连续
+ *             回环引擎, 任意键停)
  *
  * 分层: 寄存器级在 drivers/stm32mp1xx_gmac.c — 其中 GmacEthLinkUp 承载
  * 从 MDIO → PHY → MAC 的完整激活流程 (PHY 黑盒在 devices/phy_mae0621a.c,
@@ -562,6 +564,33 @@ static uint32_t g_link_fdx   = 0;        /* 会话双工 (缓存命中回填) */
 static int      g_rx_cur    = 0;         /* 收包服务游标 */
 static int      g_tx_next   = 0;         /* 下一次发送占用的槽位 */
 
+/* 数据面启动 (两条激活路径共用): Rx 环预填 + 收发环启动 + RE/TE + 游标
+ * 归零. 描述符字段构建走驱动助手; 环分配/缓冲管理留测试层. */
+static void GmacDataPlaneStart(void)
+{
+    int i;
+
+    for (i = 0; i < (int)RX_RING_N; i++)
+        GmacDmaRxArm(&rx_desc[i], &rx_buf[i][0]);
+    GmacDmaRxStart(ETH, rx_desc, RX_RING_N, RX_BUF_SZ);
+
+    /* Tx 环全关待提交 (地址/长度在提交时由 GmacDmaTxSubmit 建立) */
+    for (i = 0; i < (int)TX_RING_N; i++)
+    {
+        tx_desc[i].DES0 = 0;
+        tx_desc[i].DES1 = 0;
+        tx_desc[i].DES2 = 0;
+        tx_desc[i].DES3 = 0;
+    }
+    GmacDmaTxStart(ETH, tx_desc, TX_RING_N);
+
+    GmacMacStart(ETH);                  /* 最后一步: RE/TE */
+
+    g_rx_cur = 0;
+    g_tx_next = 0;
+}
+
+
 /*
  * 惰性激活: 完整链路 (MDIO → PHY → MAC) 一次建好并启动 DMA 数据面.
  * 测试 3/4 首次进入自动完成, 不再依赖"先跑测试 2".
@@ -659,29 +688,12 @@ static int ActivateGmac(uint32_t *spd_out, uint32_t *fdx_out)
         return -1;
     }
 
-    /* ---- 数据面: Rx 环预填 + 启动 (描述符构建走驱动助手) ---- */
-    for (i = 0; i < (int)RX_RING_N; i++)
-        GmacDmaRxArm(&rx_desc[i], &rx_buf[i][0]);
-    GmacDmaRxStart(ETH, rx_desc, RX_RING_N, RX_BUF_SZ);
-
-    /* ---- Tx 环全关待提交 (地址/长度在提交时由 GmacDmaTxSubmit 建立) ---- */
-    for (i = 0; i < (int)TX_RING_N; i++)
-    {
-        tx_desc[i].DES0 = 0;
-        tx_desc[i].DES1 = 0;
-        tx_desc[i].DES2 = 0;
-        tx_desc[i].DES3 = 0;
-    }
-    GmacDmaTxStart(ETH, tx_desc, TX_RING_N);
-
-    /* ---- 最后一步: RE/TE ---- */
-    GmacMacStart(ETH);
+    /* ---- 数据面: 环预填 + 收发启动 + RE/TE (共用尾部) ---- */
+    GmacDataPlaneStart();
 
     g_activated = 1;
     g_link_speed = speed;
     g_link_fdx   = fdx;
-    g_rx_cur = 0;
-    g_tx_next = 0;
 
     if (spd_out) *spd_out = speed;
     if (fdx_out) *fdx_out = fdx;
@@ -904,35 +916,159 @@ static void BuildTestFrame(uint8_t *f)
 }
 
 /*
- * 测试 5: MAC 内部回环 (需要 link).
+ * 回环引擎 (测试 5/7 共用): 连续 ping-pong 一发一收, 收发逐字节比对.
+ * 激活与开关在各自测试函数, 本引擎只跑连续收发比对, 出口不还原.
  *
- * 原理: MACCR.LM(bit12)=1 时发送数据在 MAC 内直连到接收路径 (经内部异步
- * FIFO, 手册 63.5.8), 不出 RGMII 引脚, 验证 描述符环+DMA+MAC 组帧(补
- * Pad/CRC)+Rx 过滤 的完整管线. 收发逐字节比对.
- *
- * 为什么必须有 link (旧"内部时钟顶替 eth_rx_clk"方案已废弃):
- *   - MACCR.LM 手册注: "The GMII Rx clock input (eth_rx_clk) is required
- *     for the loopback to work properly ... the Tx clock is not internally
- *     looped back";
- *   - MII/GMII/RGMII 的 RX 时钟直接收 ETH_RX_CLK 引脚 (PA1); SYSCFG
- *     ETH_REF_CLK_SEL 的内部时钟选项只能用于 RMII PHY;
- *   - 本板 PHY 的 RXC 从线路数据流恢复 → 无 link 无 RXC (与"无 link 时
- *     SWR 必超时"同源); 且置 REF_CLK_SEL=1 会让 PA1 被内部时钟驱动, 与
- *     PHY 的 RXC 输出对撞 (pad 竞争), 不能拿它做实验.
- * 故先 ActivateGmac 建链 (RXC=125MHz 在场), 无 link 直接跳过.
- *
- * LM 变更约束 (手册): 收发活动期间不得改回环/速率/双工配置 → LM 的置位与
- * 清除都用 GmacMacDeinit/Start 包进收发空闲窗口.
- * 回环帧同时会经 TX 引脚上线 (手册), PC 侧 Wireshark 可见同一帧.
+ * 两种激活 (为何不同):
+ *   测试 5 (MAC LM 回环) — 需 link: LM 的回环 FIFO 读时钟是 eth_rx_clk
+ *     (手册 63.5.8: Tx clock 不回环), RGMII 下只能由 PHY RXC 供给; 本板
+ *     RXC "从接收数据流中恢复" (mae.md 引脚表), 拔线即停, 且 RGMII 的
+ *     RX 时钟只能收 PA1 引脚 (REF_CLK_SEL 内部选项仅 RMII) → 无网线无
+ *     RXC, LM 读不出 (无 link 版实测零帧). 故测试 5 = ActivateGmac 完整
+ *     建链 + Deinit 停 RE/TE → 开 LM → Start (LM 变更须收发空闲窗口).
+ *     LM=1 时接收接口只取 FIFO、引脚数据旁路 (建链版实测 drained=0 为证;
+ *     无 link 双开实验 10/10 轮每轮恰好 1 份逐字节拷贝即 LM 拷贝) →
+ *     回环帧只可能来自 LM, 判据自证; 回环帧同时经 TX 上线, PC Wireshark
+ *     可见同一帧.
+ *   测试 7 (PHY PCS 回环) — 无 link: bit14 把 TX 帧+idle 回环成 PHY 内部
+ *     接收数据流, RXC 切 PHY 本地时钟域 (实测开环回后铜口 link 恒 down,
+ *     帧照过 byte-exact), 不用网线/对端/AN 结果.
+ * 旧"内部时钟顶替 eth_rx_clk"方案已废弃: SYSCFG ETH_REF_CLK_SEL 的内部
+ * 时钟选项只能用于 RMII PHY, 且置 1 会让 PA1 被内部时钟驱动, 与 PHY 的
+ * RXC 输出对撞 (pad 竞争), 不能拿它做实验.
  *
  * 连续回环 (任意键停, 同测试 3): 每轮 ping-pong 一发一收, 载荷 58..59 字节
  * 带轮次序号. 收帧按序号三分类: 前 60B 全同 = 本轮 (再判状态字); 0x88B5
  * 但序号不符 = 其它轮次迟到帧, 静默计 stale; 序号相同但内容不符 = 回环路径
- * 损坏, 立即报 FAIL; 非 0x88B5 = 光猫后台广播, 静默计 drained. 失败 (TX 未
+ * 损坏, 立即报 FAIL; 非 0x88B5 = 后台广播, 静默计 drained. 失败 (TX 未
  * 闭环/无回环/状态字/内容损坏) 立即打印并计数, 成功静默; 每 100 轮一行
- * 进度, 退出打总账 + PASS/FAIL.
+ * 进度, 退出打总账 + PASS/FAIL. 无回环失败行附实时 link 状态 (测试 5
+ * 应恒 up, 测试 7 恒 down).
  */
-static void TestGmacMacLoop(void)
+
+/* 读 PHYSR (页 A43) 原始值, 供回环诊断 (link 实时 / 速率 / 双工);
+ * 页窗用后恢复. 返回 0 = 读失败 */
+static uint32_t PhyReadPhysr(MaePhy_t *phy)
+{
+    uint16_t pag, physr = 0;
+
+    if (MaePhyRegRead(phy, PHY_REG_PAGSR, &pag) != 0)
+        return 0;
+    MaePhyRegWrite(phy, PHY_REG_PAGSR, PHY_PAGE_A43);
+    MaePhyRegRead(phy, PHY_REG_PHYSR, &physr);
+    MaePhyRegWrite(phy, PHY_REG_PAGSR, pag);
+    return physr;
+}
+
+/*
+ * 无 link 最小激活 (测试 7 专用): 不用网线/对端, 不用自协商结果.
+ *
+ * 步骤:
+ *   1. 总线/MDIO (MDC 在 CSR 时钟域, 与 link 无关)
+ *   2. PHY 硬件复位 + 时钟模式修复 (全程 MDIO; PLL 不锁则连 RXC 都没有)
+ *   3. MAC 软复位 (开环回之前; 复位完成需 TX/RX 接口时钟在场, 与 link/
+ *      环回状态无关, 无顺序约束)
+ *   4. 强制 1000M FDX (无对端 AN 永不完成, 没有协商结果可等) + 开 PHY
+ *      PCS 环回 (BMCR bit14): TX 帧+idle 回环成内部接收数据流, RXC 切
+ *      PHY 本地时钟域
+ *   5. 等环回通路内部建立 (实测开门点 ~4.5s, 留余量 6s)
+ *   6. MDIO 重配 → MacInit (1000/1, 与强制值一致, 不读 PHYCSR) → 数据面
+ *      (与 ActivateGmac 共用尾部)
+ *
+ * g_activated 保持 0: 这不是可复用的链路会话 (无 link/协商值), 后续链路
+ * 类测试仍走 ActivateGmac 完整激活. 失败打印诊断并返回 -1.
+ */
+static int ActivateGmacNoLink(MaePhy_t *phy)
+{
+    static const uint32_t spd_tab[3] = { 10, 100, 1000 };
+    char buf[16];
+    GmacMdioCfg_t mdc;
+    GmacMacCfg_t mac;
+    uint16_t v = 0;
+    uint32_t physr, si;
+    int i;
+
+    g_activated = 0;                /* PHY 复位在即: 旧会话作废 */
+
+    GmacTest_InitBus();             /* 时钟树 + RGMII 引脚 (板级) */
+
+    mdc.gmac_mdc_div = GMAC_TEST_MDC_DIV;
+    GmacMdioInit(ETH, &mdc);
+
+    MaePhyReset(phy);
+    if (MaePhyClkInit(phy) != 0)
+    {
+        PRINT("  [STOP] PHY clk init failed (MDIO fault)\r\n");
+        return -1;
+    }
+
+    /* ---- MAC 软复位 (开环回之前, 无顺序约束) ----
+     * 复位完成需 TX/RX 接口时钟在场 (实测: RCC 门控单清任一, SWR 卡死),
+     * 与 link/环回状态无关. SWR 会清 MDIOAR, 复位后必须重配 (见下 GmacMdioInit). */
+    for (i = 0; i < 3; i++)
+    {
+        if (GmacSoftReset(ETH))
+            break;
+        BasicTimerDelayMs(TIM7, 500);   /* 重试间隔: 覆盖偶发慢复位 */
+    }
+    if (i >= 3)
+    {
+        PRINT("  [STOP] MAC soft reset timeout (SWR stuck)\r\n");
+        return -1;
+    }
+    PRINT("  MAC soft reset: PASS\r\n");
+
+    GmacMdioInit(ETH, &mdc);        /* SWR 清掉 MDC 分频: 重配 */
+
+    if (MaePhyForceSpeed(phy, 1000, 1) != 0)
+    {
+        PRINT("  [STOP] force speed failed (MDIO)\r\n");
+        return -1;
+    }
+
+    /* PCS 环回把 RXC 切到 PHY 本地时钟域 (内部接收数据流供时钟恢复) */
+    if (MaePhyLoopbackSet(phy, 1) != 0)
+    {
+        PRINT("  [STOP] PHY loopback enable failed (MDIO)\r\n");
+        return -1;
+    }
+
+    /* 诊断: 回读 BMCR 确认 bit14 落位; PHYSR 见证铜口状态
+     * (环回踢掉 link 属正常: RXC 切本地域, 帧通道不依赖 link). */
+    MaePhyRegRead(phy, PHY_REG_BMCR, &v);
+    physr = PhyReadPhysr(phy);
+    si = (physr & PHY_PHYSR_SPEED) >> 4;
+    PRINT("  no-link activation: BMCR=0x");
+    PrintHex32(buf, v);
+    PRINT(buf);
+    PRINT((v & PHY_BMCR_LOOPBACK) ? " bit14=1," : " bit14=0!!,");
+    PRINT(" PHYSR link=");
+    PRINT((physr & PHY_PHYSR_LINK) ? "up " : "down");
+    if (physr & PHY_PHYSR_LINK)
+    {
+        NumToStr(buf, (int)spd_tab[si > 2 ? 2 : si]);
+        PRINT(buf);
+        PRINT((physr & PHY_PHYSR_FDX) ? "M FDX" : "M HDX");
+    }
+    PRINT("\r\n");
+
+    PRINT("  forced 1000M FDX, settle 6000ms for loop path\r\n");
+    BasicTimerDelayMs(TIM7, 6000);  /* PHY 环回开门点 ~4.5s + 余量 */
+    IwdgKickDog(IWDG2);             /* 长延时后补喂, 下面还有配置+数据面 */
+
+    for (i = 0; i < 6; i++)
+        mac.gmac_mac_addr[i] = g_mac_addr[i];
+    mac.gmac_speed     = 1000;      /* 与强制值一致, 不经 PHYCSR */
+    mac.gmac_duplex    = 1;
+    mac.gmac_jumbo     = 0;
+    mac.gmac_strip_crc = 0;
+    GmacMacInit(ETH, &mac);
+
+    GmacDataPlaneStart();
+    return 0;
+}
+
+static void LoopbackEngine(MaePhy_t *phy)
 {
     volatile GmacDesc_t *d;
     char buf[16];
@@ -941,23 +1077,6 @@ static void TestGmacMacLoop(void)
     uint32_t len = 0, w3 = 0;
     unsigned int tot = 0, ok_n = 0, fail_n = 0;
     unsigned int drain_n = 0, stale_n = 0;
-
-    PRINT("\r\n--- MAC Internal Loopback ---\r\n");
-    PRINT("  MACCR.LM loops TX into RX inside the MAC; needs link (RX clock\r\n");
-    PRINT("  comes from PHY RXC only). Frame also goes out on the wire\r\n");
-    PRINT("  Continuous rounds, unique payload counter each round\r\n");
-    PRINT("  Press any key on the console to stop\r\n");
-
-    if (ActivateGmac(NULL, NULL) != 0)
-    {
-        PRINT("  [SKIP] loopback needs an established link (cable/peer)\r\n");
-        return;
-    }
-
-    /* ---- 开回环: 停 RE/TE (收发空闲窗口) → 置 LM → 恢复 RE/TE ---- */
-    GmacMacDeinit(ETH);
-    ETH->MAC.CR |= GMAC_MACCR_LM;
-    GmacMacStart(ETH);
 
     /* ---- 连续回环循环 (任意键停, 同测试 3) ---- */
     for (;;)
@@ -1089,7 +1208,15 @@ static void TestGmacMacLoop(void)
             PRINT("  [FAIL] #");
             NumToStr(buf, (int)tot);
             PRINT(buf);
-            PRINT(" no loopback in 500ms\r\n");
+            PRINT(" no loopback in 500ms (drained=");
+            NumToStr(buf, (int)drain_n);
+            PRINT(buf);
+            PRINT(" stale=");
+            NumToStr(buf, (int)stale_n);
+            PRINT(buf);
+            PRINT(") link=");
+            PRINT((PhyReadPhysr(phy) & PHY_PHYSR_LINK) ? "up" : "down");
+            PRINT("\r\n");
         }
 
         if ((tot % 100u) == 0)          /* 进度行: 每 100 轮一条 */
@@ -1131,11 +1258,118 @@ static void TestGmacMacLoop(void)
     PRINT("\r\n");
     PRINT(fail_n ? "  [FAIL] some rounds failed\r\n"
                  : "  [PASS] every round byte-exact\r\n");
+}
 
-    GmacMacDeinit(ETH);                 /* 清 LM 同样要在收发空闲窗口 */
-    ETH->MAC.CR &= ~GMAC_MACCR_LM;
-    GmacMacStart(ETH);                  /* 还原真实链路路径 */
-    PRINT("  LM cleared, MAC back to normal path\r\n");
+
+/*
+ * 测试 5: MAC 内部回环 (MACCR.LM), 引擎与判定见 LoopbackEngine 头注释.
+ * 与测试 7 不同, LM 必须建链: 回环 FIFO 读时钟 eth_rx_clk 在 RGMII 下
+ * 只能由 PHY RXC 供给 (手册 63.5.8: Tx clock 不回环), 而本板 RXC "从
+ * 接收数据流中恢复" (mae.md) —— 拔线即停, 无 link 无 RXC, LM 读不出
+ * (无 link 版实测零帧, 双开实验定论见 TEST_STATUS 修复记录). 建链后
+ * Deinit 停 RE/TE → 开 LM → Start (LM 变更须收发空闲窗口, 手册).
+ * LM=1 时接收接口只取 FIFO、引脚数据旁路 → 回环帧只可能来自 LM, 判据
+ * 自证; 回环帧同时经 TX 上线 (手册), PC Wireshark 可交叉验证. 出口
+ * 同样包裹还原, g_activated 保持 1 (测试 3/4 继续可用, link 全程未掉).
+ */
+static void TestGmacMacLoop(void)
+{
+    MaePhy_t phy;
+    char buf[16];
+
+    PRINT("\r\n--- MAC Internal Loopback (MACCR.LM, needs link) ---\r\n");
+    PRINT("  LM loops TX into RX inside the MAC (manual 63.5.8)\r\n");
+    PRINT("  Loop FIFO read clock = line-recovered RXC -> link required\r\n");
+    PRINT("  RX pins bypassed while LM=1: looped frame self-evident\r\n");
+    PRINT("  Frames also go out on the wire (Wireshark-visible)\r\n");
+    PRINT("  Continuous rounds, unique payload counter each round\r\n");
+    PRINT("  Press any key on the console to stop\r\n");
+
+    phy.gmac     = ETH;
+    phy.phy_addr = GMAC_TEST_PHY_ADDR;
+    phy.rst_port = GMAC_TEST_PHY_RST_PORT;
+    phy.rst_pin  = GMAC_TEST_PHY_RST_PIN;
+
+    /* 建链: RXC 从线路恢复, 无 link 无 RXC → LM 回环需完整激活 */
+    if (ActivateGmac(NULL, NULL) != 0)
+    {
+        PRINT("  [STOP] loopback needs link (RXC is line-recovered)\r\n");
+        return;
+    }
+    PRINT("  link: ");
+    NumToStr(buf, (int)g_link_speed);
+    PRINT(buf);
+    PRINT((g_link_fdx) ? "M FDX, LM on\r\n" : "M HDX, LM on\r\n");
+
+    GmacMacDeinit(ETH);             /* LM 变更须收发空闲窗口 (手册) */
+    GmacMacLoopbackSet(ETH, 1);
+    GmacMacStart(ETH);
+
+    LoopbackEngine(&phy);
+
+    GmacMacDeinit(ETH);             /* 清 LM 同样要收发空闲窗口 */
+    GmacMacLoopbackSet(ETH, 0);
+    GmacMacStart(ETH);              /* 还原真实链路路径 */
+    PRINT("  LM cleared, real path restored (session kept: tests 3/4 usable)\r\n");
+}
+
+
+/*
+ * 测试 7: PHY PCS 回环 (BMCR bit14, 手册 8.4.1: "环回功能使 RGMII 发送
+ * 数据路由到 RGMII 接收数据路径"). 与测试 5 的区别: 回环点在 PHY 内,
+ * 除 MAC 管线外额外覆盖 RGMII 引脚通路 (MAC TXC/TXD → PHY → RXC/RXD 回
+ * MAC); 激活走无 link 最小激活 (ActivateGmacNoLink): bit14 把 TX 帧+idle
+ * 回环成 PHY 内部接收数据流, RXC 切本地时钟域, 不用网线/对端/AN 结果.
+ * 激活与开关细节见 LoopbackEngine 头注释.
+ */
+static void TestGmacPhyLoop(void)
+{
+    MaePhy_t phy;
+    char buf[16];
+    uint32_t physr = 0;
+    int i;
+
+    PRINT("\r\n--- PHY PCS Loopback (BMCR bit14, no link needed) ---\r\n");
+    PRINT("  PHY routes RGMII TX data into the RGMII RX path (manual 8.4.1)\r\n");
+    PRINT("  Minimal activation: reset + clk fix + forced 1000M FDX + bit14\r\n");
+    PRINT("  Loop path runs on PHY local clock; copper link stays down\r\n");
+    PRINT("  Continuous rounds, unique payload counter each round\r\n");
+    PRINT("  Press any key on the console to stop\r\n");
+
+    phy.gmac     = ETH;
+    phy.phy_addr = GMAC_TEST_PHY_ADDR;
+    phy.rst_port = GMAC_TEST_PHY_RST_PORT;
+    phy.rst_pin  = GMAC_TEST_PHY_RST_PIN;
+
+    if (ActivateGmacNoLink(&phy) != 0)
+        return;
+
+    LoopbackEngine(&phy);
+
+    /* 出口: 关 bit14 (MaePhyAnRestore 一步还原 BMCR 默认 + RESTART_AN).
+     * 有网线则重新协商回 link; 无网线跑时 link 本就不会来, "still down"
+     * 属预期. 无 link 会话不进 g_activated 缓存 (ActivateGmacNoLink 已
+     * 清 0), 后续链路类测试自行走完整激活. */
+    MaePhyAnRestore(&phy);
+    for (i = 0; i < 80; i++)            /* ≤8s */
+    {
+        physr = PhyReadPhysr(&phy);
+        if (physr & PHY_PHYSR_LINK)
+            break;
+        BasicTimerDelayMs(TIM7, 100);
+    }
+    PRINT("  loopback off, AN restored, link=");
+    if (physr & PHY_PHYSR_LINK)
+    {
+        PRINT("up after ~");
+        NumToStr(buf, i * 100);
+        PRINT(buf);
+        PRINT("ms\r\n");
+    }
+    else
+    {
+        PRINT("still down (no cable?)\r\n");
+    }
 }
 
 
@@ -1148,8 +1382,9 @@ static const MenuEntry_t g_gmac_menu[] = {
     { "2", "Activate (link+SWR+MAC)",      TestGmacActivate },
     { "3", "RX monitor (key to stop)",      TestGmacRxMonitor },
     { "4", "TX broadcast frame",           TestGmacTxBroadcast },
-    { "5", "MAC loopback (key to stop)",  TestGmacMacLoop },
+    { "5", "MAC loopback (needs link)",         TestGmacMacLoop },
     { "6", "MDIO bit-bang read",           TestGmacMdioBitBang },
+    { "7", "PHY loopback (no link, key stop)", TestGmacPhyLoop }
 };
 
 void GmacTest(void)

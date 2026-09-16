@@ -875,6 +875,9 @@ SdmmcPowerOn (400kHz, 1-bit)
 | MaePhyClkInit | 通过 | SWR → 读 INSR (页 A43) bit5 判工作状态 → 异常则翻转 CLK_MODE (页 D92 reg2) bit8 (振荡器→晶振) → 恢复页 + 100ms PLL 重锁; 紧跟 MaePhyReset 执行 (GmacEthLinkUp 流程内, 测试 1/6 走 GmacTest_Init 同款), 自主 AN 完成即证 (见修复记录) |
 | MaePhyWaitAnComplete | 通过 | 20ms 轮询 BMSR.5; 驱动内不喂狗 —— 跨 IWDG2 10s 上限的等待由 GmacEthLinkUp 切片 (2×an_timeout_ms) 片间喂狗; 超时干净返回 -1 不挂死 |
 | MaePhyLedConfig | 待实测 | LCR (页 D04, 读改写保 LED2): LED0=任意速率链路+活动 (接线假设绿), LED1=1000M (橙); PHY 复位会清 LCR → GmacEthLinkUp 尾部 (复位序列结束后) 调用; 亮灯效果待板上实测 (颜色假设见 phy_mae0621a.c 注释) |
+| MaePhyLoopbackSet | 通过 | BMCR bit14 读改写 (PCS 环回: RGMII 发送数据路由到接收路径, 手册 8.4.1 位 0.14), 保留其余位; 实测三轮: 带 link 起步 5297 轮 (前 9 轮为建立期外全过) + 无 link 版 1586 与 2078 全过; 环回期间 PHYSR link 恒 down (RXC 切 PHY 本地域) |
+| MaePhyForceSpeed | 通过 | 清 ANE 强制速率/双工 (无对端时 AN 永不完成, 没有协商结果可等); 实测读回 BMCR=0x4140 (bit14+bit8 FDX+bit6 = 1000M, ANE=0) 一次到位; 与 MaePhyAnRestore 成对 (实验后还原) |
+| MaePhyAnRestore | 通过 | 一步写 BMCR 复位默认值 (ANE=1) + RESTART_AN, 清环回 bit14 与强制位; 环回出口还原实测写入生效 —— 无对端时 link 不回来属预期 (带线重协商未单独复验) |
 | 外设隔离 | 通过 | PHY 驱动内只调 GmacMdio*/Gpio*/BasicTimerDelayMs + PAGSR 换页, 不碰 MAC 寄存器; PHYCSR 链路/速率读取在 MAC 驱动 (GmacLinkStatus), 隔离边界在 drivers/devices 之间 |
 
 ### 链路激活 + 收发 (测试 2/3/4/5)
@@ -885,15 +888,16 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 测试 2 完整激活 (显式入口) | 通过 | ActivateGmac 惰性激活 (测试 3/4 共用): 首跑走 GmacEthLinkUp → Rx/Tx 环 + RE/TE, 实测 link 1G FDX; 缓存命中回填 g_link_speed/g_link_fdx (曾踩 .bss 残留假命中, 见修复记录) |
 | 测试 3 RX 监控 (无限时) | 通过 | 任意串口输入退出 (FramePoll 非阻塞, 同 adc/irq 长测); 完整 hex dump 带帧内偏移; 实测回显光猫周期帧无 ES: ① 90B IPv6 组播 (0x86DD, dst 33:33:00:00:00:02 = ff02::2/ff05::2 "所有路由器" 组, 源 …BA:80:8D) —— 体含 MLDv1 报告 (type 0x83, checksum 随组地址变 7E9D↔7EA3 互证, 前导字节非标疑光猫私有封装); ② 64B 广播 (0xFFFA + 明文 "loopback", 源 …BA:80:8B); 两源同属创维 OUI = 光猫本体 (桥泛洪到板卡口) |
 | 测试 4 TX 广播帧 | 通过 | 60 字节最小帧 (dst=FF*6, ethertype 0x88B5), CPC=00 自动补 Pad+CRC, 双槽交替, TDES3_WB=0x00000000 无错误 |
-| 测试 5 MAC 内部回环 | 待实测 | 需 link: ActivateGmac 建链后 GmacMacDeinit → 置 LM → GmacMacStart (LM 变更须收发空闲窗口, 手册); 连续回环 (任意键停, 同测试 3): 每轮 60B 广播帧载荷 58..59 带轮次序号 → 每帧内容唯一, 发→等 TX 闭环 ≤500ms→扫环收 ≤500ms, 收帧按序号三分类: 0x88B5 序号不符 = 其它轮次迟到帧 (静默计 stale), 序号相同但内容不符 = 回环路径损坏 (立即报 FAIL), 非 0x88B5 = 光猫后台广播 (静默计 drained), 命中判 前 60B 逐字节 + LD/FD/ES=0/CE=0 (CE 即 MAC 侧 CRC 校验), 失败立即报, 每 100 轮进度行, 退出打总账 + PASS/FAIL; 上一版单发单收实测通过 (len=60/WIRE=64, drained=0) 后改为连续, 待复查; 旧免网线方案废弃 (RGMII RX 时钟只收 PA1 引脚 / REF_CLK_SEL 内部选项仅 RMII / PHY RXC 从线路恢复 → 无 link 无 RXC, 见 rcc_clock_tree.md 与 mae.md); 回环帧同时经 TX 上线, PC Wireshark 可交叉验证 |
-| GmacSoftReset | 通过 | link 后复位干净完成 (测试 2 流程内); 无 link 必超时 (RGMII RX 时钟来自 PHY PA1), 见修复记录 |
-| 描述符助手 (GmacDmaRxArm/RxRecycle/TxSubmit) | 待实测 | 字段构建下沉驱动 (GMAC_DESC_* 位宏与 GmacDesc_t 同居); RxRecycle 重灌重放 DES0 缓冲地址 (收帧写回已复用为 VLAN tag, 全 0 地址缓冲被跳过) + 尾指针推进成对封装 (只重灌不推尾指针 = 环静默饿死); TxSubmit = DES0/1/2/3 + 尾指针一步 (CPC=00 补 Pad+CRC); 测试 3/4/5 下一轮实测即验证 |
+| 测试 5 MAC 内部回环 | 待实测 | 建链后回环: ActivateGmac 完整建链 (RXC 从线路恢复, 无 link 无 RXC → LM 回环 FIFO 读时钟必须来自线路, 无 link 版硬件证伪见修复记录) → GmacMacDeinit 停 RE/TE → 开 MACCR.LM (GmacMacLoopbackSet; 手册: 收发活动期不得改 LM) → GmacMacStart; 连续回环 (任意键停, 同测试 3, 引擎与测试 7 共用): 每轮 60B 广播帧载荷 58..59 带轮次序号 → 发→等 TX 闭环 ≤500ms→扫环收 ≤500ms, 收帧三分类 (0x88B5 序号不符 = stale 静默, 序号相同内容不符 = 立即 FAIL, 非 0x88B5 = drained 静默), 命中判 前 60B 逐字节 + LD/FD/ES=0/CE=0 (CE 即 MAC 侧 CRC 校验), 每 100 轮进度行, 退出总账 + PASS/FAIL; LM=1 时接收接口只取 FIFO、引脚数据旁路 (建链版实测 drained=0 为证) → 回环帧只可能来自 LM, 判据自证; 回环帧同时经 TX 上线 (手册 63.5.8, PC Wireshark 可交叉验证); 出口 Deinit → 清 LM → Start 还原真实路径, g_activated 保持 1 (link 全程未掉, 测试 3/4 继续可用); "内部时钟顶替 RXC"方案被手册否定 (REF_CLK_SEL 内部选项仅 RMII 且 PA1 双驱动 pad 竞争) |
+| GmacSoftReset | 通过 | link 后复位干净完成 (测试 2 流程内); 旧记录"无 link 必超时"归因已修正 —— 复验后无 link 也能过 (测试 7 复位探针), 见修复记录 |
+| 描述符助手 (GmacDmaRxArm/RxRecycle/TxSubmit) | 通过 | 字段构建下沉驱动 (GMAC_DESC_* 位宏与 GmacDesc_t 同居); RxRecycle 重灌重放 DES0 缓冲地址 (收帧写回已复用为 VLAN tag, 全 0 地址缓冲被跳过) + 尾指针推进成对封装 (只重灌不推尾指针 = 环静默饿死); TxSubmit = DES0/1/2/3 + 尾指针一步 (CPC=00 补 Pad+CRC); 测试 7 连续回环三轮实测 (5297 + 1586 + 2078 轮) 千次收发全程走助手, 逐字节一致 |
+| 测试 7 PHY PCS 回环 | 通过 | 无 link 最小激活 (ActivateGmacNoLink): PHY 复位 + ClkInit + MAC 软复位 (开环回之前; 拔线复验与 link/环回无关, 见修复记录) + 强制 1000M FDX (清 ANE, 不等协商) + 开 bit14 → 等 6s 内部通路建立 → MacInit + 数据面 (共用尾部 GmacDataPlaneStart); 不用网线/对端/AN 结果, 拔线实测两轮 (旧顺序 1586 轮 + 复位前置 2078 轮) 均 fail=0 drained=0 stale=0 全轮 ok, 环回期间 link 恒 down (帧不上线, 与测试 5 不同); 出口 MaePhyAnRestore 还原 AN; 与测试 5 共用回环引擎 (三分类/任意键停); 回环点在 PHY 内, 覆盖 RGMII 引脚通路 (MAC TXC/TXD → PHY → RXC/RXD 回 MAC) |
 
 ### 已知问题/修复记录
 
 | 问题 | 原因 | 修复 |
 |------|------|------|
-| SWR 无 link 必超时 | RGMII RX_CLK 来自 PHY 引脚 (PA1), 无 link 时 PHY 不输出; 复位完成需所有激活时钟域的时钟在场 | SWR 放链路建立后 (测试 4); 超时仅警告不中止, MDIO 在 CSR 时钟域不受影响 |
+| SWR 无 link 必超时 (归因已修正) | 录制时 PHY 时钟模式未修复 (PLL 未锁, 整颗 PHY 无时钟) —— 超时应归因于此; "无 link 时 PHY 不输出 RXC" 是错误归因 (2026-09-11 拔线复验: 时钟修复后无 link/无环回也能过) | SWR 仍放链路建立后 (测试 4: 流程要 GmacLinkStatus 先读 PHYCSR, 且 SWR 会清 MDC 分频须重配); 超时仅警告不中止, MDIO 在 CSR 时钟域不受影响 |
 | SWR 清掉 MDC 分频 | 软复位复位 MDIOAR | 复位后重新 GmacMdioInit |
 | 位冲击高电平采样数据左移 | PHY 数据更新贴近 MDC 上升沿, 高电平期间采到"下一位" | 采样点移到 MDC 低电平期间 |
 | 位冲击命令阶段全 0xFFFF | 开漏+内部 40k 上拉 RC 上升沿 1.2µs, 弱驱动下 PHY 采不到合法命令 | 命令阶段 MDIO 推挽强驱动 |
@@ -905,3 +909,9 @@ SdmmcPowerOn (400kHz, 1-bit)
 | 菜单 2 link 268447745Mbps 乱码 | 镜像整块载入 DDR 且 .bss 未清零 → g_activated 残留非 0 → ActivateGmac 假命中缓存不写输出参 → 打印未初始化局部量 (268447745 = 0x10003001 栈残留) | start.S zbss_loop 清零 __bss_start~__bss_end (lds 导出); ActivateGmac 命中缓存时从 g_link_speed/g_link_fdx 回填输出参 (双保险) |
 | 1G 下网口灯全灭 | 复位默认 LED 按速率分灯 (10M/100M/1000M 各一), 板上只接 LED0/LED1 到网口, 1000M 指示落在未接线的 LED2 | LED 配置下沉 PHY 驱动 (MaePhyLedConfig): 通用千兆双灯 (绿=任意速率链路+活动, 橙=1000M), GmacEthLinkUp 尾部调用 (PHY 复位清 LCR, 须在复位序列后); 测试 7 删除 (无需专测) —— 亮灯待板上实测 |
 | Rx 回收只重灌 DES3 (隐患) | 收帧写回已把 DES0 复用为内/外层 VLAN tag (Table 544, 仅 RS0V 置位时有效), 重灌不重放 DES0 就依赖"硬件保留旧缓冲地址"——手册未承诺; 且地址全 0 的缓冲会被硬件跳过, 一旦某轮写回把该格清零即静默丢帧 | GmacDmaRxRecycle 每次回收重放 DES0 缓冲地址 (地址来源 = 测试层软件映射 rx_buf, 写回后 DES0 读不回地址), 与尾指针推进封装成对 (见描述符助手行) |
+| PHY PCS 环回免 link (曾以为软复位需先开环回) | 曾按"无 link 软复位必超时"把复位放环回之后 —— 复验推翻: 旧超时实为时钟修复前 PHY 无时钟 (见下行); PCS 环回本身把 RXC 切到 PHY 本地时钟域, 环回期间 PHYSR link 恒 down 而帧照过 byte-exact (与线路无关) | 测试 7 无 link 最小激活定版: PHY 复位 + 时钟修复 → MAC 软复位 (开环回前, 失败重试×3) → 强制 1000M FDX + 开环回 → 等通路 6s → MacInit + 数据面; 不用网线/AN/协商结果 (ANE 主动清 0), 拔线实测 1586 + 2078 轮全过 |
+| 环回开后 ~4.5s 内部通路建立期 | 带 link 起步版: settle 不足时首 9 轮零帧 (无 settle 版与 300ms 版均 9 轮 × 500ms ≈ 4.5s 后才通; 机理未深究, 或与 PHY 内部时钟源切换有关); 曾误判为"等 link 重协商", 实测 link 全程不回来而帧照过, 假设被否 | 开环回后固定等 6s (实测开门点 ~4.5s + 余量) 再收发; 无 link 版实测零首轮失败 |
+| 软复位"需 RX 时钟"结论被复验推翻 | 旧结论 (无 link 复位必超时, RXC 靠 link) 录于时钟模式修复之前 —— PHY 无时钟导致的超时被错记成 link 依赖, 并据此设计了测试 7 的"先开环回再复位"顺序 | 2026-09-11 拔线复验: 复位探针提到开环回之前 (无 link/无环回/无强制) 一次过, 复位前移定版并删除环回后重试的旧兜底; 复验后 2078 轮全过; 教训: 结论要连同其成立条件 (此处 = PHY 时钟修复) 一起记录 |
+| 软复位对 TX/RX 接口时钟的依赖 (门控实验) | 假说"软复位只复位 MAC 体, 与收发时钟无关" vs 手册注 63.11.2: "复位完成需要所有激活时钟域的 PHY 输入时钟在场" | 2026-09-11 门控探针实测 (RCC 单清 ETHRXEN/ETHTXEN, PHY 与引脚不动): 单清 RX → FAIL (SWR 卡死); 恢复排空后单清 TX → 亦 FAIL —— 两路接口时钟都必须在场, 手册注字面成立, 假说证伪. 机理: 门控关闭 ≠ 从等待集合摘除 —— 缺时钟的域完不成复位释放握手, 整个复位被卡住. 旧账闭环: 复位依赖的正是 RX 时钟信号, 而 RXC 自时钟修复后与 link 无关 (PLL 锁定即常态输出 125MHz) → "无 link 也过"与"复位需 RX 时钟"不矛盾; GmacClockEnable 原注释"少一个 SWR 复位链都过不去"获实测确认. 探针与排空逻辑属实验代码, 结论后已撤除 (排空必要性: 缺时钟挂起的复位在门控恢复后才收尾, 不排空则下一次 SWR 写入无 0→1 边沿, 会假 PASS) |
+| 跳过 MAC 软复位 → TX 描述符永不闭环 | 临时实验版假设 GmacClockEnable 的 AHB6 总线复位 (RSTSETR/RSTCLRR) 足以代替 SWR, 省去软复位直接配 MacInit | 实测 (RXC 在场) TX 描述符 OWN 位永不落, 一帧发不出; 补回 SWR 后即正常. 仅总线复位不可代替软复位 (机理未深究), 测试 5/7 激活流程保留 SWR |
+| MAC LM 无 link 实验 (已撤除) | 验证"MAC 自回环无需 PHY/引脚": 手册 63.5.8 否定"内部时钟顶替 RXC"方案后, 改实验"抽走 RXC 看回环是否还活" (三阶段, 菜单 8) | 终结论 (LM+bit14 双开实验, 10/10 轮逐字节一致): LM 不需 link 但必需 eth_rx_clk 在场 (回环 FIFO 读时钟, gmac_regs LM 位原文); LM=1 时接收接口只取 FIFO、引脚数据旁路 (建链版实测 drained=0 为证; 手册 63.5.8: 回环帧同时经 TX 上线) → 双开时每轮恰好 1 份拷贝即 LM 拷贝 ("mixed counts" 是判决分支 bug, "2 份/轮" 期望值本身设错); bit14 的作用仅是把 TX 帧+idle 回环成内部接收数据流供 RXC 恢复; 纯 LM 无网线零帧根因 = MAE0621A RXC 从接收数据流恢复 (mae.md 引脚表) + RGMII 的 RX 时钟只能收 PA1 引脚 (REF_CLK_SEL 仅 RMII) → 本板无网线 LM 不可行; 实验代码 (菜单 8) 已删 |

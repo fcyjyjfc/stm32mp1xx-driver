@@ -514,6 +514,7 @@ Table 56 查阅指南：每个外设的记录包含：总线接口时钟源及�
 - MDIO 测试最小配置：ETHMACEN（BIT10 总线）+ ETHCKEN（BIT7 内核）+ ETHTXEN（BIT8 TX 路径）；软复位完成需要 ck_ker_eth 在场
 - 使能顺序（ETH_SEL 要求）：ETH 进复位 → 配 SYSCFG ETH_SEL（RGMII=001）→ 释放复位 → 使能时钟
 - MII/GMII/RGMII 的 RX 时钟来自 PHY 引脚——软复位超时的根因常是外部 PHY 时钟不在场
+- 【实测】软复位完成需 TX/RX 两路接口时钟在场: RCC 门控单清 ETHRXEN/ETHTXEN 任一, SWR 卡死 (此两路是 RCC 喂给 MAC 的 eth_clk 域, 与 link 无关 —— 拔线复验 SWR 仍过, 见 TEST_STATUS 修复记录); 引脚 RXC 另论: PHY 从接收数据流恢复 (mae.md 引脚表), 无 link 有信号时仍在, 拔线无信号即停 → 不影响 SWR, 但 MAC 回环 (LM FIFO 读时钟) 无网线不可行. 详见 Driver_Test/TEST_STATUS.md 门控实验行与 LM 无 link 实验行
 - 板级已定：接口 = RGMII（ETH_SEL=001），引脚 MDC=PC1/MDIO=PA2（AF11），GTX_CLK=PG4，CLK125=PG5，RX_CLK=PA1（AF11）
 - 待确认：ETH_CLK_SEL 选内部还是外部 125MHz（取决于 PG5 是否接 PHY 的 CLK125 输出）；ETHSRC 选哪个 PLL（pll4_p 或 pll3_q）及其频率（RGMII 需 125MHz）
 

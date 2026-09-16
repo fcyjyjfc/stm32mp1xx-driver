@@ -268,11 +268,6 @@ typedef struct {
     uint32_t gmac_mdc_div;    /* MDC = HCLK / 该值, 取 16/26/42/62/102/124 */
 } GmacMdioCfg_t;
 
-/* ---------------------------------------------------------- MACCR 位导出 */
-
-/* 测试/上层需直读直写的 MACCR 位 (LM 自回环) */
-#define GMAC_MACCR_LM   (1U << 12)   /* 回环模式: 发送在 MAC 内直连接收路径 */
-
 /* ---------------------------------------------------------- 完整链路激活 */
 
 /*
@@ -331,6 +326,7 @@ extern int  GmacSoftReset(volatile GmacRegs_t *gmac);
 extern void GmacMacInit(volatile GmacRegs_t *gmac, const GmacMacCfg_t *cfg);
 extern void GmacMacStart(volatile GmacRegs_t *gmac);
 extern void GmacMacDeinit(volatile GmacRegs_t *gmac);
+extern void GmacMacLoopbackSet(volatile GmacRegs_t *gmac, int on);
 extern void GmacMdioInit(volatile GmacRegs_t *gmac, const GmacMdioCfg_t *cfg);
 extern int  GmacMdioRead(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_addr, uint16_t *val);
 extern int  GmacMdioWrite(volatile GmacRegs_t *gmac, uint32_t phy_addr, uint32_t reg_addr, uint16_t val);

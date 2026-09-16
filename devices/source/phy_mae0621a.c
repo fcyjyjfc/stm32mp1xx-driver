@@ -236,6 +236,79 @@ int MaePhyWaitAnComplete(MaePhy_t *dev, uint32_t timeout_ms)
 
 
 /**
+ * @brief   环回模式开关 (BMCR bit14, PCS 环回)
+ * @param   dev     目标 PHY
+ * @param   enable  0 = 关闭, 非 0 = 开启
+ * @return  0 = 成功; -1 = MDIO 读写失败
+ * @note    手册 8.4.1 位 0.14: 使能后 RGMII 发送数据路由到 RGMII 接收
+ *          数据路径 (回环点在 PHY 内, 不经线路). 读改写保留 ANE 等其余
+ *          位. 开/关不改变引脚方向, 收发空闲时可随时切换.
+ */
+int MaePhyLoopbackSet(MaePhy_t *dev, int enable)
+{
+    uint16_t bmcr;
+
+    if (MaePhyRegRead(dev, PHY_REG_BMCR, &bmcr) != 0)
+        return -1;
+
+    if (enable)
+        bmcr |= PHY_BMCR_LOOPBACK;
+    else
+        bmcr &= (uint16_t)~PHY_BMCR_LOOPBACK;
+
+    return MaePhyRegWrite(dev, PHY_REG_BMCR, bmcr);
+}
+
+
+/**
+ * @brief   强制速率/双工: 清 ANE 进入强制模式 (无对端场景)
+ * @param   dev   目标 PHY
+ * @param   mbps  10 / 100 / 1000
+ * @param   fdx   1 = 全双工, 0 = 半双工
+ * @return  0 = 成功; -1 = MDIO 读写失败
+ * @note    无 link/无对端时 AN 永不完成, 协商结果不存在, 只能定死速率
+ *          (如无 link 跑 PHY 环回). 手册 8.4.1: ANE=0 时速率位 (0.13/0.6)
+ *          与双工位 (0.8) 生效. 读改写, 保留环回等其余位.
+ */
+int MaePhyForceSpeed(MaePhy_t *dev, uint32_t mbps, int fdx)
+{
+    uint16_t bmcr;
+
+    if (MaePhyRegRead(dev, PHY_REG_BMCR, &bmcr) != 0)
+        return -1;
+
+    bmcr &= (uint16_t)~(PHY_BMCR_ANE | PHY_BMCR_SPEED100 | PHY_BMCR_SPEED1000
+                        | PHY_BMCR_FDX);
+    if (mbps == 100)
+        bmcr |= PHY_BMCR_SPEED100;
+    else if (mbps == 1000)
+        bmcr |= PHY_BMCR_SPEED1000;
+    if (fdx)
+        bmcr |= PHY_BMCR_FDX;
+
+    return MaePhyRegWrite(dev, PHY_REG_BMCR, bmcr);
+}
+
+
+/**
+ * @brief   恢复自协商: BMCR 写回复位默认 + 重启 AN (清环回/强制位)
+ * @param   dev  目标 PHY
+ * @return  0 = 成功; -1 = MDIO 写失败
+ * @note    一步写 BMCR = 复位默认值 (ANE=1, 含 1000M FDX 广告位) +
+ *          RESTART_AN (手册 8.4.1 位 0.9): 清掉环回 bit14 与强制位,
+ *          触发重新协商. 环回/强制实验的还原入口; 有对端时 link 重新
+ *          建立 (等它回来读 PHYSR 或用 MaePhyWaitAnComplete).
+ */
+int MaePhyAnRestore(MaePhy_t *dev)
+{
+    if (MaePhyRegWrite(dev, PHY_REG_BMCR,
+                       MAE_PHY_BMCR_RESET_VAL | PHY_BMCR_RESTART_AN) != 0)
+        return -1;
+    return 0;
+}
+
+
+/**
  * @brief   LED 显示配置: 通用千兆双灯方案 (页 D04 LCR)
  * @param   dev   目标 PHY
  * @return  0 = 成功; -1 = MDIO 故障
